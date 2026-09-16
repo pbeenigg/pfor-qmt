@@ -22,7 +22,8 @@ class MarketBridge(QmtMethods):
         self.globals_dict = globals_dict or {}
         cfg = get_config()
         self.tx = tx or PipeTxClient(pipe_name=cfg['pipe_name'], request_channel=cfg['request_channel'],
-                                     bridge_id='pfor-market', endpoint_name='PFOR_MARKET', show=False)
+                                     bridge_id='pfor-market', endpoint_name='PFOR_MARKET', show=False,
+                                     connect_timeout_ms=cfg['pipe_connect_timeout_ms'], heartbeat_interval=cfg['heartbeat_seconds'])
         self.subscriptions = {}
         self.lock = threading.RLock()
         self.generation = 0

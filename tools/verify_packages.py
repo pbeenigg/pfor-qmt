@@ -24,4 +24,5 @@ for path in artifacts:
     for name in names:
         assert not any(part in {'runtime','log','exports','output','.venv','__pycache__','%NVM_SYMLINK%'} for part in Path(name).parts), name
         assert not name.endswith('.local.json'), name
+        assert Path(name).name != 'config.toml' and not name.endswith('.local.toml'), name
     print(path.name + ': required resources and license files present; no runtime data')

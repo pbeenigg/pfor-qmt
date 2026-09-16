@@ -26,7 +26,17 @@ py -3.12 -m venv .venv
 .venv\Scripts\pfor-qmt migrate
 ```
 
-默认本地配置为 `runtime/settings.local.json`，不要提交、分享或放在公共目录。也支持 `PFOR_QMT_DATABASE_URL` 环境变量，优先于配置文件；使用环境变量时更换连接需要修改环境后重启。
+统一配置入口是项目根目录 `config.toml`，模板见 [config.example.toml](config.example.toml)。数据库、端口、运行目录、QMT行情连接、API Key及登录密码哈希均由这个文件管理；网页保存也写回此文件，保留注释。
+
+优先级：**显式命令行参数 > `PFOR_QMT_*` 环境变量 > TOML > 默认值**。文件路径通过 `--config` 或 `PFOR_QMT_CONFIG` 指定，默认当前目录的`config.toml`；相对运行目录和QMT路径基于配置文件所在目录解析。环境变量和命令行覆盖只在当前进程生效，不会写回文件，也不会修改系统环境变量。
+
+首次找不到TOML时，会迁移原`runtime/settings.local.json`中的连接、API Key和密码哈希，原JSON保留为备份，后续不再读取。真实`config.toml`已被Git和构建包排除，不要分享或放在公共目录。手工修改后重启服务；修改行情管道配置后需重新准备自有QMT模型并重启终端。
+
+```powershell
+.venv\Scripts\pfor-qmt --config D:\国金\pfor-qmt\config.toml serve
+```
+
+完整配置项和环境变量对应关系见 [配置说明](docs/CONFIGURATION.md)。
 
 ## 接入 QMT
 
@@ -48,12 +58,10 @@ py -3.12 -m venv .venv
 ## Python SDK
 
 ```python
-import json
-from pathlib import Path
 from pfor_qmt import DataClient, xtdata
 
-key = json.loads(Path("runtime/settings.local.json").read_text("utf-8"))["api_key"]
-client = DataClient(api_key=key)
+client = DataClient.from_config("config.toml")
+xtdata.configure_from_file("config.toml")
 dataset = client.create_dataset("核心指数", ["000300.SH", "000905.SH"], ["1d"])
 job = client.download(dataset["id"], "2026-09-01", "2026-09-14")
 print(client.job(job["id"]))

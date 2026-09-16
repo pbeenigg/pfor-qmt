@@ -25,7 +25,7 @@ flowchart LR
 - `data.py`：代码、周期、日期验证，上海时间解析，不补零的数值标准化。
 - `tasks.py`：单工作线程、数据库 advisory lock、断点、取消、重试、17:00调度和导出。
 - `service.py`：应用接口与业务编排；`server.py`：标准库 HTTP、认证和独立 WebSocket。
-- `sdk.py`：DataClient；`settings.py`：本地配置与密码哈希。
+- `sdk.py`：DataClient；`settings.py`：统一config.toml、环境覆盖、旧JSON迁移与密码哈希；QMT内嵌`config.py`只接收部署器生成的行情参数。
 - `deploy.py`、`qmt_scripts/PFOR_MARKET.py`：独立模型准备、导入和启用。
 - `web_dashboard/`：原生界面与本地 ECharts/Lucide；无 CDN 运行依赖。
 - `tests/`：固定上游回归、模拟终端、真实本机管道、隔离PostgreSQL、浏览器测试。

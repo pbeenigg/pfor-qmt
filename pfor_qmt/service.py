@@ -1,4 +1,5 @@
 import json
+import copy
 import os
 import queue
 import secrets
@@ -25,7 +26,7 @@ class Application:
         self.lock = threading.RLock()
         self.sessions, self.tickets = {}, {}
         self.worker = Worker(self.store, self.settings.runtime, self.publish, self.source)
-        self.ws_port = 8767
+        self.ws_port = self.settings.value('ws_port')
 
     def publish(self, event):
         with self.lock:
@@ -45,41 +46,57 @@ class Application:
         if method == 'GET' and path == '/settings':
             return self.settings.public()
         if method == 'POST' and path == '/settings':
-            if 'dsn' in p and p['dsn']:
-                if os.environ.get('PFOR_QMT_DATABASE_URL'):
+            candidate = copy.deepcopy(self.settings)
+            changing_database = bool(p.get('dsn'))
+            if changing_database:
+                if 'PFOR_QMT_DATABASE_URL' in os.environ:
                     raise ValueError('连接由 PFOR_QMT_DATABASE_URL 管理，请修改环境变量并重启服务')
-                Store(p['dsn']).connect().close()
+                candidate.data['dsn'] = p['dsn']
+            if 'qmt_root' in p:
+                if 'PFOR_QMT_QMT_ROOT' in os.environ:
+                    if p['qmt_root'] != self.settings.qmt_root:
+                        raise ValueError('QMT 目录由 PFOR_QMT_QMT_ROOT 管理，请修改环境变量并重启服务')
+                else:
+                    candidate.data['qmt_root'] = p['qmt_root']
+            if 'login_enabled' in p and not isinstance(p['login_enabled'], bool):
+                raise ValueError('login_enabled 必须为布尔值')
+            if p.get('login_enabled') is False:
+                candidate.set_password('')
+            elif 'password' in p and p['password']:
+                candidate.set_password(p['password'])
+            elif p.get('login_enabled') and not candidate.data['login_hash']:
+                raise ValueError('启用网页登录密码时，需要设置至少 12 位的密码')
+            candidate._validate()
+            if changing_database:
+                Store(candidate.dsn).connect().close()
                 self.worker.stop.set()
                 if self.worker.thread:
                     self.worker.thread.join(timeout=6)
                     if self.worker.thread.is_alive():
                         raise ValueError('当前任务正在保存检查点，请稍后再次保存连接')
-                self.settings.data['dsn'] = p['dsn']
-                store.dsn = p['dsn']
+            try:
+                candidate.save()
+            except Exception:
+                if changing_database:
+                    self.worker = Worker(store, self.settings.runtime, self.publish, self.source)
+                    self.worker.start()
+                raise
+            self.settings = candidate
+            if changing_database:
+                store.dsn = candidate.dsn
                 self.worker = Worker(store, self.settings.runtime, self.publish, self.source)
                 self.worker.start()
-            if 'qmt_root' in p:
-                self.settings.data['qmt_root'] = p['qmt_root']
-            if 'login_enabled' in p and not isinstance(p['login_enabled'], bool):
-                raise ValueError('login_enabled 必须为布尔值')
-            if p.get('login_enabled') is False:
-                self.settings.set_password('')
-            elif 'password' in p and p['password']:
-                self.settings.set_password(p['password'])
-            elif p.get('login_enabled') and not self.settings.data['login_hash']:
-                raise ValueError('启用网页登录密码时，需要设置至少 12 位的密码')
-            self.settings.save()
             return self.settings.public()
         if method == 'POST' and path == '/database/migrate':
             store.migrate()
             return store.health()
         if method == 'POST' and path.startswith('/deploy/'):
             action = path.rsplit('/', 1)[-1]
-            root = p.get('qmt_root') or self.settings.data['qmt_root']
+            root = p.get('qmt_root') or self.settings.qmt_root
             if action == 'inspect':
                 return inspect_root(root)
             if action == 'prepare':
-                return prepare(root)
+                return prepare(root, pipe_config=self.settings.pipe)
             if action == 'activate':
                 return activate(root, p.get('account', ''))
         if method == 'GET' and path == '/securities':

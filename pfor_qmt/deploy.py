@@ -48,7 +48,7 @@ def inspect_root(value):
             'managed': (root / 'pfor_qmt_managed' / 'ownership.json').exists()}
 
 
-def prepare(value, process_checker=running):
+def prepare(value, process_checker=running, pipe_config=None):
     root = root_path(value)
     if process_checker(root):
         raise ValueError('请退出 QMT 后再部署；不会自动结束终端')
@@ -66,6 +66,11 @@ def prepare(value, process_checker=running):
     import qmt_scripts
     source = (Path(qmt_scripts.__file__).parent / 'PFOR_MARKET.py').read_text('ascii')
     source = source.replace("PFOR_RUNTIME = ''", 'PFOR_RUNTIME = ' + ascii(str(folder)))
+    if pipe_config is not None:
+        from .config import get_config
+        if set(pipe_config) != set(get_config()):
+            raise ValueError('无效的行情连接配置')
+        source = source.replace('PFOR_PIPE = {}', 'PFOR_PIPE = ' + ascii(pipe_config))
     if script.exists():
         atomic(root / 'pfor_qmt_managed' / 'backups' / (uuid.uuid4().hex + '.py'), script.read_bytes())
         atomic(script, source.encode('gbk'))

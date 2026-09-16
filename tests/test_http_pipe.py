@@ -23,7 +23,7 @@ from pfor_qmt.settings import Settings
 
 @pytest.fixture
 def app_server(store,tmp_path):
-    app = Application(Settings(tmp_path),store=store)
+    app = Application(Settings(tmp_path,config_path=tmp_path / 'config.toml'),store=store)
     server = HTTPServer(('127.0.0.1',0),handler_for(app))
     thread = threading.Thread(target=server.serve_forever,daemon=True)
     thread.start()
@@ -81,6 +81,29 @@ def test_optional_login_password_enable_and_disable(app_server):
         assert json.load(response)['ok']
     client.request('/settings',{'login_enabled':False})
     assert not app.settings.check_password(password)
+    loaded = Settings(config_path=app.settings.path)
+    assert loaded.path.suffix == '.toml' and not loaded.check_password(password)
+    assert not (app.settings.runtime / 'settings.local.json').exists()
+
+
+@pytest.mark.postgres
+def test_rejected_settings_do_not_modify_live_or_persisted_config(app_server):
+    app, server, client = app_server
+    original = app.settings.path.read_bytes()
+    with pytest.raises(HTTPError) as failure:
+        client.request('/settings',{'qmt_root':'D:/invalid-change','login_enabled':True,'password':'short'})
+    assert failure.value.code == 400
+    assert app.settings.qmt_root == ''
+    assert app.settings.path.read_bytes() == original
+
+
+@pytest.mark.postgres
+def test_environment_qmt_path_is_not_written_back(app_server,monkeypatch):
+    app, server, client = app_server
+    monkeypatch.setenv('PFOR_QMT_QMT_ROOT','D:/EnvironmentQMT')
+    client.request('/settings',{'qmt_root':app.settings.qmt_root,'login_enabled':False})
+    monkeypatch.delenv('PFOR_QMT_QMT_ROOT')
+    assert Settings(config_path=app.settings.path).qmt_root == ''
 
 
 @pytest.mark.postgres

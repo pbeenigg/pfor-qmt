@@ -6,11 +6,12 @@ import threading
 
 def main():
     parser = argparse.ArgumentParser(prog='pfor-qmt')
-    parser.add_argument('--runtime', default='runtime')
+    parser.add_argument('--config', help='本地 TOML 配置路径，默认 ./config.toml')
+    parser.add_argument('--runtime', help='临时覆盖运行目录')
     commands = parser.add_subparsers(dest='command', required=True)
     serve = commands.add_parser('serve')
-    serve.add_argument('--port', type=int, default=8766)
-    serve.add_argument('--ws-port', type=int, default=8767)
+    serve.add_argument('--port', type=int)
+    serve.add_argument('--ws-port', type=int)
     commands.add_parser('key')
     commands.add_parser('migrate')
     configure = commands.add_parser('configure')
@@ -22,9 +23,9 @@ def main():
     deploy.add_argument('--account', default='')
     args = parser.parse_args()
     from .settings import Settings
-    settings = Settings(args.runtime)
+    settings = Settings(args.runtime, args.config, getattr(args,'port',None), getattr(args,'ws_port',None))
     if args.command == 'key':
-        print(settings.data['api_key'])
+        print(settings.api_key)
         return
     if args.command == 'configure':
         if args.qmt_root:
@@ -43,8 +44,9 @@ def main():
     if args.command == 'deploy':
         from . import deploy
         function = getattr(deploy, 'inspect_root' if args.action == 'inspect' else args.action)
-        root = args.qmt_root or settings.data['qmt_root']
-        print(json.dumps(function(root, args.account) if args.action == 'activate' else function(root), ensure_ascii=False))
+        root = args.qmt_root or settings.qmt_root
+        result = function(root, args.account) if args.action == 'activate' else function(root, pipe_config=settings.pipe) if args.action == 'prepare' else function(root)
+        print(json.dumps(result, ensure_ascii=False))
         return
     from .service import Application
     from .server import HTTPServer, handler_for, start_websocket
@@ -52,13 +54,19 @@ def main():
     from .instance import ServiceInstance
     instance = ServiceInstance()
     os.environ['PFOR_QMT_RUNTIME_DIR'] = str(settings.runtime)
+    from .client import configure as configure_pipe
+    configure_pipe(**settings.pipe)
     app = Application(settings)
-    server = HTTPServer(('127.0.0.1', args.port), handler_for(app))
-    websocket = start_websocket(app, args.ws_port, args.port)
-    hub = MarketHub(show=False)
+    port, ws_port = settings.value('port'), settings.value('ws_port')
+    server = HTTPServer(('127.0.0.1', port), handler_for(app))
+    websocket = start_websocket(app, ws_port, port)
+    hub = MarketHub(pipe_name=settings.pipe['pipe_name'], default_request_channel=settings.pipe['request_channel'], show=False)
+    hub.pending_timeout_seconds = settings.value('pending_timeout')
+    hub.qmt_heartbeat_timeout_seconds = settings.value('heartbeat_timeout')
+    hub.maintenance_interval_seconds = settings.value('maintenance_interval')
     threading.Thread(target=hub.start, daemon=True, name='pfor-pipe-hub').start()
     app.worker.start()
-    print('pfor-qmt: http://127.0.0.1:%s (WebSocket %s)' % (args.port, args.ws_port), flush=True)
+    print('pfor-qmt: http://127.0.0.1:%s (WebSocket %s)' % (port, ws_port), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

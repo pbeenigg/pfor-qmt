@@ -4,6 +4,12 @@ from urllib.request import Request, urlopen
 
 
 class DataClient:
+    @classmethod
+    def from_config(cls, config_path=None):
+        from .settings import Settings
+        settings = Settings(config_path=config_path)
+        return cls(base_url='http://127.0.0.1:' + str(settings.value('port')), api_key=settings.api_key)
+
     def __init__(self, base_url='http://127.0.0.1:8766', api_key='', timeout=30):
         self.base_url, self.api_key, self.timeout = base_url.rstrip('/'), api_key, timeout
 

@@ -11,5 +11,7 @@ exports/
 output/
 .env
 *.local.json
+config.toml
+*.local.toml
 .playwright-cli/
 node_modules/

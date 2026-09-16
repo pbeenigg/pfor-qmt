@@ -1,4 +1,4 @@
-"""Embedded-safe pipe configuration; application settings live in settings.py."""
+"""Python 3.6 safe pipe settings, populated from TOML by the host/deployer."""
 import os
 
 _config = {
@@ -6,6 +6,7 @@ _config = {
     "request_channel": "pfor_qmt.market.request",
     "timeout": 15.0,
     "pipe_connect_timeout_ms": 1500,
+    "heartbeat_seconds": 10.0,
 }
 
 

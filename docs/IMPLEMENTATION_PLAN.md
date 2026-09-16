@@ -4,7 +4,7 @@
 
 规范已首先写入并单独提交。固定来源迁入、纯行情桥、SDK、PostgreSQL迁移、持久化任务、Web五个页面、导出、独立部署向导和打包已实现。完整自动化验证78项通过，包括隔离PostgreSQL、真实本机管道和Chromium。
 
-用户真实数据库和QMT配置尚未提供，实机部署与行情小样本验收未执行；不宣称整个计划已经实机验收。详见VERIFICATION.md与LIVE_ACCEPTANCE.md。
+后续统一配置更新已接通用户本机PostgreSQL16.15，初始化指定数据库与schema，完整测试增至102项通过。QMT配置尚未提供，实机部署与行情小样本验收未执行；不宣称整个计划已经实机验收。详见VERIFICATION.md与LIVE_ACCEPTANCE.md。
 
 ## 已确认范围
 

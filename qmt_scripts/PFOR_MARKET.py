@@ -5,9 +5,12 @@ import sys
 
 # The deployer replaces this value with the isolated embedded runtime directory.
 PFOR_RUNTIME = ''
+PFOR_PIPE = {}
 if PFOR_RUNTIME:
     sys.path.insert(0, PFOR_RUNTIME)
 
+from pfor_qmt.config import configure
+configure(**PFOR_PIPE)
 from pfor_qmt.market_bridge import MarketBridge
 
 _bridge = None

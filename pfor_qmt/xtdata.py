@@ -5,6 +5,12 @@ from .protocol import new_id
 _subscriptions = {}
 
 
+def configure_from_file(config_path=None):
+    """Load the host's central TOML configuration for a standalone SDK process."""
+    from .settings import Settings
+    configure(**Settings(config_path=config_path).pipe)
+
+
 def get_full_tick(code_list):
     return get_client().request("xtdata.get_full_tick", {"code_list": list(code_list)})
 

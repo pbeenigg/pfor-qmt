@@ -57,3 +57,17 @@ def test_concurrent_config_change_aborts_write(terminal):
     with pytest.raises(ValueError,match='并发修改'):
         activate(terminal,process_checker=check)
     assert b'PFOR_MARKET' not in config.read_bytes()
+
+
+def test_deployment_only_embeds_market_settings(terminal):
+    from pfor_qmt.config import get_config
+    (terminal / 'pfor_qmt_managed').mkdir()
+    (terminal / 'pfor_qmt_managed' / 'ownership.json').write_text('{"model":"PFOR_MARKET"}')
+    (terminal / 'python' / 'PFOR_MARKET.py').write_text('# imported')
+    pipe = dict(get_config(),pipe_name=r'\\.\pipe\pfor_qmt_custom',timeout=25.0)
+    prepare(terminal,process_checker=lambda root:False,pipe_config=pipe)
+    script = (terminal / 'python' / 'PFOR_MARKET.py').read_text('gbk')
+    tree = ast.parse(script,feature_version=(3,6))
+    assignment = next(node for node in tree.body if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id == 'PFOR_PIPE' for target in node.targets))
+    assert ast.literal_eval(assignment.value) == pipe
+    assert 'dsn' not in script and 'api_key' not in script

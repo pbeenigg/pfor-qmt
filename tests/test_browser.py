@@ -19,7 +19,7 @@ from pfor_qmt.settings import Settings
 def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path):
     if os.environ.get('PFOR_QMT_BROWSER_TEST') != '1':
         pytest.skip('设置 PFOR_QMT_BROWSER_TEST=1 执行浏览器验收')
-    app = Application(Settings(tmp_path),store=store)
+    app = Application(Settings(tmp_path,config_path=tmp_path / 'config.toml'),store=store)
     # Only this isolated test schema contains these synthetic prices.
     seed = store.create_job('download',{'members':['000300.SH'],'periods':['1d']})
     start = datetime(2026,9,1,tzinfo=SHANGHAI)

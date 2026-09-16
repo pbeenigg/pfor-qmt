@@ -1,0 +1,32 @@
+# Local configuration: copy to config.toml. Never commit credentials.
+# Precedence: CLI > PFOR_QMT_* environment > TOML > defaults.
+# Relative paths are resolved against this file's directory.
+
+[app]
+runtime_dir = "runtime"
+
+[server]
+# Listen address is fixed to 127.0.0.1.
+port = 8766
+ws_port = 8767
+
+[database]
+dsn = "" # postgresql://USER:PASSWORD@localhost:5432/pfor_qmt
+# Schema is fixed to pfor_qmt; do not use another application's schema.
+
+[qmt]
+root = ""
+pipe_name = '\\.\pipe\pfor_qmt_pipe_hub'
+request_channel = "pfor_qmt.market.request"
+timeout = 15.0
+connect_timeout_ms = 1500
+heartbeat_seconds = 10.0
+
+[hub]
+pending_timeout = 60.0
+heartbeat_timeout = 30.0
+maintenance_interval = 2.0
+
+[security]
+api_key = "" # Generated on first startup, or migrated from legacy settings.
+login_hash = "" # Managed by the settings page; never put a plaintext password here.
