@@ -1,0 +1,15 @@
+{
+  "commit": "5baa4daf8dab01fb415afdd45a72cd254cea042f",
+  "files": [
+    {
+      "source": "cfquant/protocol.py",
+      "sha256": "e39a75efaa0aad8a4e30fef879e74fe1b3b436b8e98b05f8e54013d53a1c4cad",
+      "target": "tests\\reference\\protocol.py"
+    },
+    {
+      "source": "cfquant/tests/test_json_serialization.py",
+      "sha256": "d56dd023c439f05dbb2fc3a1053ece7c6e3d1b2af8c1e4f572c857e7476b220d",
+      "target": "tests\\test_upstream_json.py"
+    }
+  ]
+}
