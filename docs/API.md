@@ -9,7 +9,8 @@
 | GET | /status, /settings | 脱敏连接状态和配置 |
 | POST | /settings | dsn、qmt_root、可选password；空密码不修改；login_enabled布尔值显式启停密码登录 |
 | POST | /database/migrate | 初始化/升级独立schema |
-| POST | /source/test | 检查真实QMT行情桥 |
+| POST | /source/test | 只检查行情桥ping，不代表行情服务器已登录 |
+| POST | /source/diagnostics | 可选code，默认000300.SH；只读检查桥、快照、近30天本地日线与交易日历 |
 | GET | /quotes | codes逗号分隔，读取QMT快照 |
 | GET | /securities | search、kind，可在终端离线时查库 |
 | POST | /securities/sync | members数组、kind=stock/index/etf，最多100证券 |
@@ -33,6 +34,8 @@
 
 WebSocket默认 `ws://127.0.0.1:8767/?ticket=...`。不在URL传API Key。发送 `{"action":"watch","codes":["000300.SH"]}` 订阅；接收 `event=quote/job/source/error`，最新行情不会入库。页面重连时重新取得票据和订阅。事件队列有界，缓慢客户端应通过任务GET或行情快照重新同步。
 
+诊断返回 `checks` 数组，每项含name、state、message，适用时含rows和time。state为 `ok/empty/error/unverified`；桥失败则后续项未验证。`history_readable=true` 只表示有可读日线和区间内交易日历，不承诺行情在线、数据完整或下载通过。诊断不触发下载，不保存资料或历史数据。
+
 ## 时间、数值与覆盖
 
 日期为 `YYYY-MM-DD`，查询包含结束日。行情时间以Asia/Shanghai解析；日线统一到交易日零点，分钟保留原始行情时间。QMT毫秒epoch与YYYYMMDD/YYYYMMDDHHMMSS格式显式解析。
@@ -40,3 +43,5 @@ WebSocket默认 `ws://127.0.0.1:8767/?ticket=...`。不在URL传API Key。发送
 所有历史来源是 `postgresql`，adjustment为none。价格、量额以十进制字符串传给HTTP/SDK，空值是null。CSV为UTF-8 BOM、空字段代表NULL；Parquet由PyArrow生成，数值列string避免截断，NULL仍为null。UI图表转换为JS Number只用于显示，表格和导出不丢失数据库精度。
 
 任务状态partial表示已处理但仍有未确认空段、缺口或不可取得的因子。分钟内覆盖需要对终端时段进一步验证，不能把已有行数等同于完整数据。业务完成以读回校验与入库为准，不使用订阅号或下载请求返回值作为成功依据。
+
+历史和日历同时为空时任务失败并停止后续分块，当前检查点不推进；仅行情为空但日历可读仍为partial。failed/cancelled下载重试从检查点继续，partial重试从0开始。调度不能取得日历或最近五个交易日时，在 `/status` 的worker字段说明原因，不猜测交易日或自动登录。
