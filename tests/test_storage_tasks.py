@@ -139,6 +139,16 @@ def test_network_failure_retried_three_times(store,tmp_path):
 
 
 @pytest.mark.postgres
+def test_rejected_download_cannot_succeed_from_existing_cache(store,tmp_path):
+    source = Source()
+    source.download_history_data2 = lambda *args: {'000300.SH':-1}
+    job = make_job(store)
+    Worker(store,tmp_path,source=source).execute(job)
+    assert store.job(job['id'])['state'] == 'failed'
+    assert store.history('000300.SH')['rows'] == []
+
+
+@pytest.mark.postgres
 def test_schedule_cutoff_and_deduplication(store,tmp_path):
     dataset = store.create_dataset({'name':'test-index','members':['000300.SH'],'periods':['1d'],'scheduled':True})
     store.query("UPDATE datasets SET schedule_from='2026-09-14' WHERE id=%s",(dataset['id'],))

@@ -15,6 +15,14 @@ def document(value):
     return Jsonb(value, dumps=lambda obj: json.dumps(obj, default=json_default, allow_nan=False))
 
 
+def job_summary(job):
+    result = dict(job)
+    result['payload'] = dict(job['payload'])
+    result['total_chunks'] = len(result['payload'].pop('chunks', []))
+    result['result'] = {key:value for key,value in job['result'].items() if key != 'coverage'}
+    return result
+
+
 class Store:
     def __init__(self, dsn, schema='pfor_qmt'):
         if schema != 'pfor_qmt' and not re.fullmatch(r'pfor_qmt_test_[a-z0-9_]+', schema):
@@ -79,6 +87,8 @@ class Store:
         name = str(payload.get('name', '')).strip()
         if not name or len(name) > 100:
             raise ValueError('数据集名称需要 1 至 100 个字符')
+        if not isinstance(payload.get('scheduled', False), bool):
+            raise ValueError('scheduled 必须为布尔值')
         snapshot = payload.get('snapshot_id')
         index_code = payload.get('index_code')
         if index_code:

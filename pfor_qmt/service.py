@@ -12,7 +12,7 @@ from .data import codes, periods, chunks, day, SHANGHAI, json_default
 from .deploy import inspect_root, prepare, activate
 from .protocol import encode_value
 from .settings import Settings
-from .storage import Store
+from .storage import Store, job_summary
 from .tasks import Worker
 
 
@@ -110,6 +110,8 @@ class Application:
             if not dataset:
                 raise ValueError('数据集不存在')
             if method == 'POST' and len(parts) == 3 and parts[2] == 'schedule':
+                if not isinstance(p.get('enabled'), bool):
+                    raise ValueError('enabled 必须为布尔值')
                 store.query('UPDATE datasets SET scheduled=%s,schedule_from=%s WHERE id=%s', (bool(p['enabled']), datetime.now(SHANGHAI).date(), parts[1]))
                 return {'scheduled': bool(p['enabled'])}
             if method == 'POST' and len(parts) == 3 and parts[2] == 'refresh':
@@ -131,14 +133,14 @@ class Application:
             return store.query('SELECT day FROM trading_dates WHERE market=%s AND day BETWEEN %s AND %s ORDER BY day',
                                (market,day(p.get('start','1990-01-01')),day(p.get('end','2100-01-01'))))
         if method == 'GET' and path == '/jobs':
-            return store.query('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 200')
+            return store.query("SELECT id,kind,state,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,result-'coverage' AS result,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200")
         if method == 'POST' and path == '/downloads':
             dataset = store.query('SELECT * FROM datasets WHERE id=%s', (p['dataset_id'],), one=True)
             if not dataset:
                 raise ValueError('数据集不存在')
             payload = {'dataset_id': str(dataset['id']), 'members': dataset['members'], 'periods': dataset['periods'], 'start': p.get('start'), 'end': p.get('end')}
             payload['chunks'] = chunks(payload)
-            return store.create_job('download', payload)
+            return job_summary(store.create_job('download', payload))
         if method == 'POST' and path == '/exports':
             payload = dict(members=codes(p['members']), period=periods([p['period']])[0], start=day(p['start']).isoformat(), end=day(p['end']).isoformat(), format=p['format'])
             if payload['format'] not in ('csv','parquet') or day(payload['start']) > day(payload['end']):

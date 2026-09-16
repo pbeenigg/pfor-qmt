@@ -8,6 +8,7 @@ from . import xtdata
 from .client import CfquantError, CfquantTimeout
 from .data import SHANGHAI, FIELDS, chunks, day, timestamp, normalize_bars, json_default
 from .protocol import encode_value
+from .storage import job_summary
 
 
 class Cancelled(Exception):
@@ -87,7 +88,7 @@ class Worker:
             message = str(error) if isinstance(error, (ValueError, NotImplementedError, CfquantError)) else type(error).__name__ + ': 任务失败，请检查数据源与连接'
             self.store.update_job(identifier, state='failed', error=message[:800])
         finally:
-            self.publish({'event': 'job', 'data': self.store.job(identifier)})
+            self.publish({'event': 'job', 'data': job_summary(self.store.job(identifier))})
 
     def retry_network(self, identifier, operation):
         for attempt in range(4):
@@ -150,7 +151,7 @@ class Worker:
                 gaps.append({'reason': '当前终端未提供复权因子'})
             self.check(identifier)
             self.store.write_chunk(identifier, part, rows, gaps, index + 1, factor)
-            self.publish({'event': 'job', 'data': self.store.job(identifier)})
+            self.publish({'event': 'job', 'data': job_summary(self.store.job(identifier))})
         coverage = self.store.query('SELECT * FROM coverage WHERE job_id=%s ORDER BY code,period,requested_start', (identifier,))
         total = sum(item['row_count'] for item in coverage)
         uncertain = any(item['gaps'] for item in coverage)
