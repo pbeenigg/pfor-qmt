@@ -27,10 +27,14 @@ def running(root):
     if os.name != 'nt':
         return False
     result = subprocess.run(['powershell', '-NoProfile', '-Command',
-        'Get-CimInstance Win32_Process -Filter "name=\'XtItClient.exe\'" | Select-Object -ExpandProperty ExecutablePath'], capture_output=True, text=True)
+        '$ErrorActionPreference = "Stop"; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); '
+        'Get-CimInstance Win32_Process -Filter "name=\'XtItClient.exe\'" | '
+        'ForEach-Object { if (-not $_.ExecutablePath) { throw "Process path unavailable" }; $_.ExecutablePath }'],
+        capture_output=True, text=True, encoding='utf-8', timeout=15)
     if result.returncode:
         raise ValueError('无法核实 QMT 是否退出，请检查进程查询权限')
-    return any(str(root).lower() in line.strip().lower() for line in result.stdout.splitlines())
+    target = (Path(root) / 'bin.x64' / 'XtItClient.exe').resolve()
+    return any(Path(line.strip()).resolve() == target for line in result.stdout.splitlines() if line.strip())
 
 
 def atomic(path, content):

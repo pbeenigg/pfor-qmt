@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,6 +54,43 @@ def test_http_auth_no_secret_disclosure_and_sdk_roundtrip(app_server):
     with pytest.raises(HTTPError) as failure:
         client.request('/xttrader/order_stock',{})
     assert failure.value.code == 404
+
+
+@pytest.mark.postgres
+def test_readonly_diagnostics_distinguish_bridge_and_history(app_server,monkeypatch):
+    from pfor_qmt import service
+    app, server, client = app_server
+    monkeypatch.setattr(service,'get_client',lambda: SimpleNamespace(request=lambda *args,**kwargs: {'mode':'market-only'}))
+    app.source = SimpleNamespace(get_full_tick=lambda codes:{codes[0]:{'lastPrice':10}},
+                                get_local_data=lambda **kwargs:{},get_trading_dates=lambda *args:[])
+    report = client.request('/source/diagnostics',{})
+    assert not report['history_readable']
+    assert [item['state'] for item in report['checks']] == ['ok','ok','empty','empty']
+    assert not app.store.query('SELECT * FROM jobs')
+    assert not app.store.query('SELECT * FROM bars')
+    with pytest.raises(HTTPError) as failure:
+        DataClient(client.base_url).request('/source/diagnostics',{})
+    assert failure.value.code == 401
+
+
+@pytest.mark.postgres
+def test_acceptance_tool_download_query_repeat_and_exports(app_server,tmp_path):
+    from tools.live_acceptance import run
+    from test_storage_tasks import Source
+    app, server, client = app_server
+    app.worker.source = Source()
+    app.worker.start()
+    report = {}
+    try:
+        run(client,app.store,tmp_path,'2026-09-14','2026-09-14',report)
+        assert report['state'] == 'passed'
+        assert report['rows'] == 3
+        assert report['duplicate_upsert'] == report['database_sdk'] == 'passed'
+        assert report['exports'] == {'csv':'passed','parquet':'passed'}
+        assert len(report['jobs']) == 4
+    finally:
+        app.worker.stop.set()
+        app.worker.thread.join(timeout=5)
 
 
 @pytest.mark.postgres

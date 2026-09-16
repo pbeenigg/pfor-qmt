@@ -43,6 +43,9 @@ class Application:
                     'worker': self.worker.last_error, 'version': '0.1.0', 'ws_port': self.ws_port}
         if method == 'POST' and path == '/source/test':
             return get_client().request('pfor.ping', timeout=4)
+        if method == 'POST' and path == '/source/diagnostics':
+            from .diagnostics import check_source
+            return check_source(self.source, lambda: get_client().request('pfor.ping', timeout=4), p.get('code', '000300.SH'))
         if method == 'GET' and path == '/settings':
             return self.settings.public()
         if method == 'POST' and path == '/settings':

@@ -130,6 +130,8 @@ class Worker:
             rows = self.retry_network(identifier, read)
             self.check(identifier)
             calendar = self.retry_network(identifier, lambda: self.source.get_trading_dates(code, start.strftime('%Y%m%d'), end.strftime('%Y%m%d')))
+            if not rows and not calendar:
+                raise ValueError('QMT 历史行情和交易日历均为空，已停止后续下载；请检查终端行情服务器登录与连接，恢复后重试。当前分块未推进检查点')
             trading_days = sorted({timestamp(value).date() for value in calendar})
             with self.store.connect() as conn:
                 with conn.cursor() as cursor:
@@ -156,21 +158,27 @@ class Worker:
         total = sum(item['row_count'] for item in coverage)
         uncertain = any(item['gaps'] for item in coverage)
         return {'state': 'partial' if uncertain else 'completed', 'rows': total, 'coverage': coverage,
-                'message': '已入库，存在未确认缺口' if uncertain else '实际读回并完成入库'}
+                'message': '未读到行情，未写入 K 线' if not total else '已入库，存在未确认缺口' if uncertain else '实际读回并完成入库'}
 
     def schedule(self, now=None):
         now = now or datetime.now(SHANGHAI)
         cutoff = now.date() if now.hour >= 17 else now.date() - timedelta(days=1)
         datasets = self.store.query('SELECT * FROM datasets WHERE scheduled=true')
+        self.last_error = ''
         for dataset in datasets:
+            if dataset['schedule_from'] > cutoff:
+                continue
             # Refresh an authoritative calendar; no weekday-based holiday guessing.
             try:
                 calendar = self.source.get_trading_dates('000001.SH', dataset['schedule_from'].strftime('%Y%m%d'), cutoff.strftime('%Y%m%d'))
                 dates = sorted({timestamp(value).date() for value in calendar if dataset['schedule_from'] <= timestamp(value).date() <= cutoff})
+                if not dates:
+                    self.last_error = '交易日历为空，无法确认到期交易日，调度等待重试'
                 with self.store.connect() as conn:
                     with conn.cursor() as cursor:
                         cursor.executemany('INSERT INTO trading_dates(market,day) VALUES(%s,%s) ON CONFLICT DO NOTHING', [('SH', item) for item in dates])
             except Exception:
+                self.last_error = '交易日历请求失败，调度仅使用已保存日期并等待重试'
                 dates = [row['day'] for row in self.store.query("SELECT day FROM trading_dates WHERE market='SH' AND day BETWEEN %s AND %s ORDER BY day", (dataset['schedule_from'], cutoff))]
             for date in dates:
                 key = str(dataset['id']) + ':' + date.isoformat()
@@ -180,6 +188,7 @@ class Worker:
                     previous = self.source.get_trading_dates('000001.SH', '', date.strftime('%Y%m%d'), 5)
                     days = sorted(timestamp(value).date() for value in previous)
                     if len(days) < 5:
+                        self.last_error = '最近五个交易日尚未就绪，调度等待重试'
                         continue
                     payload = {'dataset_id': str(dataset['id']), 'members': dataset['members'], 'periods': dataset['periods'],
                                'start': days[-5].isoformat(), 'end': date.isoformat()}

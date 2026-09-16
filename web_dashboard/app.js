@@ -102,7 +102,7 @@ async function connectSocket() {
     if (message.event === 'quote') renderQuotes(message.data);
     if (message.event === 'job' && state.view === 'jobs') loadJobs().catch((error) => notice(error.message));
     if (message.event === 'source') {
-      $('#qmt-state').textContent = message.connected ? 'QMT 已连接' : 'QMT 未连接';
+      $('#qmt-state').textContent = message.connected ? '行情桥已连接' : '行情桥未连接';
       $('#qmt-state').classList.toggle('online', !!message.connected);
     }
     if (message.event === 'error') notice(message.message);
@@ -110,7 +110,7 @@ async function connectSocket() {
   socket.onclose = () => {
     if (state.socket !== socket) return;
     state.socket = null;
-    $('#qmt-state').textContent = 'QMT 待检查';
+    $('#qmt-state').textContent = '行情桥待检查';
     $('#qmt-state').classList.remove('online');
     if (state.authenticated) state.reconnect = setTimeout(() => connectSocket().catch((error) => notice(error.message)), 5000);
   };
@@ -199,7 +199,25 @@ $('#refresh-jobs').addEventListener('click', action(loadJobs));
 $('#settings-form [name="login_enabled"]').addEventListener('change', (event) => { $('#settings-form [name="password"]').disabled = !event.target.checked; });
 $('#settings-form').addEventListener('submit', action(async () => { const p = values($('#settings-form')); p.login_enabled = $('#settings-form [name="login_enabled"]').checked; await api('/settings', p); $('#settings-form [name="dsn"]').value = ''; $('#settings-form [name="password"]').value = ''; await status(); notice('本地配置已保存'); }));
 $('#migrate').addEventListener('click', action(async () => { await api('/database/migrate', {}); await status(); notice('历史库已初始化'); }));
-$('#test-source').addEventListener('click', action(async () => { const result = await api('/source/test', {}); $('#source-result').textContent = result.mode === 'market-only' ? '行情源连接正常' : '响应已收到'; $('#qmt-state').textContent = 'QMT 已连接'; $('#qmt-state').classList.add('online'); }));
+$('#test-source').addEventListener('click', action(async () => { const result = await api('/source/test', {}); $('#source-result').textContent = result.mode === 'market-only' ? '行情桥连接正常' : '响应已收到'; $('#qmt-state').textContent = '行情桥已连接'; $('#qmt-state').classList.add('online'); }));
+$('#diagnose-source').addEventListener('click', action(async () => {
+  $('#source-result').textContent = '正在检查 000300.SH';
+  $('#source-diagnostics').hidden = true;
+  try {
+    const result = await api('/source/diagnostics', {});
+    const bridgeOk = result.checks.find((check) => check.name === 'bridge')?.state === 'ok';
+    $('#qmt-state').textContent = bridgeOk ? '行情桥已连接' : '行情桥未连接';
+    $('#qmt-state').classList.toggle('online', bridgeOk);
+    const labels = { bridge:'行情桥', snapshot:'行情快照', history:'近30天本地日线', calendar:'近30天交易日期' };
+    const states = { ok:'可用', empty:'空结果', error:'失败', unverified:'未验证' };
+    $('#source-checks').innerHTML = result.checks.map((check) => `<tr><td>${escape(labels[check.name])}</td><td>${escape(states[check.state])}</td><td>${escape(check.message)}${check.rows !== undefined ? ` · ${check.rows} 条` : ''}${check.time ? `<span class="muted">${formatTime(check.time)}</span>` : ''}</td></tr>`).join('');
+    $('#source-diagnostics').hidden = false;
+    $('#source-result').textContent = result.history_readable ? '本地历史数据可读，下载覆盖未验收' : '历史链路未就绪，请检查终端行情连接与历史缓存';
+  } catch (error) {
+    $('#source-result').textContent = '检查失败';
+    throw error;
+  }
+}));
 $$('[data-deploy]').forEach((button) => button.addEventListener('click', action(async () => { const result = await api('/deploy/' + button.dataset.deploy, { qmt_root:values($('#settings-form')).qmt_root }); $('#deploy-result').hidden = false; $('#deploy-result').textContent = JSON.stringify(result,null,2); })));
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('button');

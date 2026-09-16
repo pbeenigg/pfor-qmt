@@ -5,6 +5,8 @@ from xml.dom import minidom
 
 import pytest
 from pfor_qmt.deploy import prepare, activate, EMBEDDED
+from pfor_qmt import deploy
+from types import SimpleNamespace
 
 
 @pytest.fixture
@@ -71,3 +73,24 @@ def test_deployment_only_embeds_market_settings(terminal):
     assignment = next(node for node in tree.body if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id == 'PFOR_PIPE' for target in node.targets))
     assert ast.literal_eval(assignment.value) == pipe
     assert 'dsn' not in script and 'api_key' not in script
+
+
+def test_running_process_uses_utf8_and_exact_path(tmp_path,monkeypatch):
+    root = tmp_path / '中文QMT'
+    seen = []
+    def query(command, **kwargs):
+        seen.append((command,kwargs))
+        return SimpleNamespace(returncode=0, stdout=str(root / 'bin.x64' / 'XtItClient.exe') + '\n')
+    monkeypatch.setattr(deploy.subprocess,'run',query)
+    assert deploy.running(root)
+    assert not deploy.running(tmp_path / '中文')
+    assert seen[0][1]['encoding'] == 'utf-8'
+    assert 'OutputEncoding' in seen[0][0][-1]
+    assert 'throw' in seen[0][0][-1]
+
+
+def test_failed_process_check_blocks_deployment(terminal,monkeypatch):
+    monkeypatch.setattr(deploy.subprocess,'run',lambda *args,**kwargs: SimpleNamespace(returncode=1,stdout=''))
+    with pytest.raises(ValueError,match='无法核实'):
+        prepare(terminal)
+    assert not (terminal / 'pfor_qmt_managed').exists()

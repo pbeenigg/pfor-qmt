@@ -119,6 +119,7 @@ def test_empty_table_partial_and_missing_capability_not_retried(store,tmp_path):
     worker.execute(job)
     result = store.job(job['id'])
     assert result['state'] == 'partial' and result['result']['rows'] == 0
+    assert result['result']['message'] == '未读到行情，未写入 K 线'
     source.fail = NotImplementedError('Capability absent')
     job2 = make_job(store)
     worker.execute(job2)
@@ -136,6 +137,64 @@ def test_network_failure_retried_three_times(store,tmp_path):
     worker.execute(job)
     assert len(source.downloads) == 4
     assert store.job(job['id'])['state'] == 'failed'
+
+
+@pytest.mark.postgres
+def test_empty_history_and_calendar_stop_without_advancing_checkpoint(store,tmp_path):
+    source = Source()
+    source.empty = True
+    source.get_trading_dates = lambda *args: []
+    worker = Worker(store,tmp_path,source=source)
+    worker.stop.wait = lambda seconds: False
+    job = make_job(store,['000300.SH','000001.SZ'])
+    worker.execute(job)
+    result = store.job(job['id'])
+    assert result['state'] == 'failed' and result['checkpoint'] == 0
+    assert '行情服务器' in result['error']
+    assert len(source.downloads) == 1
+    assert not store.query('SELECT * FROM bars')
+    assert not store.query('SELECT * FROM coverage')
+    # Retrying after recovery includes the failed chunk, not just later symbols.
+    source.empty = False
+    source.get_trading_dates = Source().get_trading_dates
+    worker.execute(result)
+    assert store.job(job['id'])['state'] == 'completed'
+    assert len(store.query('SELECT * FROM bars')) == 2
+
+
+@pytest.mark.postgres
+def test_empty_calendar_is_visible_and_schedule_recovers(store,tmp_path):
+    dataset = store.create_dataset({'name':'calendar-test','members':['000300.SH'],'scheduled':True})
+    store.query("UPDATE datasets SET schedule_from='2026-09-14' WHERE id=%s",(dataset['id'],))
+    source = Source()
+    source.get_trading_dates = lambda *args: []
+    worker = Worker(store,tmp_path,source=source)
+    worker.schedule(datetime(2026,9,14,17,tzinfo=SHANGHAI))
+    assert '交易日历为空' in worker.last_error
+    assert not store.query('SELECT * FROM jobs')
+    source.get_trading_dates = Source().get_trading_dates
+    worker.schedule(datetime(2026,9,14,17,tzinfo=SHANGHAI))
+    worker.schedule(datetime(2026,9,14,17,tzinfo=SHANGHAI))
+    assert worker.last_error == ''
+    assert len(store.query('SELECT * FROM jobs')) == 1
+
+
+@pytest.mark.postgres
+def test_failed_and_short_calendar_expose_schedule_reason(store,tmp_path):
+    dataset = store.create_dataset({'name':'calendar-errors','members':['000300.SH'],'scheduled':True})
+    store.query("UPDATE datasets SET schedule_from='2026-09-14' WHERE id=%s",(dataset['id'],))
+    source = Source()
+    def disconnected(*args):
+        raise ConnectionError('private details')
+    source.get_trading_dates = disconnected
+    worker = Worker(store,tmp_path,source=source)
+    worker.schedule(datetime(2026,9,14,17,tzinfo=SHANGHAI))
+    assert '交易日历请求失败' in worker.last_error
+    assert 'private' not in worker.last_error
+    source.get_trading_dates = lambda *args: ['20260914']
+    worker.schedule(datetime(2026,9,14,17,tzinfo=SHANGHAI))
+    assert '最近五个交易日' in worker.last_error
+    assert not store.query('SELECT * FROM jobs')
 
 
 @pytest.mark.postgres

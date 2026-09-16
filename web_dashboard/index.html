@@ -23,7 +23,7 @@
     <div class="sidebar-foot"><span class="label">本地运行 / v0.1.0</span><p>基于 cfquant 派生</p><p>MIT · 非上游官方产品</p></div>
   </aside>
   <main>
-    <header><div><div class="eyebrow">PFOR / MARKET DATA</div><h1 id="view-title">行情</h1></div><div class="header-status"><span id="db-state" class="status">数据库未连接</span><span id="qmt-state" class="status">QMT 未连接</span><button class="icon" id="logout" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button></div></header>
+    <header><div><div class="eyebrow">PFOR / MARKET DATA</div><h1 id="view-title">行情</h1></div><div class="header-status"><span id="db-state" class="status">数据库未连接</span><span id="qmt-state" class="status">行情桥待检查</span><button class="icon" id="logout" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button></div></header>
     <div id="notice" role="status" hidden></div>
     <section id="market" class="view">
       <div class="section-heading"><h2>实时行情</h2><span class="source">QMT · Asia/Shanghai</span></div>
@@ -62,7 +62,8 @@
       <form id="settings-form" class="settings-form"><label>PostgreSQL 连接<input name="dsn" type="password" autocomplete="off" placeholder="postgresql://user:password@host:5432/database"></label><div class="settings-meta"><span id="db-configured">尚未配置</span><span>PostgreSQL 14+ / schema: pfor_qmt</span></div><label>QMT 根目录<input name="qmt_root" placeholder="D:\QMT"></label><label class="inline-label"><input name="login_enabled" type="checkbox">启用网页登录密码</label><label>网页登录密码<input name="password" type="password" autocomplete="new-password" placeholder="至少 12 位，留空保持不变" disabled></label><div><button type="submit" class="primary"><i data-lucide="save"></i>保存配置</button><button type="button" id="migrate"><i data-lucide="database"></i>初始化历史库</button></div></form>
       <div class="section-heading"><h2>行情源部署</h2><span class="source">模型 PFOR_MARKET</span></div>
       <ol class="deployment"><li><span>01</span><div><h3>检查终端</h3><p>大 QMT 目录与运行状态</p></div><button data-deploy="inspect"><i data-lucide="scan-search"></i>检查</button></li><li><span>02</span><div><h3>准备独立模型</h3><p>需退出 QMT；完成后启动终端导入</p></div><button data-deploy="prepare"><i data-lucide="package"></i>准备</button></li><li><span>03</span><div><h3>启用行情模型</h3><p>导入后再次退出 QMT，再启用并重启登录</p></div><button data-deploy="activate"><i data-lucide="power"></i>启用</button></li></ol>
-      <div class="toolbar"><button id="test-source"><i data-lucide="plug-zap"></i>测试行情连接</button><span id="source-result" role="status">待检查</span></div>
+      <div class="toolbar"><button id="test-source"><i data-lucide="plug-zap"></i>测试行情连接</button><button id="diagnose-source"><i data-lucide="scan-search"></i>检查历史数据</button><span id="source-result" role="status">待检查</span></div>
+      <div id="source-diagnostics" class="table-wrap" hidden><table><thead><tr><th>检查项</th><th>状态</th><th>结果</th></tr></thead><tbody id="source-checks"></tbody></table></div>
       <pre id="deploy-result" hidden></pre>
     </section>
     <footer><span>数据口径：不复权 / 空值保留 / QMT 原始成交单位</span><span id="clock"></span></footer>

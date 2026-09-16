@@ -4,6 +4,7 @@ import threading
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from playwright.sync_api import sync_playwright, expect
@@ -16,10 +17,14 @@ from pfor_qmt.settings import Settings
 
 @pytest.mark.browser
 @pytest.mark.postgres
-def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path):
+def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch):
     if os.environ.get('PFOR_QMT_BROWSER_TEST') != '1':
         pytest.skip('设置 PFOR_QMT_BROWSER_TEST=1 执行浏览器验收')
     app = Application(Settings(tmp_path,config_path=tmp_path / 'config.toml'),store=store)
+    from pfor_qmt import service
+    monkeypatch.setattr(service,'get_client',lambda: SimpleNamespace(request=lambda *args,**kwargs: {'mode':'market-only'}))
+    app.source = SimpleNamespace(get_full_tick=lambda codes:{codes[0]:{'lastPrice':10}},
+                                get_local_data=lambda **params:{},get_trading_dates=lambda *args:[])
     # Only this isolated test schema contains these synthetic prices.
     seed = store.create_job('download',{'members':['000300.SH'],'periods':['1d']})
     start = datetime(2026,9,1,tzinfo=SHANGHAI)
@@ -72,6 +77,12 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path):
             file = download.value.path()
             assert Path(file).read_bytes().startswith(b'\xef\xbb\xbf')
             page.screenshot(path=str(output / 'jobs-desktop.png'),full_page=True)
+            page.locator('nav [data-view="settings"]').click()
+            page.locator('#diagnose-source').click()
+            expect(page.locator('#source-checks tr')).to_have_count(4)
+            expect(page.locator('#source-result')).to_contain_text('历史链路未就绪')
+            expect(page.locator('#source-checks')).to_contain_text('本地日线为空')
+            page.screenshot(path=str(output / 'diagnostics-desktop.png'),full_page=True)
             for width,height,label in [(390,844,'mobile'),(768,1024,'tablet')]:
                 page.set_viewport_size({'width':width,'height':height})
                 for view in ['market','indices','history','jobs','settings']:
