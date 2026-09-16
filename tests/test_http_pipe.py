@@ -71,6 +71,19 @@ def test_http_origin_and_login_cookie(app_server):
 
 
 @pytest.mark.postgres
+def test_optional_login_password_enable_and_disable(app_server):
+    app, server, client = app_server
+    password = '本地测试-Password-123'
+    client.request('/settings',{'login_enabled':True,'password':password})
+    assert app.settings.check_password(password)
+    request = Request(client.base_url + '/api/v1/login',data=json.dumps({'credential':password}).encode(),headers={'Content-Type':'application/json'})
+    with urlopen(request) as response:
+        assert json.load(response)['ok']
+    client.request('/settings',{'login_enabled':False})
+    assert not app.settings.check_password(password)
+
+
+@pytest.mark.postgres
 def test_websocket_ticket_and_job_event(app_server):
     from websockets.sync.client import connect
     from websockets.exceptions import ConnectionClosed

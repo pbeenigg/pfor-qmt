@@ -174,3 +174,14 @@ def test_terminal_timer_accepts_no_arguments_and_cancels_native_key(monkeypatch)
     entry.after_init(context)
     entry.stop(context)
     assert calls == ['pump','native-timer-key','close']
+
+
+def test_hub_preserves_long_download_timeout(monkeypatch):
+    import pfor_qmt.hub as module
+    hub = MarketHub(show=False)
+    failures = []
+    hub._send_error = lambda conn,request,message:failures.append(request)
+    monkeypatch.setattr(module.time,'perf_counter',lambda:100)
+    hub.pending = {'download':{'api_received_at':1,'timeout_seconds':180},'short':{'api_received_at':1,'timeout_seconds':15}}
+    assert hub._cleanup_expired_pending() == 1
+    assert failures == ['short'] and 'download' in hub.pending

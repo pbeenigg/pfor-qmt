@@ -48,6 +48,8 @@ async function status() {
   $('#db-state').classList.toggle('online', result.database.connected);
   $('#db-configured').textContent = result.settings.database_configured ? '已保存连接信息' : '尚未配置';
   $('#settings-form [name="qmt_root"]').value = result.settings.qmt_root;
+  $('#settings-form [name="login_enabled"]').checked = result.settings.login_enabled;
+  $('#settings-form [name="password"]').disabled = !result.settings.login_enabled;
   return result;
 }
 
@@ -194,7 +196,8 @@ $('#dataset-form [name="members"]').addEventListener('input', () => { state.snap
 $('#dataset-form').addEventListener('submit', action(async () => { const form = $('#dataset-form'); const p = values(form); const selected = new FormData(form).getAll('period'); const extra = state.snapshot ? { index_code:state.snapshot.code, snapshot_id:state.snapshot.snapshot_id } : {}; await api('/datasets', { name:p.name, members:splitCodes(p.members), periods:selected, ...extra }); state.snapshot = null; form.reset(); await loadDatasets(); notice('数据集已创建'); }));
 $('#download-form').addEventListener('submit', action(async () => { const p = values($('#download-form')); await api('/downloads', { ...p, start:p.start || null, end:p.end || null }); await loadJobs(); notice('回补任务已排队'); }));
 $('#refresh-jobs').addEventListener('click', action(loadJobs));
-$('#settings-form').addEventListener('submit', action(async () => { const p = values($('#settings-form')); await api('/settings', p); $('#settings-form [name="dsn"]').value = ''; $('#settings-form [name="password"]').value = ''; await status(); notice('本地配置已保存'); }));
+$('#settings-form [name="login_enabled"]').addEventListener('change', (event) => { $('#settings-form [name="password"]').disabled = !event.target.checked; });
+$('#settings-form').addEventListener('submit', action(async () => { const p = values($('#settings-form')); p.login_enabled = $('#settings-form [name="login_enabled"]').checked; await api('/settings', p); $('#settings-form [name="dsn"]').value = ''; $('#settings-form [name="password"]').value = ''; await status(); notice('本地配置已保存'); }));
 $('#migrate').addEventListener('click', action(async () => { await api('/database/migrate', {}); await status(); notice('历史库已初始化'); }));
 $('#test-source').addEventListener('click', action(async () => { const result = await api('/source/test', {}); $('#source-result').textContent = result.mode === 'market-only' ? '行情源连接正常' : '响应已收到'; $('#qmt-state').textContent = 'QMT 已连接'; $('#qmt-state').classList.add('online'); }));
 $$('[data-deploy]').forEach((button) => button.addEventListener('click', action(async () => { const result = await api('/deploy/' + button.dataset.deploy, { qmt_root:values($('#settings-form')).qmt_root }); $('#deploy-result').hidden = false; $('#deploy-result').textContent = JSON.stringify(result,null,2); })));

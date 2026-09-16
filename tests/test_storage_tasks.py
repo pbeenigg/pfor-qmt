@@ -1,6 +1,6 @@
 import csv
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pandas as pd
@@ -200,3 +200,25 @@ def test_source_advisory_lock_excludes_second_worker(store):
         key = store.schema + '.source'
         assert first.execute('SELECT pg_try_advisory_lock(hashtext(%s)) AS locked',(key,)).fetchone()['locked']
         assert not second.execute('SELECT pg_try_advisory_lock(hashtext(%s)) AS locked',(key,)).fetchone()['locked']
+
+
+@pytest.mark.postgres
+def test_large_export_crosses_page_boundary_without_loss(store,tmp_path):
+    job = make_job(store)
+    start = datetime(2026,9,1,tzinfo=SHANGHAI)
+    rows = [dict(code='000300.SH',period='1m',time=start+timedelta(minutes=index),open=Decimal('1'),high=Decimal('2'),low=Decimal('1'),close=Decimal('2'),volume=Decimal(index),amount=None) for index in range(5002)]
+    store.write_chunk(job['id'],{'code':'000300.SH','period':'1m','start':'2026-09-01','end':'2026-09-10'},rows,[],1)
+    page = store.history('000300.SH','1m','2026-09-01','2026-09-10',5000)
+    assert len(page['rows']) == 5000 and page['next_offset'] == 5000
+    for format in ('csv','parquet'):
+        export = store.create_job('export',{'members':['000300.SH'],'period':'1m','start':'2026-09-01','end':'2026-09-10','format':format})
+        Worker(store,tmp_path).execute(export)
+        result = store.job(export['id'])
+        assert result['state'] == 'completed',result
+        path = tmp_path / 'exports' / result['result']['file']
+        if format == 'csv':
+            with path.open(encoding='utf-8-sig',newline='') as stream:
+                output = list(csv.DictReader(stream))
+        else:
+            output = pq.read_table(path).to_pylist()
+        assert len(output) == 5002 and output[-1]['volume'] == '5001'

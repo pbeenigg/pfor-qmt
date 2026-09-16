@@ -80,6 +80,13 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path):
                     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
                     page.screenshot(path=str(output / f'{view}-{label}.png'),full_page=True)
             assert errors == [], errors
+            page.locator('#settings-form [name="login_enabled"]').check()
+            page.locator('#settings-form [name="password"]').fill('browser-test-password-only')
+            page.locator('#settings-form button[type="submit"]').click()
+            expect(page.locator('#notice')).to_contain_text('本地配置已保存')
+            page.locator('#settings-form [name="login_enabled"]').uncheck()
+            page.locator('#settings-form button[type="submit"]').click()
+            expect(page.locator('#settings-form [name="password"]')).to_be_disabled()
             page.locator('#logout').click()
             expect(page.locator('#login-dialog')).to_be_visible()
             browser.close()

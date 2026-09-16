@@ -60,8 +60,14 @@ class Application:
                 self.worker.start()
             if 'qmt_root' in p:
                 self.settings.data['qmt_root'] = p['qmt_root']
-            if 'password' in p and p['password']:
+            if 'login_enabled' in p and not isinstance(p['login_enabled'], bool):
+                raise ValueError('login_enabled 必须为布尔值')
+            if p.get('login_enabled') is False:
+                self.settings.set_password('')
+            elif 'password' in p and p['password']:
                 self.settings.set_password(p['password'])
+            elif p.get('login_enabled') and not self.settings.data['login_hash']:
+                raise ValueError('启用网页登录密码时，需要设置至少 12 位的密码')
             self.settings.save()
             return self.settings.public()
         if method == 'POST' and path == '/database/migrate':

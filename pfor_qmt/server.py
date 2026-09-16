@@ -104,7 +104,7 @@ def handler_for(app):
                         return self.send(429, {'error': '尝试过于频繁，请一分钟后重试'})
                     attempts.append(now)
                     credential = str(p.get('credential',''))
-                    if not hmac.compare_digest(credential, app.settings.data['api_key']) and not app.settings.check_password(credential):
+                    if not hmac.compare_digest(credential.encode('utf-8'), app.settings.data['api_key'].encode('utf-8')) and not app.settings.check_password(credential):
                         return self.send(401, {'error': 'API Key 或密码不正确'})
                     token = secrets.token_urlsafe(32)
                     app.sessions = {key: until for key, until in app.sessions.items() if until > time.time()}
