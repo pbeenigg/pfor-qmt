@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pfor-qmt"
+version = "0.1.0"
+description = "Local QMT market data workspace and PostgreSQL history store"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+dependencies = ["pandas>=2.2,<3", "psycopg[binary]>=3.2,<4", "pyarrow>=19,<24", "pycryptodome>=3.20,<4", "tzdata>=2025", "websockets>=15,<17"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "build>=1,<2", "playwright>=1.50,<2"]
+
+[project.scripts]
+pfor-qmt = "pfor_qmt.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pfor_qmt*", "web_dashboard*", "qmt_scripts*"]
+
+[tool.setuptools.package-data]
+pfor_qmt = ["migrations/*.sql"]
+web_dashboard = ["*.html", "*.js", "*.css", "*.svg", "vendor/*"]
+qmt_scripts = ["*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["postgres: isolated PostgreSQL integration tests", "browser: browser integration tests"]

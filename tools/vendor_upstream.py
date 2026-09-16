@@ -26,6 +26,8 @@ def main():
         changes.update({"cfquant_pipe_hub": "pfor_qmt_pipe_hub", "cfquant.normal.request": "pfor_qmt.market.request"})
         if source.endswith("qmt_strategy_package.py"):
             changes.update({"CFQ_[A-Z0-9_]{1,59}": "PFOR_[A-Z0-9_]{1,58}", "cfquant account bridge": "pfor-qmt market bridge"})
+        if source.endswith("pipe_client.py"):
+            changes['raise CfquantError(err.get("message") or str(err))'] = 'raise CfquantError(err.get("message") or str(err), remote_type=err.get("type"))'
         for old, new in changes.items():
             text = text.replace(old, new)
         (ROOT / target).write_text(text, encoding="utf-8", newline="\n")

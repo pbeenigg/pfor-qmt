@@ -37,7 +37,8 @@
       "sha256": "8766fb07b4c7282eb5a06958f0433feee12ee1e64675174f30d51be37ccadfdd",
       "replacements": {
         "cfquant_pipe_hub": "pfor_qmt_pipe_hub",
-        "cfquant.normal.request": "pfor_qmt.market.request"
+        "cfquant.normal.request": "pfor_qmt.market.request",
+        "raise CfquantError(err.get(\"message\") or str(err))": "raise CfquantError(err.get(\"message\") or str(err), remote_type=err.get(\"type\"))"
       }
     },
     {
