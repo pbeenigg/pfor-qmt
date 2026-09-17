@@ -20,7 +20,7 @@ for path in artifacts:
                 'web_dashboard/vendor/ECHARTS-LICENSE.txt','web_dashboard/vendor/ECHARTS-NOTICE.txt',
                 'web_dashboard/vendor/LUCIDE-LICENSE.txt','THIRD_PARTY_NOTICES.md','LICENSE']
     if path.name.endswith('.tar.gz'):
-        required.extend(['tools/live_acceptance.py','docs/LIVE_ACCEPTANCE.md'])
+        required.extend(['tools/live_acceptance.py','docs/LIVE_ACCEPTANCE.md','pfor.ps1'])
     for suffix in required:
         assert any(name.endswith(suffix) for name in names), (path.name,suffix)
     for name in names:

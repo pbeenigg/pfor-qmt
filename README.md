@@ -38,6 +38,27 @@ py -3.12 -m venv .venv
 
 完整配置项和环境变量对应关系见 [配置说明](docs/CONFIGURATION.md)。
 
+## 服务管理
+
+在项目根目录使用 `pfor.ps1`（Windows PowerShell 5.1 / PowerShell 7）：
+
+```powershell
+.\pfor.ps1 start                  # 后台启动，重复执行不会启动第二份
+.\pfor.ps1 status                 # 进程、网页地址及 HTTP/WebSocket 就绪状态
+.\pfor.ps1 stop                   # 停止本项目服务
+.\pfor.ps1 restart                # 停止后重新加载配置并启动
+.\pfor.ps1 logs -Tail 100          # 最近一次启动的标准输出
+.\pfor.ps1 logs -ErrorLog         # 最近一次启动的错误日志
+.\pfor.ps1 logs -Follow           # 持续查看；Ctrl+C 仅结束日志查看
+.\pfor.ps1 help
+```
+
+可从其他目录通过脚本完整路径调用。配置路径按 `-Config`、`PFOR_QMT_CONFIG`、脚本目录的 `config.toml` 选择；相对配置路径基于脚本目录。端口和运行目录复用统一配置及环境覆盖，不另外保存一份配置。每次启动的日志分别保存在运行目录，保留旧日志。就绪状态仅表示Web服务可访问，不代表数据库或QMT数据已经可用。
+
+脚本只管理命令行中配置文件绝对路径匹配的pfor-qmt进程，不停止QMT、PostgreSQL或占用端口的其他应用。此前在前台用相对配置路径或省略`--config`启动的服务，请先在原终端按Ctrl+C，再改用本脚本启动。
+
+`stop`直接结束服务进程，保留已提交数据库事务及任务检查点；重新启动后恢复未完成任务，已发出的QMT请求不能撤销。手工修改配置后执行`restart`。若系统阻止执行脚本，可仅对此次调用使用 `powershell -NoProfile -ExecutionPolicy Bypass -File .\pfor.ps1 status`，将最后的`status`换成所需操作；无需修改系统执行策略。
+
 ## 接入 QMT
 
 1. 在设置页检查大 QMT 根目录，退出 QMT 后点击「准备」。
