@@ -10,9 +10,11 @@ flowchart LR
   D[Python DataClient] <--> A
   A <--> P
   A <--> X
-  W --> E[CSV / Parquet 与口径 JSON]
+  P <--> EW[导出 Worker]
+  EW --> E[CSV / Parquet 与口径 JSON]
   X --> S[WebSocket 行情推送]
   W --> S
+  EW --> S
   S --> B
 ```
 
@@ -23,7 +25,7 @@ flowchart LR
 - `xtdata.py`：兼容子集 SDK，直接经本机管道访问行情桥。
 - `storage.py`、`migrations/`：schema限定、版本化迁移、精确数值、复合键去重、分页。
 - `data.py`：代码、周期、日期验证，上海时间解析，不补零的数值标准化。
-- `tasks.py`：单工作线程、数据库 advisory lock、断点、取消、重试、17:00调度和导出。
+- `tasks.py`：下载与导出双后台队列、数据库 advisory lock、断点、取消、重试、17:00调度和导出。
 - `service.py`：应用接口与业务编排；`server.py`：标准库 HTTP、认证和独立 WebSocket。
 - `sdk.py`：DataClient；`settings.py`：统一config.toml、环境覆盖、旧JSON迁移与密码哈希；QMT内嵌`config.py`只接收部署器生成的行情参数。
 - `deploy.py`、`qmt_scripts/PFOR_MARKET.py`：独立模型准备、导入和启用。
@@ -32,11 +34,11 @@ flowchart LR
 
 ## 状态与一致性
 
-任务：`queued -> running -> completed/partial/failed/cancelled`。取消设置持久化标记，终端已经接收的请求不撤销；下次处理前停止。进程恢复时将未结束的running任务重新排队，沿检查点续跑。partial重试从头重新校验，upsert消除重复。
+任务：`queued -> running -> completed/partial/failed/cancelled`。取消设置持久化标记，终端已经接收的请求不撤销；下次处理前停止。下载队列取得`.source`锁，导出队列取得`.exports`锁，各自只恢复和执行对应类型任务。下载沿检查点续跑，导出从头生成文件并重置行数。partial重试从头重新校验，upsert消除重复。
 
 每块最多一年日线或七天分钟线。下载请求结束后读回本地行情，空表等待有限次数并标记未确认。行情、覆盖结果、因子和检查点在同一数据库事务中提交。价格、成交量和金额使用无固定小数位的NUMERIC；原输入已经损失的浮点精度无法恢复。
 
-调度使用QMT交易日历，日历不可取得时使用已存真实交易日，不用周一至周五推断假期。每天17:00为每个启用的数据集创建一个唯一schedule_key任务，回读最近五个交易日，启动后补建尚未创建的到期任务。
+调度使用QMT交易日历，日历不可取得时使用已存真实交易日，不用周一至周五推断假期。每天17:00为每个启用的数据集创建一个唯一schedule_key任务，回读最近五个交易日，启动后补建尚未创建的到期任务。下载和导出队列分开，历史请求或日历查询阻塞时不影响已入库数据导出。
 
 导出分批读库，使用同一REPEATABLE READ只读事务。大文件不整体载入内存，HTTP分块传送。Parquet价格和数量列采用十进制文本以保留任意NUMERIC精度；口径JSON明确类型、时间、空值、来源与范围。
 
