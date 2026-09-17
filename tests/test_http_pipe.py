@@ -94,6 +94,39 @@ def test_acceptance_tool_download_query_repeat_and_exports(app_server,tmp_path):
 
 
 @pytest.mark.postgres
+@pytest.mark.parametrize('period,expected_state', [('1d', 'passed'), ('1m', 'partial'), ('5m', 'partial')])
+def test_acceptance_selected_derivatives_and_night_exports(app_server, tmp_path, period, expected_state):
+    from tools.live_acceptance import run
+    app, server, client = app_server
+    selected = ['cu2610.SF', 'HO2609-C-2500.IF']
+    calls = []
+    frame = [{'time': '2026-09-11T21:05:00+08:00' if period != '1d' else '2026-09-14T00:00:00+08:00',
+              'tradingDay': 20260914, 'close': '12345.1234567890123456789',
+              'openInterest': 1234567890123456789, 'settle': '12344.1234567890123456789'}]
+    app.worker.source = SimpleNamespace(
+        download_history_data2=lambda members, requested_period, *args: calls.append((members, requested_period)) or True,
+        get_local_data=lambda **kwargs: {kwargs['stock_list'][0]: frame},
+        get_trading_dates=lambda *args: ['20260914'],
+        get_divid_factors=lambda *args: pytest.fail('Derivative samples must not request equity factors'))
+    app.worker.start()
+    report = {}
+    try:
+        run(client, app.store, tmp_path, '2026-09-14', '2026-09-14', report, selected, period)
+        assert report['state'] == expected_state
+        assert report['samples'] == selected and report['period'] == period
+        assert report['rows'] == 2 and report['exports'] == {'csv': 'passed', 'parquet': 'passed'}
+        assert report['database_sdk'] == report['duplicate_upsert'] == 'passed'
+        assert calls == [([code], period) for _ in range(2) for code in selected]
+        assert app.store.query('SELECT count(*) AS n FROM bars', one=True)['n'] == 2
+        if period != '1d':
+            rows = app.store.query('SELECT time,trading_day FROM bars')
+            assert all(row['time'].day == 11 and row['trading_day'].day == 14 for row in rows)
+    finally:
+        app.worker.stop.set()
+        app.worker.thread.join(timeout=5)
+
+
+@pytest.mark.postgres
 def test_http_origin_and_login_cookie(app_server):
     app, server, client = app_server
     request = Request(client.base_url + '/api/v1/login',data=json.dumps({'credential':app.settings.data['api_key']}).encode(),headers={'Content-Type':'application/json','Origin':'https://foreign.invalid'})

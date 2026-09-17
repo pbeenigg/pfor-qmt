@@ -1,4 +1,4 @@
-"""Opt-in real QMT daily-bar acceptance. No writes unless --download is set."""
+"""Opt-in QMT bar acceptance for selected instruments. No writes unless --download is set."""
 import argparse
 import csv
 import json
@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from pfor_qmt import DataClient
-from pfor_qmt.data import FIELDS, SHANGHAI, day
+from pfor_qmt.data import FIELDS, SHANGHAI, day, codes
 from pfor_qmt.settings import Settings
 from pfor_qmt.storage import Store
 
@@ -16,13 +16,24 @@ from pfor_qmt.storage import Store
 SAMPLES = ['000300.SH', '000001.SZ', '510300.SH']
 
 
-def validate_range(start, end):
+def validate_selection(samples, period):
+    selected = codes(samples)
+    if len(selected) > 10:
+        raise ValueError('Select at most 10 instruments for acceptance')
+    if period not in ('1d', '1m', '5m'):
+        raise ValueError('Use period 1d, 1m or 5m')
+    return selected
+
+
+def validate_range(start, end, period='1d'):
     try:
         start, end = day(start), day(end)
     except (TypeError, ValueError) as error:
         raise ValueError('Use --start/--end dates in YYYY-MM-DD format') from error
     if not 0 <= (end - start).days <= 14 or end > datetime.now(SHANGHAI).date():
         raise ValueError('Use a 15-day inclusive window at most, without future dates')
+    if period != '1d' and start != end:
+        raise ValueError('Minute acceptance is limited to one trading date')
 
 
 def wait_job(client, identifier, timeout=300):
@@ -42,24 +53,26 @@ def canonical(rows):
                    row['source']) for row in rows)
 
 
-def history_rows(client, code, start, end):
+def history_rows(client, code, start, end, period='1d'):
     result, offset = [], 0
     while True:
-        page = client.history(code, '1d', start, end, limit=2, offset=offset)
+        page = client.history(code, period, start, end, limit=2, offset=offset)
         result.extend(page['rows'])
         if page['next_offset'] is None:
             return result
         offset = page['next_offset']
 
 
-def run(client, store, folder, start, end, report):
-    validate_range(start, end)
+def run(client, store, folder, start, end, report, samples=None, period='1d'):
+    samples = validate_selection(SAMPLES if samples is None else samples, period)
+    validate_range(start, end, period)
+    report.update(samples=samples, period=period)
     report['stage'] = 'check_active_jobs'
     if any(job['state'] in ('queued', 'running') for job in client.request('/jobs')):
         raise ValueError('Existing jobs are active; no additional download was created')
     report['stage'] = 'create_dataset'
-    name = '验收小样本日线 ' + datetime.now(SHANGHAI).strftime('%Y%m%d-%H%M%S')
-    dataset = client.create_dataset(name, SAMPLES, ['1d'])
+    name = '验收小样本 ' + period + ' ' + datetime.now(SHANGHAI).strftime('%Y%m%d-%H%M%S')
+    dataset = client.create_dataset(name, samples, [period])
     report['dataset_id'] = dataset['id']
     report['jobs'] = []
     previous = None
@@ -72,8 +85,8 @@ def run(client, store, folder, start, end, report):
         if job['state'] not in ('completed', 'partial'):
             raise ValueError('Download did not complete; inspect job ' + job['id'])
         rows = []
-        for code in SAMPLES:
-            values = history_rows(client, code, start, end)
+        for code in samples:
+            values = history_rows(client, code, start, end, period)
             if not values:
                 raise ValueError('No stored bars for ' + code)
             rows.extend(values)
@@ -82,19 +95,19 @@ def run(client, store, folder, start, end, report):
             raise ValueError('Repeated download changed values or keys; inspect terminal revisions')
         previous = actual
     report['stage'] = 'database_comparison'
-    database = store.query("SELECT code,period,time,open,high,low,close,volume,amount,open_interest,settlement,previous_settlement,trading_day,source FROM bars WHERE code=ANY(%s) AND period='1d' AND coalesce(trading_day,time::date) BETWEEN %s::date AND %s::date", (SAMPLES, start, end))
+    database = store.query("SELECT code,period,time,open,high,low,close,volume,amount,open_interest,settlement,previous_settlement,trading_day,source FROM bars WHERE code=ANY(%s) AND period=%s AND coalesce(trading_day,time::date) BETWEEN %s::date AND %s::date", (samples, period, start, end))
     if canonical(database) != previous:
         raise ValueError('Database and paginated SDK rows differ')
     report.update(rows=len(previous), duplicate_upsert='passed', database_sdk='passed', exports={})
     for format in ('csv', 'parquet'):
         report['stage'] = format + '_export_comparison'
-        job = client.export(SAMPLES, '1d', start, end, format)
+        job = client.export(samples, period, start, end, format)
         report['jobs'].append({'id': job['id'], 'state': job['state']})
         job = wait_job(client, job['id'])
         report['jobs'][-1].update(state=job['state'], rows=job['result'].get('rows'))
         if job['state'] != 'completed':
             raise ValueError('Export failed; inspect job ' + job['id'])
-        target = folder / ('daily.' + format)
+        target = folder / (('daily' if period == '1d' else period) + '.' + format)
         client.save_export(job['id'], target)
         metadata = target.with_suffix(target.suffix + '.json')
         client.save_export(job['id'], metadata, metadata=True)
@@ -118,27 +131,31 @@ def run(client, store, folder, start, end, report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default='config.toml')
-    parser.add_argument('--download', action='store_true', help='Create a 3-security dataset, two downloads and exports')
+    parser.add_argument('--download', action='store_true', help='Create a small dataset, two downloads and exports')
+    parser.add_argument('--codes', nargs='+', default=SAMPLES, help='Up to 10 QMT instrument codes; quote combination codes containing spaces')
+    parser.add_argument('--period', choices=('1d', '1m', '5m'), default='1d')
     parser.add_argument('--start')
     parser.add_argument('--end')
     parser.add_argument('--output', default='output/live-acceptance')
     args = parser.parse_args()
-    if args.download:
-        try:
-            validate_range(args.start, args.end)
-        except ValueError as error:
-            parser.error(str(error))
+    try:
+        samples = validate_selection(args.codes, args.period)
+        if args.download:
+            validate_range(args.start, args.end, args.period)
+    except ValueError as error:
+        parser.error(str(error))
     client = DataClient.from_config(args.config)
     client.timeout = 90
-    report = {'state': 'diagnostics_only', 'diagnostics': client.request('/source/diagnostics', {})}
+    report = {'state': 'diagnostics_only', 'samples': samples, 'period': args.period, 'diagnostic_period': '1d',
+              'diagnostics': {code: client.request('/source/diagnostics', {'code': code}) for code in samples}}
     if not args.download:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     folder = Path(args.output) / datetime.now(SHANGHAI).strftime('%Y%m%d-%H%M%S-%f')
     folder.mkdir(parents=True, exist_ok=True)
-    report.update(state='failed', start=args.start, end=args.end, samples=SAMPLES)
+    report.update(state='failed', start=args.start, end=args.end)
     try:
-        run(client, Store(Settings(config_path=args.config).dsn), folder, args.start, args.end, report)
+        run(client, Store(Settings(config_path=args.config).dsn), folder, args.start, args.end, report, samples, args.period)
     except Exception as error:
         # Use job IDs for detailed diagnosis, not raw driver exceptions in reports.
         report['error_type'] = type(error).__name__
