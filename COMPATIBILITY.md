@@ -19,6 +19,9 @@
 | 多源、高级/LITE、Level2、千档、财务、公式、历史权重 | 移除 | 不迁移对应入口或初始化逻辑 |
 | DataClient、/api/v1、数据库与任务 | 新增 | PostgreSQL 隔离测试；HTTP/SDK/文件一致性测试 |
 | /source/diagnostics | 新增 | 认证只读检查；桥、快照、本地日线与日历分离，缓存读取不等于下载验收 |
+| /catalog/* / DataClient.catalog / sync_catalog | 新增 | 完整目录后台同步、真实名称、分页、类别筛选、断点恢复；原/securities列表接口保留原有1000条上限 |
+| jobs.kind=catalog / schema版本2 | 新增 | 独立目录队列；同步按批次事务保存资料与检查点；旧下载/导出任务不改写 |
+| /source/diagnostics terminal_history | 新增 | 仅提取终端当日历史日志的允许字段；过去错误不推断当前登录状态 |
 | 空数据与调度失败 | 修改 | 历史和日历双空时失败且检查点不推进；只行情为空仍partial；日历异常或不足五日显式提示 |
 | WebSocket | 新增 | 独立本机8767，一次性30秒票据，任务与行情推送 |
 | WebSocket unwatch / watch确认 | 新增 | 可停止行情但保留任务推送；切换及重连丢弃旧回调；退订失败保留原订阅，非法命令不再断开连接 |

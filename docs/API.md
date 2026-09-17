@@ -16,9 +16,13 @@
 | GET | /quotes | codes逗号分隔，读取QMT快照 |
 | GET | /securities | search、kind，可在终端离线时查库 |
 | POST | /securities/sync | members数组、kind=stock/index/etf，最多100证券 |
+| GET | /catalog | 已保存目录数量、板块和最近目录任务 |
+| GET | /catalog/securities | search、kind、limit=1..200、offset；返回rows、total、next_offset，支持完整目录分页 |
+| POST | /catalog/resolve | members代码数组；批量读取已保存名称，不请求QMT |
+| POST | /catalog/sync | 可选kinds数组=index/stock/etf；创建持久化目录任务，已有活动同步时返回原任务 |
 | GET | /sectors | 实时读取QMT板块目录 |
 | GET | /indices | 映射和最新成分快照 |
-| POST | /indices/refresh | code、sector、name，保存观察时点快照 |
+| POST | /indices/refresh | code、sector，可选name；优先使用目录中的指数名称，保存观察时点快照 |
 | GET/POST | /datasets | 列出/创建；name、members、periods，可带index_code、snapshot_id |
 | POST | /datasets/{id}/refresh | 显式刷新指数数据集成员，不修改既有任务 |
 | POST | /datasets/{id}/schedule | enabled布尔值，启用当天开始跟踪17:00到期日 |
@@ -39,6 +43,10 @@ WebSocket默认 `ws://127.0.0.1:8767/?ticket=...`。不在URL传API Key。发送
 发送 `{"action":"unwatch"}` 停止行情订阅，WebSocket保留用于任务推送。订阅成功或停止后返回 `{"event":"watch","codes":[...]}`，空数组表示已停止。切换证券先退订原订阅；退订失败返回error及仍保留的codes，不声称停止成功。旧订阅的迟到回调及排队行情在切换、停止、桥重连后丢弃，任务事件不受影响。无效命令返回error并保持连接。
 
 诊断返回 `checks` 数组，每项含name、state、message，适用时含rows和time。state为 `ok/empty/error/unverified`；桥失败则后续项未验证。`history_readable=true` 只表示有可读日线和区间内交易日历，不承诺行情在线、数据完整或下载通过。诊断不触发下载，不保存资料或历史数据。
+
+配置QMT目录后，增加terminal_history项：从当日datasource日志末尾最多2MiB提取最近历史请求的证券、周期、时间与received数组，不返回原始日志、服务器地址或账户信息。仅全零结果标为空，其他接收记录仍待回读校验；过去请求不能证明当前连接状态。
+
+目录任务kind为catalog，使用独立串行队列和schema级锁，不受历史任务排队影响；已有QMT原生调用阻塞时仍需等待桥端响应。每批最多16个证券、8个并发只读RPC，资料与检查点在同一事务保存。网络失败最多重试3次，失败/取消重试继续检查点，partial重试全部读取。缺少名称时保留旧资料并列入result.missing，不构造名称；不删除旧证券，不触发K线下载。`/status.catalog_worker`报告队列错误，目录可脱离QMT查询。
 
 ## 时间、数值与覆盖
 
