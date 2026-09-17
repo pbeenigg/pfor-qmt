@@ -69,13 +69,18 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
             expect(page.locator('#datasets')).to_contain_text('浏览器测试指数')
             page.evaluate('scrollTo(0,0)')
             page.screenshot(path=str(output / 'history-desktop.png'),full_page=True)
+            app.worker.last_error = '交易日历为空，调度等待重试'
             page.locator('#export-csv').click()
             expect(page.locator('#jobs')).to_be_visible()
+            expect(page.locator('#worker-status')).to_contain_text('交易日历为空')
             expect(page.locator('#job-rows a[title="下载文件"]')).to_be_visible(timeout=15000)
             with page.expect_download() as download:
                 page.locator('#job-rows a[title="下载文件"]').click()
             file = download.value.path()
             assert Path(file).read_bytes().startswith(b'\xef\xbb\xbf')
+            app.worker.last_error = ''
+            page.locator('#refresh-jobs').click()
+            expect(page.locator('#worker-status')).to_be_hidden()
             page.screenshot(path=str(output / 'jobs-desktop.png'),full_page=True)
             page.locator('nav [data-view="settings"]').click()
             page.locator('#diagnose-source').click()

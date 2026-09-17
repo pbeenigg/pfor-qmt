@@ -32,6 +32,7 @@ class Worker:
         self.stop = threading.Event()
         self.thread = None
         self.last_error = ''
+        self.export_error = ''
         self.last_schedule = None
 
     def start(self):
@@ -45,29 +46,40 @@ class Worker:
             raise Cancelled('已停止后续处理；已提交的 QMT 请求不会撤销')
 
     def run(self):
+        exports = threading.Thread(target=self.run_queue, args=('export',), daemon=True, name='pfor-export-worker')
+        exports.start()
+        try:
+            self.run_queue('download')
+        finally:
+            self.stop.set()
+            exports.join()
+
+    def run_queue(self, kind):
+        error_field = 'last_error' if kind == 'download' else 'export_error'
+        lock_name = '.source' if kind == 'download' else '.exports'
         while not self.stop.is_set():
             try:
                 with self.store.connect() as lease:
-                    locked = lease.execute('SELECT pg_try_advisory_lock(hashtext(%s)) AS locked', (self.store.schema + '.source',)).fetchone()['locked']
+                    locked = lease.execute('SELECT pg_try_advisory_lock(hashtext(%s)) AS locked', (self.store.schema + lock_name,)).fetchone()['locked']
                     lease.commit()
                     if not locked:
                         self.stop.wait(2)
                         continue
-                    self.last_error = ''
-                    self.store.query("UPDATE jobs SET state=CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END WHERE state='running'")
+                    setattr(self, error_field, '')
+                    self.store.query("UPDATE jobs SET state=CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END WHERE state='running' AND kind=%s", (kind,))
                     while not self.stop.is_set():
                         lease.execute('SELECT 1')
                         lease.commit()
-                        if self.last_schedule is None or (datetime.now(SHANGHAI) - self.last_schedule).total_seconds() >= 60:
+                        if kind == 'download' and (self.last_schedule is None or (datetime.now(SHANGHAI) - self.last_schedule).total_seconds() >= 60):
                             self.schedule()
                             self.last_schedule = datetime.now(SHANGHAI)
-                        job = self.store.query("SELECT * FROM jobs WHERE state='queued' ORDER BY created_at LIMIT 1", one=True)
+                        job = self.store.query("SELECT * FROM jobs WHERE state='queued' AND kind=%s ORDER BY created_at LIMIT 1", (kind,), one=True)
                         if not job:
                             self.stop.wait(1)
                             continue
                         self.execute(job)
             except Exception:
-                self.last_error = '数据库连接或初始化尚未就绪，后台任务等待恢复'
+                setattr(self, error_field, '数据库连接或初始化尚未就绪，后台任务等待恢复')
                 self.stop.wait(3)
 
     def execute(self, job):
@@ -209,6 +221,7 @@ class Worker:
         total = 0
         parquet = None
         metadata = None
+        self.store.update_job(identifier, checkpoint=0)
         # A repeatable snapshot keeps every export page internally consistent.
         try:
             with self.store.connect() as conn, temp.open('w', encoding='utf-8-sig', newline='') if payload['format'] == 'csv' else temp.open('wb') as stream:

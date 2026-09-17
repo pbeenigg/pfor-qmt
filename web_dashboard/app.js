@@ -152,6 +152,9 @@ async function loadHistory(offset = 0) {
 
 async function loadJobs() {
   state.jobs = await api('/jobs');
+  const health = await api('/status');
+  $('#worker-status').textContent = [health.worker && `行情调度：${health.worker}`, health.export_worker && `文件导出：${health.export_worker}`].filter(Boolean).join('；');
+  $('#worker-status').hidden = !$('#worker-status').textContent;
   if (!state.jobs.length) return empty('#job-rows', 6, '暂无下载或导出任务');
   $('#job-rows').innerHTML = state.jobs.map((job) => {
     const total = job.total_chunks;

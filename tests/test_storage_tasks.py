@@ -1,5 +1,7 @@
 import csv
 import json
+import threading
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -254,9 +256,68 @@ def test_csv_parquet_roundtrip_without_qmt(store,tmp_path):
 
 
 @pytest.mark.postgres
-def test_source_advisory_lock_excludes_second_worker(store):
+@pytest.mark.parametrize('blocked', ['download', 'calendar'])
+def test_exports_complete_while_qmt_is_blocked(store,tmp_path,blocked):
+    source = Source()
+    worker = Worker(store,tmp_path,source=source)
+    worker.execute(make_job(store))
+    entered, release = threading.Event(), threading.Event()
+    def wait_for_terminal(*args):
+        entered.set()
+        assert release.wait(15), 'Test terminal was not released'
+        return []
+    if blocked == 'calendar':
+        store.create_dataset({'name':'scheduled','members':['000300.SH'],'scheduled':True})
+        store.query("UPDATE datasets SET schedule_from='2026-09-14'")
+        source.get_trading_dates = wait_for_terminal
+    else:
+        source.on_download = wait_for_terminal
+    pending = make_job(store)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        exports = [store.create_job('export',dict(members=['000300.SH'],period='1d',start='2026-09-14',end='2026-09-14',format=format)) for format in ('csv','parquet')]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            jobs = [store.job(job['id']) for job in exports]
+            if all(job['state'] == 'completed' for job in jobs):
+                break
+            time.sleep(.05)
+        assert [job['state'] for job in jobs] == ['completed','completed']
+        assert [job['result']['rows'] for job in jobs] == [1,1]
+        assert store.job(pending['id'])['state'] == ('running' if blocked == 'download' else 'queued')
+        assert store.history('000300.SH')['rows'][0]['close'] == Decimal('124.1234567890123456789')
+    finally:
+        worker.stop.set()
+        release.set()
+        worker.thread.join(timeout=5)
+        assert not worker.thread.is_alive()
+
+
+@pytest.mark.postgres
+def test_export_recovery_does_not_reset_downloads(store,tmp_path):
+    download = make_job(store)
+    store.update_job(download['id'],state='running')
+    payload = dict(members=['000300.SH'],period='1d',start='2026-09-14',end='2026-09-14',format='csv')
+    export = store.create_job('export',payload)
+    store.update_job(export['id'],state='running',checkpoint=123)
+    cancelled = store.create_job('export',payload)
+    store.update_job(cancelled['id'],state='running',cancel_requested=True)
+    worker = Worker(store,tmp_path)
+    worker.publish = lambda event: worker.stop.set()
+    worker.run_queue('export')
+    assert store.job(download['id'])['state'] == 'running'
+    assert store.job(export['id'])['state'] == 'completed'
+    assert store.job(export['id'])['result']['rows'] == 0
+    assert store.job(export['id'])['checkpoint'] == 0
+    assert store.job(cancelled['id'])['state'] == 'cancelled'
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize('lane', ['source','exports'])
+def test_advisory_lock_excludes_second_worker(store,lane):
     with store.connect() as first, store.connect() as second:
-        key = store.schema + '.source'
+        key = store.schema + '.' + lane
         assert first.execute('SELECT pg_try_advisory_lock(hashtext(%s)) AS locked',(key,)).fetchone()['locked']
         assert not second.execute('SELECT pg_try_advisory_lock(hashtext(%s)) AS locked',(key,)).fetchone()['locked']
 

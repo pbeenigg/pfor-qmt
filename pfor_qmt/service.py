@@ -40,7 +40,8 @@ class Application:
         store = self.store
         if method == 'GET' and path == '/status':
             return {'settings': self.settings.public(), 'database': store.health(), 'source': 'qmt',
-                    'worker': self.worker.last_error, 'version': '0.1.0', 'ws_port': self.ws_port}
+                    'worker': self.worker.last_error, 'export_worker': self.worker.export_error,
+                    'version': '0.1.0', 'ws_port': self.ws_port}
         if method == 'POST' and path == '/source/test':
             return get_client().request('pfor.ping', timeout=4)
         if method == 'POST' and path == '/source/diagnostics':
