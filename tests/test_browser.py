@@ -17,6 +17,95 @@ from pfor_qmt.settings import Settings
 
 @pytest.mark.browser
 @pytest.mark.postgres
+def test_derivative_selection_details_and_board_dataset(store, tmp_path, monkeypatch):
+    if os.environ.get('PFOR_QMT_BROWSER_TEST') != '1':
+        pytest.skip('设置 PFOR_QMT_BROWSER_TEST=1 执行浏览器验收')
+    from pfor_qmt import service, client as pipe_client
+    monkeypatch.setattr(service, 'get_client', lambda: SimpleNamespace(request=lambda *args, **kwargs: {'mode': 'market-only'}))
+    monkeypatch.setattr(pipe_client, 'get_client', lambda: SimpleNamespace(request=lambda *args, **kwargs: {'instance': 'assets', 'generation': 1}))
+    for code, name, kind in [('cu2610.SF', '沪铜2610', 'future'), ('cu2610C80000.SF', '沪铜购80000', 'option'),
+                             ('SP au2610&au2612.SF', '黄金跨期组合', 'future'), ('160105.SZ', '南方积极LOF', 'fund'),
+                             ('113001.SH', '测试转债', 'bond'), ('000001.SZ', '平安银行', 'stock')]:
+        store.save_security(code, name, kind, {'InstrumentName': name}, metadata={'multiplier': 5, 'price_tick': 10})
+    with store.connect() as conn:
+        store.save_board({'name': '银行行业', 'category': 'industry', 'path': ['行业', '申万']}, ['000001.SZ', '000003.SZ'], conn)
+    app = Application(Settings(tmp_path, config_path=tmp_path/'config.toml'), store=store)
+    app.source = SimpleNamespace(get_full_tick=lambda selected: {code: {'lastPrice': 80000} for code in selected})
+    server = HTTPServer(('127.0.0.1', 0), handler_for(app))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    websocket = start_websocket(app, 0, server.server_port)
+    app.ws_port = websocket.socket.getsockname()[1]
+    output = Path(__file__).resolve().parents[1]/'output'/'playwright'
+    output.mkdir(parents=True, exist_ok=True)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={'width': 1440, 'height': 980})
+            errors = []
+            page.on('pageerror', lambda error: errors.append(str(error)))
+            page.goto('http://127.0.0.1:' + str(server.server_port))
+            page.get_by_label('API Key 或网页登录密码').fill(app.settings.api_key)
+            page.locator('#login-form button').click()
+            expect(page.locator('#catalog-counts')).to_contain_text('期货 2 个')
+            page.locator('#security-form [name="kind"]').select_option('future')
+            page.locator('#security-form [name="market"]').select_option('SF')
+            page.locator('#security-form [name="search"]').fill('沪铜')
+            page.locator('#security-form button').click()
+            expect(page.locator('#securities tr')).to_have_count(1)
+            page.locator('#securities [data-instrument="cu2610.SF"]').click()
+            expect(page.locator('#instrument-title')).to_have_text('沪铜2610')
+            expect(page.locator('#instrument-fields')).to_contain_text('合约乘数')
+            page.screenshot(path=str(output/'multi-asset-details-desktop.png'), full_page=True)
+            page.keyboard.press('Escape')
+            page.locator('[data-picker="quotes"]').click()
+            page.locator('#picker-clear').click()
+            page.locator('#picker-kind').select_option('future')
+            page.locator('#picker-market').select_option('SF')
+            page.locator('#picker-search').fill('黄金')
+            expect(page.locator('#picker-rows input')).to_have_count(1)
+            expect(page.locator('#picker-rows input')).to_have_value('SP au2610&au2612.SF')
+            page.locator('#picker-rows label').click()
+            expect(page.locator('#picker-rows input')).to_be_checked()
+            page.locator('#picker-apply').click()
+            page.locator('#quote-refresh').click()
+            expect(page.locator('#quotes')).to_contain_text('SP au2610&au2612.SF')
+            page.locator('nav [data-view="boards"]').click()
+            expect(page.locator('#board-rows')).to_contain_text('银行行业')
+            page.locator('[data-board-members="0"]').click()
+            expect(page.locator('#board-members')).to_contain_text('平安银行')
+            expect(page.locator('#board-members')).to_contain_text('1 个成员资料未收录')
+            expect(page.locator('#board-members')).to_contain_text('000003.SZ（资料未收录）')
+            page.locator('[data-board-dataset="0"]').click()
+            expect(page.locator('#dataset-form [name="name"]')).to_have_value('银行行业成员')
+            page.locator('#dataset-form button[type="submit"]').click()
+            expect(page.locator('#datasets')).to_contain_text('银行行业成员')
+            assert store.query('SELECT board_name FROM datasets', one=True)['board_name'] == '银行行业'
+            for width, height, label in [(1440,980,'desktop'), (390,844,'mobile'), (768,1024,'tablet')]:
+                page.set_viewport_size({'width': width, 'height': height})
+                for view in ('market','boards','history','settings'):
+                    page.locator(f'nav [data-view="{view}"]').click()
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), view
+                page.locator('[data-picker="diagnostics"]').click()
+                page.locator('#picker-kind').select_option('option')
+                page.locator('#picker-market').select_option('SF')
+                expect(page.locator('#picker-rows input')).to_have_count(1)
+                expect(page.locator('#picker-rows input')).to_have_value('cu2610C80000.SF')
+                page.locator('#picker-rows input').check()
+                page.screenshot(path=str(output/f'multi-asset-picker-{label}.png'), full_page=True)
+                box = page.locator('#security-picker').bounding_box()
+                assert box['x'] >= 0 and box['x'] + box['width'] <= width
+                page.locator('#picker-apply').click()
+                expect(page.locator('#diagnostic-code')).to_have_value('cu2610C80000.SF')
+            assert not errors, errors
+            browser.close()
+    finally:
+        websocket.shutdown()
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.browser
+@pytest.mark.postgres
 def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch):
     if os.environ.get('PFOR_QMT_BROWSER_TEST') != '1':
         pytest.skip('设置 PFOR_QMT_BROWSER_TEST=1 执行浏览器验收')

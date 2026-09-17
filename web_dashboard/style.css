@@ -107,5 +107,13 @@ dialog form { display: grid; gap: 22px; }
 .picker-results input[type="radio"] { width: 16px; min-height: 16px; accent-color: var(--green); }
 .picker-footer { justify-content: space-between; margin-top: 18px; }
 #picker-error { color: #a54545; font-size: 12px; }
+#catalog-form fieldset { flex-wrap: wrap; min-width: 0; }
+#catalog-form fieldset label { flex: 0 0 auto; }
+#instrument-dialog { width: min(700px, calc(100% - 24px)); max-height: calc(100dvh - 32px); }
+#instrument-title { overflow-wrap: anywhere; flex: 1; }
+#instrument-fields { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; font-size: 13px; }
+#instrument-fields dt { color: var(--muted); }
+#instrument-fields dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 680px) { nav { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; } }
 @media (max-width: 1000px) { body { grid-template-columns: 176px minmax(0, 1fr); } main { padding: 0 20px; } .sidebar { padding-left: 10px; padding-right: 10px; } .brand { font-size: 20px; } .header-status { gap: 9px; } }
 @media (max-width: 680px) { body { display: block; } .sidebar { height: auto; position: static; padding: 17px 16px 0; border-right: 0; border-bottom: 1px solid var(--line); } .brand { padding: 0; } .brand small { display: inline; margin-left: 12px; } nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; margin-top: 17px; } nav button { padding: 10px 1px; gap: 6px; font-size: 11px; border-radius: 0; flex-direction: column; } nav button.active { box-shadow: inset 0 -3px #16704a; } nav button svg { width: 17px; } .sidebar-foot { display: none; } main { padding: 0 16px; } header { padding: 20px 0; align-items: start; } h1 { font-size: 22px; } .header-status { max-width: 175px; } .header-status .icon { height: 30px; min-height: 30px; width: 30px; flex-basis: 30px; } .toolbar { gap: 10px; } .toolbar label { flex: 1 1 135px; } .toolbar .grow { flex-basis: 100%; } .source { max-width: 180px; line-height: 1.6; } .chart-area { height: 280px; } .deployment li { gap: 12px; } .deployment li button { padding: 8px; } footer { flex-direction: column; } .settings-meta { flex-wrap: wrap; } }

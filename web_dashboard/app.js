@@ -3,13 +3,14 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const state = { view: 'market', indices: [], datasets: [], jobs: [], quotes: {}, socket: null, offset: 0, next: null, snapshot: null, authenticated: false, reconnect: null, connecting: false, watch: [] };
 let catalogTimer, catalogJob, catalogSectors = [], securityOffset = 0, securityNext = null;
-const names = { market: '行情', indices: '指数', history: '历史库', jobs: '下载任务', settings: '数据源设置' };
+const names = { market: '行情', indices: '指数', boards:'行业概念', history: '历史库', jobs: '下载任务', settings: '数据源设置' };
+let boardRows = [], boardOffset = 0, boardNext = null;
 const statuses = { queued: '排队中', running: '运行中', completed: '已完成', partial: '待核验', failed: '失败', cancelled: '已取消' };
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const icon = (name) => `<i data-lucide="${name}"></i>`;
 const icons = () => window.lucide?.createIcons();
 const values = (form) => Object.fromEntries(new FormData(form));
-const splitCodes = (value) => value.toUpperCase().split(/[,，\s]+/).filter(Boolean);
+const splitCodes = (value) => value.split(/[,，\r\n]+/).map((code) => code.trim()).filter(Boolean);
 const formatTime = (value) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
 const number = (value) => value === undefined || value === null ? '—' : String(value);
 const empty = (id, cols, message) => { $(id).innerHTML = `<tr><td colspan="${cols}" class="empty">${escape(message)}</td></tr>`; };
@@ -66,6 +67,7 @@ async function switchView(view) {
   if (!state.authenticated) return;
   try {
     if (view === 'indices') { await loadCatalog(); await loadIndices(); }
+    if (view === 'boards') await loadBoards();
     if (view === 'history') { await loadDatasets(); chart?.resize(); }
     if (view === 'jobs') { await loadDatasets(); await loadJobs(); }
     if (view === 'settings') await status();
@@ -81,8 +83,9 @@ async function loadSecurities(offset = 0) {
   securityOffset = offset; securityNext = result.next_offset;
   $('#security-prev').disabled = !offset; $('#security-next').disabled = securityNext === null;
   $('#security-page-status').textContent = `共 ${result.total} 个${rows.length ? ` · ${offset + 1}–${offset + rows.length}` : ''}`;
-  if (!rows.length) return empty('#securities', 4, '没有匹配证券');
-  $('#securities').innerHTML = rows.map((row) => `<tr><td>${escape(row.code)}</td><td>${escape(row.name)}</td><td>${({ stock: 'A 股', index: '指数', etf: 'ETF' })[row.kind]}</td><td>${formatTime(row.updated_at)}</td></tr>`).join('');
+  if (!rows.length) return empty('#securities', 6, '没有匹配证券');
+  $('#securities').innerHTML = rows.map((row) => `<tr><td>${escape(row.code)}</td><td>${escape(row.name)}</td><td>${escape(kindNames[row.kind])}<span class="muted">${escape(subtypeNames[row.subtype] || '')}</span></td><td>${escape(marketNames[row.market] || row.market)}</td><td>${formatTime(row.updated_at)}</td><td><button type="button" class="icon" data-instrument="${escape(row.code)}" title="查看合约资料" aria-label="查看 ${escape(row.name)} 资料">${icon('file-search')}</button></td></tr>`).join('');
+  icons();
 }
 
 async function loadCatalog() {
@@ -91,7 +94,8 @@ async function loadCatalog() {
   const result = await api('/catalog');
   catalogSectors = result.sectors;
   filterSectors();
-  $('#catalog-counts').textContent = result.counts.length ? result.counts.map((item) => `${kindNames[item.kind]} ${item.count} 个`).join(' · ') : '尚未同步目录';
+  const counts = [...result.counts.map((item) => `${kindNames[item.kind]} ${item.count} 个`), ...(result.boards || []).map((item) => `${item.category === 'industry' ? '行业' : '概念'} ${item.count} 个`)];
+  $('#catalog-counts').textContent = counts.length ? counts.join(' · ') : '尚未同步目录';
   const wasActive = catalogJob && ['queued','running'].includes(catalogJob.state);
   catalogJob = result.job;
   const active = catalogJob && ['queued','running'].includes(catalogJob.state);
@@ -126,14 +130,14 @@ function suggestSector() {
 function renderQuotes(data) {
   Object.assign(state.quotes, data);
   const rows = Object.entries(state.quotes);
-  if (!rows.length) return empty('#quotes', 7, '暂无行情');
+  if (!rows.length) return empty('#quotes', 9, '暂无行情');
   $('#quotes').innerHTML = rows.map(([code, incoming]) => {
     const row = Array.isArray(incoming) ? incoming.at(-1) || {} : incoming;
     const price = row.lastPrice ?? row.last ?? row.close;
     const previous = row.lastClose ?? row.preClose;
     const change = price !== undefined && previous ? (Number(price) / Number(previous) - 1) * 100 : null;
     const tone = change === null || change === 0 ? '' : change > 0 ? 'positive' : 'negative';
-    return `<tr><td>${escape(catalogNames.get(code)?.name || code)}<span class="muted">${escape(code)}</span></td><td class="${tone}">${escape(number(price))}</td><td>${escape(number(previous))}</td><td class="${tone}">${change === null ? '—' : change.toFixed(2) + '%'}</td><td>${escape(number(row.volume))}</td><td>${escape(number(row.amount))}</td><td>${row.time ? formatTime(row.time) : '—'}</td></tr>`;
+    return `<tr><td>${escape(catalogNames.get(code)?.name || code)}<span class="muted">${escape(code)}</span></td><td class="${tone}">${escape(number(price))}</td><td>${escape(number(previous))}</td><td class="${tone}">${change === null ? '—' : change.toFixed(2) + '%'}</td><td>${escape(number(row.lastSettlementPrice ?? row.preSettlementPrice))}</td><td>${escape(number(row.openInt ?? row.openInterest))}</td><td>${escape(number(row.volume))}</td><td>${escape(number(row.amount))}</td><td>${row.time ? formatTime(row.time) : '—'}</td></tr>`;
   }).join('');
 }
 
@@ -218,7 +222,7 @@ async function loadDatasets() {
   select.innerHTML = '<option value="">选择数据集</option>' + state.datasets.map((row) => `<option value="${row.id}">${escape(row.name)} · ${row.members.length} 个证券</option>`).join('');
   select.value = selected;
   if (!state.datasets.length) return empty('#datasets', 5, '暂无数据集');
-  $('#datasets').innerHTML = state.datasets.map((row) => `<tr><td>${escape(row.name)}${row.index_code ? `<span class="muted">${escape(row.index_code)} 当前成分快照</span>` : ''}</td><td>${row.members.length}</td><td>${row.periods.join(' / ')}</td><td><input type="checkbox" data-schedule="${row.id}" aria-label="${escape(row.name)} 交易日自动更新" ${row.scheduled ? 'checked' : ''}></td><td><div class="actions"><button data-download="${row.id}" aria-label="下载此数据集" title="下载此数据集">${icon('download')}</button>${row.index_code ? `<button data-refresh-dataset="${row.id}" title="显式刷新成员" aria-label="显式刷新成员">${icon('refresh-cw')}</button>` : ''}</div></td></tr>`).join('');
+  $('#datasets').innerHTML = state.datasets.map((row) => `<tr><td>${escape(row.name)}${row.index_code || row.board_name ? `<span class="muted">${escape(row.board_name || row.index_code)} 当前成分快照</span>` : ''}</td><td>${row.members.length}</td><td>${row.periods.join(' / ')}</td><td><input type="checkbox" data-schedule="${row.id}" aria-label="${escape(row.name)} 交易日自动更新" ${row.scheduled ? 'checked' : ''}></td><td><div class="actions"><button data-download="${row.id}" aria-label="下载此数据集" title="下载此数据集">${icon('download')}</button>${row.index_code || row.board_name ? `<button data-refresh-dataset="${row.id}" title="显式刷新成员" aria-label="显式刷新成员">${icon('refresh-cw')}</button>` : ''}</div></td></tr>`).join('');
   icons();
 }
 
@@ -231,8 +235,8 @@ async function loadHistory(offset = 0) {
   $('#next-page').disabled = state.next === null;
   $('#page-status').textContent = result.rows.length ? `${offset + 1}–${offset + result.rows.length} 条` : '0 条';
   $('#chart-empty').hidden = result.rows.length > 0;
-  if (!result.rows.length) empty('#bars', 7, '所选范围没有入库行情');
-  else $('#bars').innerHTML = result.rows.map((row) => `<tr><td>${formatTime(row.time)}</td>${['open','high','low','close','volume','amount'].map((field) => `<td>${escape(number(row[field]))}</td>`).join('')}</tr>`).join('');
+  if (!result.rows.length) empty('#bars', 11, '所选范围没有入库行情');
+  else $('#bars').innerHTML = result.rows.map((row) => `<tr><td>${formatTime(row.time)}</td><td>${escape(row.trading_day || '待核验')}</td>${['open','high','low','close','volume','amount','open_interest','settlement','previous_settlement'].map((field) => `<td>${escape(number(row[field]))}</td>`).join('')}</tr>`).join('');
   if (!chart) chart = echarts.init($('#chart'));
   chart.setOption({ animation: false, grid: { left: 65, right: 25, top: 25, bottom: 60 }, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: result.rows.map((row) => query.period === '1d' ? row.time.slice(0,10) : row.time.slice(0,16).replace('T',' ')), axisLine: { lineStyle: { color: '#c4cec7' } }, axisLabel: { color: '#819086', fontSize: 10 } }, yAxis: { scale: true, splitLine: { lineStyle: { color: '#edf1ee' } }, axisLabel: { color: '#819086', fontSize: 10 } }, dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 10, height: 18, borderColor: '#e4eae6' }], series: [{ type: 'candlestick', name: query.code, data: result.rows.map((row) => [row.open,row.close,row.low,row.high].map((value) => value === null ? '-' : Number(value))), itemStyle: { color: '#cd5656', color0: '#2c9375', borderColor: '#cd5656', borderColor0: '#2c9375' } }] }, true);
   chart.resize();
@@ -290,7 +294,7 @@ $('#quote-form').addEventListener('submit', action(async () => {
   if (state.watch.join(',') === selected.join(',') && state.socket?.readyState === WebSocket.OPEN) return;
   state.watch = selected;
   state.quotes = {};
-  empty('#quotes',7,'等待行情源推送');
+  empty('#quotes',9,'等待行情源推送');
   $('#quote-stop').disabled = false;
   $('#quote-status').textContent = '正在订阅';
   await connectSocket();
@@ -304,7 +308,7 @@ $('#history-form').addEventListener('submit', action(() => loadHistory(0)));
 $('#prev-page').addEventListener('click', action(() => loadHistory(Math.max(0,state.offset-300))));
 $('#next-page').addEventListener('click', action(() => loadHistory(state.next)));
 for (const format of ['csv','parquet']) $(`#export-${format}`).addEventListener('click', action(async () => { const p = values($('#history-form')); await api('/exports', { ...p, members:[p.code], format }); await switchView('jobs'); notice('导出任务已创建'); }));
-$('#dataset-form').addEventListener('submit', action(async () => { const form = $('#dataset-form'); const p = values(form); const selected = new FormData(form).getAll('period'); if (!p.members) throw new Error('请选择数据集成员'); if (!selected.length) throw new Error('请选择至少一个周期'); const extra = state.snapshot ? { index_code:state.snapshot.code, snapshot_id:state.snapshot.snapshot_id } : {}; await api('/datasets', { name:p.name, members:splitCodes(p.members), periods:selected, ...extra }); state.snapshot = null; form.reset(); $('#dataset-form [name="members"]').value = ''; rememberSecurities([]); await loadDatasets(); notice('数据集已创建'); }));
+$('#dataset-form').addEventListener('submit', action(async () => { const form = $('#dataset-form'); const p = values(form); const selected = new FormData(form).getAll('period'); if (!p.members) throw new Error('请选择数据集成员'); if (!selected.length) throw new Error('请选择至少一个周期'); const extra = state.snapshot ? state.snapshot.board ? {board_name:state.snapshot.name, board_snapshot_id:state.snapshot.id} : { index_code:state.snapshot.code, snapshot_id:state.snapshot.snapshot_id } : {}; await api('/datasets', { name:p.name, members:splitCodes(p.members), periods:selected, ...extra }); state.snapshot = null; form.reset(); $('#dataset-form [name="members"]').value = ''; rememberSecurities([]); await loadDatasets(); notice('数据集已创建'); }));
 $('#download-form').addEventListener('submit', action(async () => { const p = values($('#download-form')); await api('/downloads', { ...p, start:p.start || null, end:p.end || null }); await loadJobs(); notice('回补任务已排队'); }));
 $('#refresh-jobs').addEventListener('click', action(loadJobs));
 $('#settings-form [name="login_enabled"]').addEventListener('change', (event) => { $('#settings-form [name="password"]').disabled = !event.target.checked; });
@@ -312,10 +316,11 @@ $('#settings-form').addEventListener('submit', action(async () => { const p = va
 $('#migrate').addEventListener('click', action(async () => { await api('/database/migrate', {}); await status(); notice('历史库已初始化'); }));
 $('#test-source').addEventListener('click', action(async () => { const result = await api('/source/test', {}); $('#source-result').textContent = result.mode === 'market-only' ? '行情桥连接正常' : '响应已收到'; $('#qmt-state').textContent = '行情桥已连接'; $('#qmt-state').classList.add('online'); }));
 $('#diagnose-source').addEventListener('click', action(async () => {
-  $('#source-result').textContent = '正在检查 000300.SH';
+  const code = $('#diagnostic-code').value;
+  $('#source-result').textContent = '正在检查 ' + securityLabel(code);
   $('#source-diagnostics').hidden = true;
   try {
-    const result = await api('/source/diagnostics', {});
+    const result = await api('/source/diagnostics', {code});
     const bridgeOk = result.checks.find((check) => check.name === 'bridge')?.state === 'ok';
     $('#qmt-state').textContent = bridgeOk ? '行情桥已连接' : '行情桥未连接';
     $('#qmt-state').classList.toggle('online', bridgeOk);
@@ -334,9 +339,30 @@ document.addEventListener('click', async (event) => {
   const button = event.target.closest('button');
   if (!button) return;
   const d = button.dataset;
-  if (!['indexMembers','indexDataset','download','refreshDataset','job','jobDetail'].some((key) => key in d)) return;
+  if (!['indexMembers','indexDataset','download','refreshDataset','job','jobDetail','instrument','boardMembers','boardDataset','boardRefresh'].some((key) => key in d)) return;
   event.preventDefault();
   try {
+  if (d.instrument) await showInstrument(d.instrument);
+  if (d.boardMembers !== undefined || d.boardDataset !== undefined || d.boardRefresh !== undefined) {
+    const row = boardRows[Number(d.boardMembers ?? d.boardDataset ?? d.boardRefresh)];
+    const snapshot = d.boardRefresh !== undefined ? await api('/boards/refresh', {name:row.name}) : await api('/boards/members?' + new URLSearchParams({name:row.name}));
+    if (d.boardDataset !== undefined) {
+      if (!snapshot.members.length) throw new Error('板块成员为空，无法创建数据集');
+      state.snapshot = {...snapshot, board:true};
+      await switchView('history');
+      $('#dataset-form [name="name"]').value = row.name + '成员';
+      $('#dataset-form [name="members"]').value = snapshot.members.join(',');
+      await resolveSelections();
+      $('#dataset-form').scrollIntoView({block:'center'});
+    } else {
+      if (snapshot.members.length) rememberSecurities(await api('/catalog/resolve', {members:snapshot.members}));
+      $('#board-members').hidden = false;
+      const missing = snapshot.members.filter((code) => !catalogNames.has(code));
+      const labels = snapshot.members.map((code) => catalogNames.has(code) ? securityLabel(code) : `${code}（资料未收录）`);
+      $('#board-members').textContent = `${row.name} · ${snapshot.members.length} 个成员 · ${formatTime(snapshot.observed_at)}${missing.length ? ` · ${missing.length} 个成员资料未收录` : ''}\n${labels.join('  ·  ')}`;
+      if (d.boardRefresh !== undefined) await loadBoards(boardOffset);
+    }
+  }
   if (d.indexMembers !== undefined) { const row = state.indices[Number(d.indexMembers)]; rememberSecurities(await api('/catalog/resolve', {members:row.members})); $('#constituents').hidden = false; $('#constituents').textContent = `${row.name} · ${row.members.length} 个成员\n${row.members.map(securityLabel).join('  ·  ')}`; }
   if (d.indexDataset !== undefined) { const row = state.indices[Number(d.indexDataset)]; state.snapshot = row; await switchView('history'); $('#dataset-form [name="name"]').value = row.name + '成分'; $('#dataset-form [name="members"]').value = row.members.join(', '); await resolveSelections(); $('#dataset-form').scrollIntoView({ block:'center' }); }
   if (d.download) { await switchView('jobs'); $('#download-form [name="dataset_id"]').value = d.download; }
@@ -345,6 +371,30 @@ document.addEventListener('click', async (event) => {
   if (d.jobDetail) { const job = await api('/jobs/' + d.jobDetail); $('#job-detail').hidden = false; $('#job-detail').open = true; $('#job-detail pre').textContent = JSON.stringify(job,null,2); }
   } catch (error) { notice(error.message); }
 });
+async function loadBoards(offset = 0) {
+  const result = await api('/boards?' + new URLSearchParams({...values($('#board-form')), offset, limit:50}));
+  boardRows = result.rows; boardOffset = offset; boardNext = result.next_offset;
+  $('#board-page').textContent = `共 ${result.total} 个`;
+  $('#board-prev').disabled = !offset; $('#board-next').disabled = boardNext === null;
+  if (!boardRows.length) return empty('#board-rows',5,'尚无匹配的行业概念板块');
+  $('#board-rows').innerHTML = boardRows.map((row,index) => `<tr><td>${escape(row.name)}</td><td>${row.category === 'industry' ? '行业' : '概念'}</td><td>${escape(row.path.join(' / '))}</td><td>${formatTime(row.observed_at)}</td><td><div class="actions"><button type="button" data-board-members="${index}" title="查看成员" aria-label="查看成员">${icon('list')}</button><button type="button" data-board-dataset="${index}" title="以板块成员创建数据集" aria-label="以板块成员创建数据集">${icon('folder-plus')}</button><button type="button" data-board-refresh="${index}" title="刷新板块成员" aria-label="刷新板块成员">${icon('refresh-cw')}</button></div></td></tr>`).join('');
+  icons();
+}
+async function showInstrument(code) {
+  const row = await api('/catalog/detail?' + new URLSearchParams({code}));
+  const labels = {product:'品种代码', product_name:'品种名称', underlying_code:'期权标的', underlying_market:'标的市场', strike:'行权价', option_type:'期权方向', expiry:'到期 / 退市日', created:'合约上市日', listed:'上市日', multiplier:'合约乘数', price_tick:'最小变价', option_unit:'期权单位', instrument_type:'终端类型', is_trading:'可交易标记'};
+  const entries = {代码:row.code, 名称:row.name, 类别:kindNames[row.kind], 交易所:marketNames[row.market] || row.market, 类型:subtypeNames[row.subtype] || '未提供'};
+  Object.entries(labels).forEach(([key, label]) => { entries[label] = row.metadata[key] ?? '未提供'; });
+  $('#instrument-title').textContent = row.name;
+  $('#instrument-fields').innerHTML = Object.entries(entries).map(([key,value]) => `<dt>${escape(key)}</dt><dd>${escape(typeof value === 'object' ? JSON.stringify(value) : value)}</dd>`).join('');
+  $('#instrument-raw').textContent = JSON.stringify(row.details,null,2);
+  $('#instrument-dialog').showModal();
+}
+$('#instrument-close').addEventListener('click', () => $('#instrument-dialog').close());
+$('#board-form').addEventListener('submit',action(() => loadBoards()));
+$('#board-prev').addEventListener('click',action(() => loadBoards(Math.max(0,boardOffset-50))));
+$('#board-next').addEventListener('click',action(() => loadBoards(boardNext)));
+$('#board-sync').addEventListener('click',action(async () => { await api('/catalog/sync',{kinds:['board']}); await switchView('market'); notice('行业概念同步已排队'); }));
 document.addEventListener('change', action(async (event) => { const id = event.target.dataset.schedule; if (!id) return; try { await api('/datasets/' + id + '/schedule', { enabled:event.target.checked }); } catch (error) { event.target.checked = !event.target.checked; throw error; } }));
 window.addEventListener('resize', () => chart?.resize());
 function today(offset = 0) { const date = new Date(); date.setDate(date.getDate()+offset); return date.toLocaleDateString('en-CA', { timeZone:'Asia/Shanghai' }); }
