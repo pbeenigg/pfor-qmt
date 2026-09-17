@@ -1,5 +1,29 @@
 # 统一配置
 
+## Tushare 多账号
+
+数据源设置页管理账号，仍写回同一个config.toml。账号ID不可改名，名称可修改；Token只写入、不回传，输入留空保持原值，勾选清除才删除。不保存Tushare网站密码。
+
+```toml
+[tushare]
+default_account_id = "research"
+
+[[tushare.accounts]]
+id = "research"
+name = "期货研究"
+endpoint = "https://api.tushare.pro"
+token = ""
+enabled = true
+timeout = 30.0
+requests_per_minute = 60
+```
+
+每个账号可通过`PFOR_QMT_TUSHARE_RESEARCH_TOKEN`、`_ENDPOINT`、`_TIMEOUT`、`_REQUESTS_PER_MINUTE`覆盖对应值；环境覆盖不写回TOML。账号ID只允许小写字母开头及字母、数字、下划线，最多32位。端点支持相同Tushare JSON协议，不在URL中放凭据，不跟随重定向转发Token。
+
+网页「检测接口权限」分别报告目录、日历、日线、分钟和主力映射，不把认证可用等同于所有接口可用。分钟需要单独授权；不在聊天、Git、日志或导出中提供Token。同Token的账号共享限流，不自动轮换账号。修改Token后重新检测，已失败任务可重试。
+
+数据集保存来源、账号和端点，任务创建时固定这些字段。默认账号变化不改变已有任务。可在数据集列表切换采集账号，已创建任务仍保留原账号。账号被数据集引用时不能删除，活动任务未取消前不能改端点或停用账号。已入库查询和导出无需Token。
+
 项目使用一个本地`config.toml`管理运行参数，`config.example.toml`是不含凭据的受版本控制模板。TOML由tomlkit结构化读写，网页设置与命令行设置写回同一文件，并保留用户注释。
 
 ## 加载顺序

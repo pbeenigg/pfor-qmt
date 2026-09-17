@@ -1,5 +1,19 @@
 # 验证记录
 
+## Tushare 期货接入（2026-09-17）
+
+完整回归197项通过，无跳过、无失败。命令：设置隔离`PFOR_QMT_TEST_DSN`与`PFOR_QMT_BROWSER_TEST=1`后运行`.venv\Scripts\python -m pytest -q`。测试使用临时postgres:16-alpine容器的独立测试schema及合成Tushare响应，不写用户业务行情。
+
+新增覆盖：公开HTTP协议、Token及错误脱敏、多账号环境覆盖、共享Token限流、达到返回上限时分块、日线万元到元精确转换、分钟交易日空值、来源同表不覆盖、合约身份、v3迁移保值、账号与端点固定、取消和检查点恢复、19:00调度去重、QMT请求阻塞时Tushare独立执行、主力映射及CSV/Parquet一致性。
+
+Chromium验证账号保存/权限检测、目录同步、搜索选择、新建数据集、下载、历史图表及文件导出，包含1440px桌面与390px移动视口，无页面脚本错误或页面横向溢出。新增异步响应序号，避免旧请求覆盖新来源和新任务结果；进入下载页前固定数据集选择。截图位于忽略目录output/playwright/tushare-*.png。
+
+业务库先以pg_dump备份至`runtime/backups/before-tushare-v4.dump`，再迁移schema至4并重启8766服务。迁移前后均为79,208条证券资料、0条K线、6个数据集、13个任务；原目录均为qmt，稳定ID无缺失。SDK实际HTTP读取目录数量一致。运行中网页已在桌面/移动视口复核，未写入演示账号、凭据或合成行情。
+
+标准隔离构建`python -m build`及`tools/verify_packages.py`通过，wheel/sdist包含新增模块、迁移、静态资源和许可证，无本地配置或运行数据。初次`--no-isolation`因开发环境未安装setuptools失败，改用pyproject声明的固定构建依赖后成功；未修改运行依赖。
+
+真实Tushare账号尚未配置。官方HTTPS端点可达，但真实Token认证、积分/分钟权限、各交易所历史覆盖、夜盘交易日及实际19:00长期调度仍未验收；模拟接口通过不代表这些项目通过。原QMT历史故障不在本轮宣称修复。
+
 日期：2026-09-17。主程序环境：Windows、CPython 3.12.10。下列结果来自本项目，不使用原cfquant测试数量充当本项目结果。
 
 ## 自选合约验收工具

@@ -1,5 +1,13 @@
 # 架构与二开入口
 
+## Tushare 期货扩展
+
+`accounts.py`负责多账号配置与脱敏，`tushare.py`负责公开HTTP协议、共享Token限流、受限分块、能力检测及字段转换，`identifiers.py`负责来源代码与合约身份。Tushare与QMT的目录、下载队列各自持有数据库锁，导出继续单独运行，QMT离线不阻塞Tushare。
+
+两种来源经过相同normalize_bars校验、Store.write_chunk事务与覆盖检查点，进入同一bars表。instruments提供稳定身份；securities是统一目录及来源代码映射，以source/code唯一。bars以instrument_id/source/period/time唯一，trading_dates及contract_mappings也明确source。账号仅在数据集和任务记录中引用，Token不进入业务表。
+
+旧QMT接口、默认来源及端点保持兼容。Tushare不模拟QMT缓存下载过程、不初始化交易或行情桥；端点响应的成功码不能代替实际数据校验与入库。测试只使用独立schema，真实Token由本地配置提供。
+
 ```mermaid
 flowchart LR
   Q[大 QMT: PFOR_MARKET] <--> H[本机命名管道 MarketHub]

@@ -30,3 +30,15 @@ maintenance_interval = 2.0
 [security]
 api_key = "" # Generated on first startup, or migrated from legacy settings.
 login_hash = "" # Managed by the settings page; never put a plaintext password here.
+
+[tushare]
+default_account_id = "main"
+
+[[tushare.accounts]]
+id = "main"
+name = "Tushare"
+endpoint = "https://api.tushare.pro"
+token = "" # Or PFOR_QMT_TUSHARE_MAIN_TOKEN; never returned by the API.
+enabled = true
+timeout = 30.0
+requests_per_minute = 60

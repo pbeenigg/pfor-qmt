@@ -1,5 +1,29 @@
 # API 与数据口径
 
+## Tushare 与来源选择
+
+旧接口省略`source`仍为`qmt`。目录、历史、日历、导出支持`source=tushare`，返回相同字段结构，代码保留来源原码，例如`CU2610.SHF`；QMT代码`cu2610.SF`不被替换。合约资料返回稳定`instrument_id`，资料足够时同一月份合约可关联相同ID；连续序列按来源独立。
+
+| 方法 | 路径（/api/v1前缀） | 参数及行为 |
+| --- | --- | --- |
+| GET | /sources | 来源能力、脱敏账号、最近权限检测 |
+| GET/POST | /sources/tushare/accounts | 查询/新增/更新账号；id、name、endpoint、token、enabled、timeout、requests_per_minute；default设为默认，clear_token显式清除 |
+| POST | /sources/tushare/accounts/{id}/test | 分别检测目录、日历、日线、分钟、映射；空结果不标数据可用 |
+| POST | /sources/tushare/accounts/{id}/delete | 拒绝删除被数据集或活动任务引用的账号 |
+| POST | /catalog/sync | source、account_id、kinds=["future"]；任务ID和检查点 |
+| GET | /catalog/securities | 新增source、active=true筛选；search也匹配品种代码 |
+| POST | /datasets | 新增source、account_id、schedule_time；Tushare默认19:00，QMT17:00 |
+| POST | /datasets/{id}/account | account_id；仅改变未来任务，已有任务保持原账号及端点 |
+| GET | /contract-mappings | code、source、start、end；返回已保存的每日主力/连续映射，最多2000条，长范围按日期分段 |
+| GET | /history、/calendar | source明确选择提供方，不自动混合 |
+| POST | /exports | source选择已入库来源，不要求账号在线 |
+
+Tushare仅普通月份合约支持1m/5m；主力/连续仅日线与每日映射。SDK `DataClient`的catalog、instrument、history、export增加source参数；sync_catalog增加account_id；新增sources、tushare_accounts、save_tushare_account、test_tushare_account、calendar、contract_mappings。`xtdata`与实时WebSocket watch仍限QMT。
+
+历史返回顶层`source=postgresql`表示存储层，`provider`与每行`source`表示提供方。`normalization_version=tushare-futures-v1`使用合约报价单位、手、元；日线万元按十进制精确换算。既有QMT为qmt-raw-v1，保留原始数值和单位标记。CSV/Parquet口径说明携带上述元数据。
+
+日线按交易日查询；分钟未提供交易日时保留trading_day=null，按上海自然时间筛选并标记夜盘归属、分钟内完整性待核验。主力映射缺少某交易日时不会自行沿用前一合约。Tushare日历不可用时不借用QMT或其他交易所日历。
+
 默认地址 `http://127.0.0.1:8766/api/v1`。SDK请求使用 `Authorization: Bearer <API Key>`；网页登录使用HttpOnly/SameSite=Strict会话。所有业务路径均需认证。HTTP错误为 `{ "error": "..." }`，不回传数据库凭据或原始驱动连接错误。
 
 主程序统一读取config.toml，端口可通过TOML、环境变量或CLI覆盖；GET /settings仅返回脱敏配置与config_file路径，POST /settings写回同一TOML。详情见CONFIGURATION.md。

@@ -10,3 +10,8 @@ Lucide 0.468.0 (ISC, with Feather-origin MIT portions), https://github.com/lucid
 Distribution licenses and ECharts NOTICE are retained in web_dashboard/vendor.
 Pinned versions and asset SHA-256 hashes are recorded in docs/assets-manifest.json.
 Python dependencies retain their licenses in their distributions; exact installed versions are recorded in requirements.lock.
+
+Tushare Pro is an external data service: https://tushare.pro/document/2.
+The futures adapter is original project code implementing the documented HTTP JSON protocol;
+no Tushare SDK source or market data is bundled. Data access and redistribution remain subject
+to the account's Tushare service permissions and terms, separate from this project's MIT license.

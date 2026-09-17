@@ -66,6 +66,7 @@ def main():
     hub.maintenance_interval_seconds = settings.value('maintenance_interval')
     threading.Thread(target=hub.start, daemon=True, name='pfor-pipe-hub').start()
     app.worker.start()
+    app.tushare_worker.start()
     print('pfor-qmt: http://127.0.0.1:%s (WebSocket %s)' % (port, ws_port), flush=True)
     try:
         server.serve_forever()
@@ -73,6 +74,7 @@ def main():
         pass
     finally:
         app.worker.stop.set()
+        app.tushare_worker.stop.set()
         websocket.shutdown()
         server.server_close()
         hub.close()

@@ -1,27 +1,28 @@
 import math
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from .symbols import normalize_code, derivative_kind
+from .identifiers import source_code
 
 SHANGHAI = ZoneInfo('Asia/Shanghai')
 FIELDS = ('open', 'high', 'low', 'close', 'volume', 'amount', 'open_interest', 'settlement', 'previous_settlement')
 
 
-def codes(value):
+def codes(value, source='qmt'):
     if isinstance(value, str):
         pieces = re.split(r'[,，;\r\n]+', value.strip())
         value = []
         for piece in pieces:
             try:
-                value.append(normalize_code(piece))
+                value.append(source_code(piece, source))
             except ValueError:
                 value.extend(piece.split())
     if not isinstance(value, (list, tuple)):
         raise ValueError('证券代码必须是代码数组或逗号分隔文本')
-    result = list(dict.fromkeys(normalize_code(item) for item in value))
+    result = list(dict.fromkeys(source_code(item, source) for item in value))
     if not result or len(result) > 10000:
         raise ValueError('一次选择 1 至 10000 个证券或合约')
     return result
@@ -66,7 +67,7 @@ def number(value):
     return result
 
 
-def normalize_bars(frame, code, period, start, end):
+def normalize_bars(frame, code, period, start, end, source='qmt'):
     if frame is None:
         return []
     if hasattr(frame, 'to_dict'):
@@ -82,7 +83,7 @@ def normalize_bars(frame, code, period, start, end):
         raw_day = record.get('tradingDay', record.get('tradingDate', record.get('trading_day')))
         if isinstance(raw_day, float) and math.isfinite(raw_day) and raw_day.is_integer():
             raw_day = int(raw_day)
-        trading_day = timestamp(raw_day).date() if str(raw_day) not in ('None', '', '0', 'nan', 'NaN', 'NaT', '<NA>') else when.date() if period == '1d' or not derivative_kind(code) else None
+        trading_day = timestamp(raw_day).date() if str(raw_day) not in ('None', '', '0', 'nan', 'NaN', 'NaT', '<NA>') else when.date() if period == '1d' or source == 'qmt' and not derivative_kind(code) else None
         if not start <= (trading_day or when.date()) <= end:
             continue
         if period == '1d':
@@ -105,7 +106,7 @@ def chunks(payload):
     today = datetime.now(SHANGHAI).date()
     end = day(payload.get('end') or today)
     result = []
-    for code in codes(payload['members']):
+    for code in codes(payload['members'], payload.get('source', 'qmt')):
         for period in periods(payload.get('periods', ['1d'])):
             start = day(payload.get('start') or end - timedelta(days=365 if period == '1d' else 90))
             if start > end or end > today:
@@ -118,7 +119,7 @@ def chunks(payload):
 
 
 def json_default(value):
-    if isinstance(value, (Decimal, date, datetime)):
+    if isinstance(value, (Decimal, date, datetime, time)):
         return str(value) if isinstance(value, Decimal) else value.isoformat()
     import uuid
     if isinstance(value, uuid.UUID):

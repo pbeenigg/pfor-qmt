@@ -1,5 +1,11 @@
 # 兼容矩阵
 
+## Tushare 扩展（已实现）
+
+旧API省略source仍选择qmt，xtdata保持QMT语义。新增tushare来源共用目录、任务、历史库及导出；多账号仅用于认证，不增加行情副本维度。历史API保留source=postgresql表示存储层，行source和新增provider表示提供方。旧QMT数据、配置与终端模型不自动改写。
+
+schema版本4将K线唯一键扩展为合约ID/来源/周期/时间；Tushare期货金额统一为元，成交与持仓量为手，旧QMT原始单位明确标记。分钟交易日未知仍为空。完整回归197项通过，用户业务库迁移与HTTP检查通过；真实Tushare数据和权限待本地Token验证。结果见docs/VERIFICATION.md。
+
 基准为 cfquant `5baa4daf8dab01fb415afdd45a72cd254cea042f`。这是明确裁剪后的行情产品，不宣称整个 cfquant API 兼容。
 
 | 接口或能力 | 处理 | 验证状态与差异 |

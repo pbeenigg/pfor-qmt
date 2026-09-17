@@ -200,6 +200,8 @@ def start_websocket(app, port, http_port):
                     if not isinstance(command, dict) or command.get('action') not in ('watch', 'unwatch'):
                         raise ValueError('无效的订阅请求')
                     if command['action'] == 'watch':
+                        if command.get('source','qmt') != 'qmt':
+                            raise ValueError('Tushare本期不提供实时订阅')
                         selected = codes(command.get('codes', []))
                         if len(selected) > 100:
                             raise ValueError('网页最多订阅 100 个证券')

@@ -1,5 +1,11 @@
 # pfor-qmt
 
+## Tushare 期货历史
+
+QMT离线时可在「数据源设置」新增Tushare账号，填写本地Token并检测接口权限。顶部切换为Tushare、选择采集账号，在行情页同步期货目录；随后在历史库搜索合约、创建数据集，在下载任务页回补，入库后查询图表或导出CSV/Parquet。
+
+多账号共用根目录config.toml。日线与具体月份合约1/5分钟历史复用现有PostgreSQL表和任务，保留来源不覆盖QMT数据。分钟需要独立权限；主力/连续分钟、实时行情不在本次接入范围。配置与SDK示例见docs/CONFIGURATION.md、docs/API.md。
+
 面向股票、行业概念、指数、期货、期权、场内基金、债券的本地行情工作台，覆盖大QMT实际提供的国内品种。基于 [cfquant](https://github.com/95ge/cfquant) 固定提交派生，保留 MIT 许可证；不是上游官方产品。
 
 提供大 QMT 命名管道行情桥、Python SDK、PostgreSQL 历史库、下载任务、CSV/Parquet 导出和原生 Web 工作台。支持不复权日线、1/5 分钟线、当前指数及板块成员，不包含任何交易接口。七类扩展及实机验收状态见 [接入计划](docs/MULTI_ASSET_PLAN.md)，接口支持不代表终端权限或历史数据已经可用。

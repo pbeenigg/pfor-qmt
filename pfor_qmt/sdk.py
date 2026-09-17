@@ -20,17 +20,35 @@ class DataClient:
         with urlopen(request, timeout=self.timeout) as response:
             return json.load(response)
 
-    def securities(self, search='', kind=''):
-        return self.request('/securities', search=search, kind=kind)
+    def securities(self, search='', kind='', source='qmt'):
+        return self.request('/securities', search=search, kind=kind,source=source)
 
-    def catalog(self, search='', kind='', limit=50, offset=0, market='', subtype=''):
-        return self.request('/catalog/securities', search=search, kind=kind, limit=limit, offset=offset, market=market, subtype=subtype)
+    def catalog(self, search='', kind='', limit=50, offset=0, market='', subtype='', source='qmt', active=False):
+        return self.request('/catalog/securities', search=search, kind=kind, limit=limit, offset=offset, market=market, subtype=subtype,source=source,active=str(active).lower())
 
-    def sync_catalog(self, kinds=('future', 'option', 'stock', 'index', 'fund', 'bond', 'board')):
-        return self.request('/catalog/sync', {'kinds': list(kinds)})
+    def sync_catalog(self, kinds=None, source='qmt', account_id=None):
+        return self.request('/catalog/sync', {'kinds': list(kinds or (('future',) if source=='tushare' else ('future', 'option', 'stock', 'index', 'fund', 'bond', 'board'))), 'source':source,'account_id':account_id})
 
-    def instrument(self, code):
-        return self.request('/catalog/detail', code=code)
+    def instrument(self, code, source='qmt'):
+        return self.request('/catalog/detail', code=code, source=source)
+
+    def sources(self):
+        return self.request('/sources')
+
+    def tushare_accounts(self):
+        return self.request('/sources/tushare/accounts')
+
+    def save_tushare_account(self, identifier, **options):
+        return self.request('/sources/tushare/accounts', dict(id=identifier, **options))
+
+    def test_tushare_account(self, identifier):
+        return self.request('/sources/tushare/accounts/' + identifier + '/test', {})
+
+    def contract_mappings(self, code, start, end, source='tushare'):
+        return self.request('/contract-mappings',code=code,start=start,end=end,source=source)
+
+    def calendar(self, market, start, end, source='qmt'):
+        return self.request('/calendar',market=market,start=start,end=end,source=source)
 
     def boards(self, search='', category='', limit=50, offset=0):
         return self.request('/boards', search=search, category=category, limit=limit, offset=offset)
@@ -53,8 +71,8 @@ class DataClient:
     def create_dataset(self, name, members, periods=('1d',), **options):
         return self.request('/datasets', dict(name=name, members=members, periods=list(periods), **options))
 
-    def history(self, code, period='1d', start='1990-01-01', end='2100-01-01', limit=500, offset=0):
-        return self.request('/history', code=code, period=period, start=start, end=end, limit=limit, offset=offset)
+    def history(self, code, period='1d', start='1990-01-01', end='2100-01-01', limit=500, offset=0, source='qmt'):
+        return self.request('/history', code=code, period=period, start=start, end=end, limit=limit, offset=offset,source=source)
 
     def download(self, dataset_id, start=None, end=None):
         return self.request('/downloads', dict(dataset_id=dataset_id, start=start, end=end))
@@ -68,8 +86,8 @@ class DataClient:
     def retry(self, identifier):
         return self.request('/jobs/' + identifier + '/retry', {})
 
-    def export(self, members, period, start, end, format='csv'):
-        return self.request('/exports', dict(members=members, period=period, start=start, end=end, format=format))
+    def export(self, members, period, start, end, format='csv', source='qmt'):
+        return self.request('/exports', dict(members=members, period=period, start=start, end=end, format=format,source=source))
 
     def save_export(self, identifier, destination, metadata=False):
         from pathlib import Path

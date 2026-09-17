@@ -43,9 +43,18 @@ class Settings:
             raise ValueError('config.toml 语法错误，请检查 TOML 格式') from None
         known = {(table,field) for table,field,_,_ in FIELDS.values()}
         for table, values in self.document.items():
+            if table == 'tushare':
+                if not isinstance(values, dict) or set(values) - {'accounts', 'default_account_id'}:
+                    raise ValueError('无效Tushare配置段')
+                continue
             if table not in {item[0] for item in known} or not isinstance(values, dict) or any((table,field) not in known for field in values):
                 raise ValueError('config.toml 存在未知配置项或无效配置段')
         self.data = {key:self.document.get(table, {}).get(field, default) for key,(table,field,default,_) in FIELDS.items()}
+        raw_accounts = self.document.get('tushare', {}).get('accounts', [])
+        if not isinstance(raw_accounts, list) or any(not isinstance(value, dict) for value in raw_accounts):
+            raise ValueError('tushare.accounts必须是账号配置数组')
+        self.accounts = [dict(value) for value in raw_accounts]
+        self.default_account_id = self.document.get('tushare', {}).get('default_account_id', '')
         self._validate()
         runtime_value = Path(self.value('runtime_dir')).expanduser()
         self.runtime = (self.path.parent / runtime_value).resolve() if not runtime_value.is_absolute() else runtime_value.resolve()
@@ -80,6 +89,15 @@ class Settings:
             raise ValueError('环境变量 %s 的类型无效' % env) from None
 
     def _validate(self):
+        from .accounts import profile
+        identifiers = []
+        if not isinstance(self.default_account_id,str):
+            raise ValueError('Tushare默认账号ID必须是字符串')
+        for account in self.accounts:
+            profile(account, effective=False)
+            identifiers.append(profile(account)['id'])
+        if len(set(identifiers)) != len(identifiers) or self.default_account_id and self.default_account_id not in identifiers:
+            raise ValueError('Tushare账号ID重复或默认账号不存在')
         for key, (table,field,default,_) in FIELDS.items():
             for value in (self.data[key], self.value(key)):
                 valid = isinstance(value,str) if isinstance(default,str) else isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and value > 0
@@ -123,6 +141,8 @@ class Settings:
             if table not in doc:
                 doc[table] = tomlkit.table()
             doc[table][field] = self.data[key]
+        if self.accounts or 'tushare' in doc:
+            doc['tushare'] = {'default_account_id': self.default_account_id, 'accounts': self.accounts}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp = self.path.with_suffix('.local.toml')
         text = tomlkit.dumps(doc)
@@ -148,3 +168,18 @@ class Settings:
         return {'database_configured': bool(self.dsn), 'qmt_root': self.qmt_root,
                 'login_enabled': bool(self.data['login_hash']), 'schema': 'pfor_qmt',
                 'timezone': 'Asia/Shanghai', 'adjustment': 'none', 'config_file': str(self.path)}
+
+    def account(self, identifier=None):
+        from .accounts import profile
+        identifier = identifier or self.default_account_id
+        raw = next((item for item in self.accounts if item['id'] == identifier), None)
+        if raw is None:
+            raise ValueError('Tushare账号不存在，请先配置账号')
+        value = profile(raw)
+        if not value['enabled'] or not value['token']:
+            raise ValueError('Tushare账号已停用或Token未配置')
+        return value
+
+    def public_accounts(self):
+        from .accounts import public
+        return {'accounts': [public(item) for item in self.accounts], 'default_account_id': self.default_account_id}

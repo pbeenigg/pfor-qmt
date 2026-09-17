@@ -25,7 +25,8 @@ function securityLabel(code) {
 }
 
 async function resolveSelections() {
-  const members = [...new Set(Object.values(pickerTargets).flatMap((target) => splitCodes($(target.input).value)))];
+  const targets = provider==='tushare' ? [pickerTargets.history,pickerTargets.dataset] : Object.values(pickerTargets);
+  const members = [...new Set(targets.flatMap((target) => splitCodes($(target.input).value)))];
   if (members.length) rememberSecurities(await api('/catalog/resolve', { members }));
   else rememberSecurities([]);
 }
@@ -54,7 +55,7 @@ async function loadPicker(offset = 0) {
     if ($('#picker-selected-only').checked) {
       const rows = [...pickerSelection].map((code) => catalogNames.get(code) || {code,name:'目录未收录',kind:''}).filter((row) => (!kind || row.kind === kind) && (!market || row.market === market) && `${row.code} ${row.name}`.toLowerCase().includes(search.toLowerCase()));
       result = { rows:rows.slice(offset, offset + 50), total:rows.length, next_offset:offset + 50 < rows.length ? offset + 50 : null };
-    } else result = await api('/catalog/securities?' + new URLSearchParams({search, kind, market, limit:50, offset}));
+    } else result = await api('/catalog/securities?' + new URLSearchParams({search, kind, market, active:$('#picker-active').checked, limit:50, offset}));
     if (request !== pickerRequest || !$('#security-picker').open) return;
     rememberSecurities(result.rows.filter((row) => row.kind));
     pickerRows = result.rows; pickerOffset = offset; pickerNext = result.next_offset;
@@ -82,10 +83,11 @@ function initializePickers() {
     pickerSelection = new Set(splitCodes($(target.input).value));
     $('#picker-title').textContent = target.title;
     $('#picker-search').value = '';
-    $('#picker-kind').value = target.kind || '';
+    $('#picker-kind').value = target.kind || (provider==='tushare'?'future':'');
     $('#picker-market').value = '';
     $('#picker-kind').disabled = !!target.kind;
     $('#picker-selected-only').checked = false;
+    $('#picker-active').checked=provider==='tushare';
     $('#picker-all-label').hidden = !target.multiple;
     $('#security-picker').showModal();
     $('#picker-search').focus();
@@ -100,6 +102,7 @@ function initializePickers() {
   $('#picker-kind').addEventListener('change', () => loadPicker());
   $('#picker-market').addEventListener('change', () => loadPicker());
   $('#picker-selected-only').addEventListener('change', () => loadPicker());
+  $('#picker-active').addEventListener('change', () => loadPicker());
   $('#picker-prev').addEventListener('click', () => loadPicker(Math.max(0, pickerOffset - 50)));
   $('#picker-next').addEventListener('click', () => loadPicker(pickerNext));
   $('#picker-clear').addEventListener('click', () => { pickerSelection.clear(); loadPicker(); });

@@ -92,6 +92,10 @@ dialog form { display: grid; gap: 22px; }
 .selection-button { width: 100%; justify-content: space-between; text-align: left; white-space: normal; min-height: 39px; }
 .selection-button span { overflow-wrap: anywhere; line-height: 1.5; }
 .catalog-meta { color: #55665c; font-size: 12px; line-height: 1.8; }
+.source-toolbar { padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+#dataset-schedule-time { width: 150px; flex: 0 0 150px; margin: 0 0 16px 12px; }
+#account-form { margin-top: 20px; }
+#account-rows td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; min-width: 160px; }
 #catalog-status { font-size: 12px; overflow-wrap: anywhere; }
 #catalog-progress { width: min(420px, 100%); height: 8px; }
 #security-picker { width: min(760px, calc(100% - 24px)); max-height: calc(100dvh - 32px); padding: 20px; }

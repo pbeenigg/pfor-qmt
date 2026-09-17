@@ -36,4 +36,6 @@
 
 数据库、任务、SDK DataClient、HTTP/WebSocket、Web 工作台为本项目新增。界面没有复制上游产品标识。后续升级采用选择性移植、补充来源与兼容矩阵、执行回归测试；不直接覆盖整个包。
 
+2026-09-17 Tushare扩展：accounts.py、identifiers.py、tushare.py及004_sources.sql为本项目新增。按Tushare官方公开HTTP JSON协议实现期货适配，未复制Tushare SDK代码，也未改动上游或QMT部署模型。现有任务、校验、存储与工作台扩展来源参数，维持旧QMT默认行为；官方数据服务不随本项目MIT许可证重新授权。
+
 2026-09-17七类扩展：`symbols.py`为本项目新增，保留国内期货/期权的原始合约编码；`QmtMethods._get_sector_list`复用遍历逻辑并增加保留祖先路径的`_get_sector_tree`，原扁平接口仍去重。批量合约资料循环调用既有原生详情方法；期权详情只调用原生`get_option_detail_data`。字段映射参照本机QMT随附xtquant文档中的`ExtendInfo`、`settle`与`openInterest`定义，未复制其按名称猜测期权方向的逻辑。新增模块、迁移、板块快照和界面为独立实现。

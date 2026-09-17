@@ -10,6 +10,8 @@ from .data import SHANGHAI, FIELDS, chunks, day, timestamp, normalize_bars, json
 from .protocol import encode_value
 from .storage import job_summary
 from .symbols import market_of, derivative_kind
+from .identifiers import source_market, TS_EXCHANGES
+from .tushare import TushareSource, SourceError
 
 
 class Cancelled(Exception):
@@ -26,9 +28,10 @@ def network_error(error):
 
 
 class Worker:
-    def __init__(self, store, runtime, publish=None, source=None):
+    def __init__(self, store, runtime, publish=None, source=None, provider='qmt', account_resolver=None):
         self.store, self.runtime = store, Path(runtime)
         self.source = source or xtdata
+        self.provider, self.account_resolver = provider, account_resolver
         self.publish = publish or (lambda event: None)
         self.stop = threading.Event()
         self.thread = None
@@ -45,23 +48,27 @@ class Worker:
         if self.stop.is_set():
             raise InterruptedError('服务停止，任务等待下次恢复')
         if self.store.job(identifier)['cancel_requested']:
-            raise Cancelled('已停止后续处理；已提交的 QMT 请求不会撤销')
+            raise Cancelled('已停止后续处理；已提交的数据源请求不会撤销')
 
     def run(self):
         exports = threading.Thread(target=self.run_queue, args=('export',), daemon=True, name='pfor-export-worker')
         catalog = threading.Thread(target=self.run_queue, args=('catalog',), daemon=True, name='pfor-catalog-worker')
-        exports.start()
+        if self.provider == 'qmt':
+            exports.start()
         catalog.start()
         try:
             self.run_queue('download')
         finally:
             self.stop.set()
-            exports.join()
+            if self.provider == 'qmt':
+                exports.join()
             catalog.join()
 
     def run_queue(self, kind):
         error_field = {'download': 'last_error', 'export': 'export_error', 'catalog': 'catalog_error'}[kind]
         lock_name = {'download': '.source', 'export': '.exports', 'catalog': '.catalog'}[kind]
+        if kind != 'export':
+            lock_name += '.' + self.provider
         while not self.stop.is_set():
             try:
                 with self.store.connect() as lease:
@@ -71,14 +78,14 @@ class Worker:
                         self.stop.wait(2)
                         continue
                     setattr(self, error_field, '')
-                    self.store.query("UPDATE jobs SET state=CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END WHERE state='running' AND kind=%s", (kind,))
+                    self.store.query("UPDATE jobs SET state=CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END WHERE state='running' AND kind=%s AND (%s='export' OR coalesce(payload->>'source','qmt')=%s)", (kind,kind,self.provider))
                     while not self.stop.is_set():
                         lease.execute('SELECT 1')
                         lease.commit()
                         if kind == 'download' and (self.last_schedule is None or (datetime.now(SHANGHAI) - self.last_schedule).total_seconds() >= 60):
                             self.schedule()
                             self.last_schedule = datetime.now(SHANGHAI)
-                        job = self.store.query("SELECT * FROM jobs WHERE state='queued' AND kind=%s ORDER BY created_at LIMIT 1", (kind,), one=True)
+                        job = self.store.query("SELECT * FROM jobs WHERE state='queued' AND kind=%s AND (%s='export' OR coalesce(payload->>'source','qmt')=%s) ORDER BY created_at LIMIT 1", (kind,kind,self.provider), one=True)
                         if not job:
                             self.stop.wait(1)
                             continue
@@ -92,7 +99,9 @@ class Worker:
         self.store.update_job(identifier, state='running', error=None)
         try:
             self.check(identifier)
-            if job['kind'] == 'catalog':
+            if job['kind'] == 'catalog' and self.provider == 'tushare':
+                result = self.sync_tushare(job)
+            elif job['kind'] == 'catalog':
                 from .catalog import synchronize
                 result = synchronize(self, job)
             else:
@@ -111,6 +120,44 @@ class Worker:
         finally:
             self.publish({'event': 'job', 'data': job_summary(self.store.job(identifier))})
 
+    def tushare_source(self, payload, check=None):
+        account = self.account_resolver(payload.get('account_id'))
+        if account['endpoint'] != payload.get('endpoint'):
+            raise ValueError('账号端点与任务固定端点不同，请恢复配置或新建任务')
+        return TushareSource(account, check)
+
+    def sync_tushare(self, job):
+        identifier = job['id']
+        adapter = self.tushare_source(job['payload'], lambda: self.check(identifier))
+        parts = [(exchange, kind) for exchange in TS_EXCHANGES for kind in ('1', '2')]
+        payload = dict(job['payload'], chunks=[{'exchange': ex, 'contract_type': kind} for ex,kind in parts])
+        self.store.update_job(identifier, payload=payload)
+        for index, (exchange, kind) in enumerate(parts[job['checkpoint']:], job['checkpoint']):
+            rows = self.retry_network(identifier, lambda: adapter.catalog(exchange, kind))
+            self.check(identifier)
+            with self.store.connect() as conn:
+                for position, row in enumerate(rows):
+                    if position % 100 == 0:
+                        self.check(identifier)
+                    self.store.save_security(**row, conn=conn, source='tushare')
+                self.check(identifier)
+                conn.execute('UPDATE jobs SET checkpoint=%s,attempts=0,updated_at=now() WHERE id=%s', (index+1,identifier))
+            self.publish({'event':'job', 'data':job_summary(self.store.job(identifier))})
+        total = self.store.query("SELECT count(*) AS n FROM securities WHERE source='tushare'", one=True)['n']
+        return {'rows':total,'message':'Tushare期货目录已同步'}
+
+    def calendar(self, code, start, end, count=-1, adapter=None):
+        if self.provider == 'qmt':
+            return self.source.get_trading_dates(code, start, end, count) if count != -1 else self.source.get_trading_dates(code,start,end)
+        final = datetime.strptime(end, '%Y%m%d').date()
+        first = datetime.strptime(start, '%Y%m%d').date() if start else final - timedelta(days=60)
+        dates = []
+        while first <= final:
+            last = min(first + timedelta(days=365), final)
+            dates.extend(adapter.calendar(source_market(code,'tushare'), first, last))
+            first = last + timedelta(days=1)
+        return [date.strftime('%Y%m%d') for date in (dates[-count:] if count > 0 else dates)]
+
     def retry_network(self, identifier, operation):
         for attempt in range(4):
             self.check(identifier)
@@ -126,10 +173,13 @@ class Worker:
     def download(self, job):
         payload, identifier = job['payload'], job['id']
         parts = payload['chunks']
+        adapter = self.tushare_source(payload, lambda: self.check(identifier)) if self.provider == 'tushare' else None
         for index, part in enumerate(parts[job['checkpoint']:], start=job['checkpoint']):
             self.check(identifier)
             code, period, start, end = part['code'], part['period'], day(part['start']), day(part['end'])
-            derivative = derivative_kind(code)
+            part = dict(part, source=self.provider)
+            derivative = 'future' if self.provider == 'tushare' else derivative_kind(code)
+            security = self.store.query('SELECT kind,subtype FROM securities WHERE source=%s AND code=%s', (self.provider,code), one=True)
             # Include the preceding session; only explicit terminal trading days assign night bars.
             read_start = start - timedelta(days=7) if derivative and period != '1d' else start
             def read():
@@ -151,17 +201,26 @@ class Worker:
                     if poll < 5:
                         self.stop.wait(1)
                 return []
-            rows = self.retry_network(identifier, read)
+            rows = self.retry_network(identifier, lambda: adapter.history(code,period,start,end,security['subtype'] if security else 'contract')) if adapter else self.retry_network(identifier, read)
             self.check(identifier)
-            calendar = self.retry_network(identifier, lambda: self.source.get_trading_dates(code, start.strftime('%Y%m%d'), end.strftime('%Y%m%d')))
+            calendar_error = None
+            try:
+                calendar = self.retry_network(identifier, lambda: self.calendar(code,start.strftime('%Y%m%d'),end.strftime('%Y%m%d'),adapter=adapter))
+            except SourceError as error:
+                if not adapter or not rows:
+                    raise
+                calendar, calendar_error = [], str(error)
             if not rows and not calendar:
-                raise ValueError(f'{code} / {period} / {start} 至 {end}：QMT 历史行情和交易日历均为空，已停止后续下载；请检查终端行情服务器登录与连接，恢复后重试。当前分块未推进检查点')
+                guidance = '终端行情服务器登录与连接' if self.provider == 'qmt' else 'Tushare连接与接口权限'
+                raise ValueError(f'{code} / {period} / {start} 至 {end}：{self.provider.upper()} 历史行情和交易日历均为空，已停止后续下载；请检查{guidance}，恢复后重试。当前分块未推进检查点')
             trading_days = sorted({timestamp(value).date() for value in calendar})
             with self.store.connect() as conn:
                 with conn.cursor() as cursor:
-                    cursor.executemany('INSERT INTO trading_dates(market,day) VALUES(%s,%s) ON CONFLICT DO NOTHING', [(market_of(code), item) for item in trading_days])
+                    cursor.executemany('INSERT INTO trading_dates(market,day,source) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING', [(source_market(code,self.provider), item,self.provider) for item in trading_days])
             actual = {row['trading_day'] or row['time'].date() for row in rows}
             gaps = [{'day': value.isoformat(), 'reason': '无行情，停牌或缺失待确认'} for value in trading_days if value not in actual]
+            if calendar_error:
+                gaps.append({'reason':calendar_error})
             if not rows:
                 gaps.append({'range': [part['start'], part['end']], 'reason': '空表未确认为成功'})
             if not calendar:
@@ -171,7 +230,6 @@ class Worker:
                 if derivative and any(row['trading_day'] is None for row in rows):
                     gaps.append({'reason': '终端未提供交易日字段，夜盘交易日归属待核验；时间按原值保存'})
             factor = None
-            security = self.store.query('SELECT kind FROM securities WHERE code=%s', (code,), one=True)
             if not derivative and (not security or security['kind'] != 'bond'):
                 try:
                     factor = encode_value(self.retry_network(identifier, lambda: self.source.get_divid_factors(code)))
@@ -180,6 +238,15 @@ class Worker:
                         raise
                     gaps.append({'reason': '当前终端未提供复权因子'})
             self.check(identifier)
+            if adapter and security and security['subtype'] == 'continuous':
+                mappings = self.retry_network(identifier, lambda: adapter.mapping(code,start,end))
+                self.check(identifier)
+                with self.store.connect() as conn:
+                    for mapping in mappings:
+                        conn.execute('INSERT INTO contract_mappings(source,code,trading_day,member_code) VALUES(%s,%s,%s,%s) ON CONFLICT(source,code,trading_day) DO UPDATE SET member_code=EXCLUDED.member_code,updated_at=now()', (self.provider,code,mapping['trade_date'],mapping['mapping_ts_code']))
+                missing = actual - {r['trade_date'] for r in mappings}
+                if missing:
+                    gaps.append({'reason':'主力映射缺失，连续序列对应合约待核验','days':sorted(date.isoformat() for date in missing)})
             self.store.write_chunk(identifier, part, rows, gaps, index + 1, factor)
             self.publish({'event': 'job', 'data': job_summary(self.store.job(identifier))})
         coverage = self.store.query('SELECT * FROM coverage WHERE job_id=%s ORDER BY code,period,requested_start', (identifier,))
@@ -190,26 +257,31 @@ class Worker:
 
     def schedule(self, now=None):
         now = now or datetime.now(SHANGHAI)
-        cutoff = now.date() if now.hour >= 17 else now.date() - timedelta(days=1)
-        datasets = self.store.query('SELECT * FROM datasets WHERE scheduled=true')
+        datasets = self.store.query('SELECT * FROM datasets WHERE scheduled=true AND source=%s', (self.provider,))
         self.last_error = ''
         for dataset in datasets:
+            cutoff = now.date() if now.time() >= dataset['schedule_time'] else now.date() - timedelta(days=1)
             if dataset['schedule_from'] > cutoff:
                 continue
-            representatives = {market_of(code): code for code in dataset['members']}
+            try:
+                adapter = self.tushare_source(dataset, lambda: (_ for _ in ()).throw(InterruptedError()) if self.stop.is_set() else None) if self.provider == 'tushare' else None
+            except ValueError as error:
+                self.last_error = str(error)
+                continue
+            representatives = {source_market(code,self.provider): code for code in dataset['members']}
             calendars = {}
             for market, representative in representatives.items():
                 try:
-                    calendar = self.source.get_trading_dates(representative, dataset['schedule_from'].strftime('%Y%m%d'), cutoff.strftime('%Y%m%d'))
+                    calendar = self.calendar(representative, dataset['schedule_from'].strftime('%Y%m%d'), cutoff.strftime('%Y%m%d'),adapter=adapter)
                     dates = sorted({timestamp(value).date() for value in calendar if dataset['schedule_from'] <= timestamp(value).date() <= cutoff})
                     if not dates:
                         self.last_error = market + ' 交易日历为空，无法确认到期交易日，调度等待重试'
                     with self.store.connect() as conn:
                         with conn.cursor() as cursor:
-                            cursor.executemany('INSERT INTO trading_dates(market,day) VALUES(%s,%s) ON CONFLICT DO NOTHING', [(market, item) for item in dates])
+                            cursor.executemany('INSERT INTO trading_dates(market,day,source) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING', [(market, item,self.provider) for item in dates])
                 except Exception:
                     self.last_error = market + ' 交易日历请求失败，调度仅使用已保存日期并等待重试'
-                    dates = [row['day'] for row in self.store.query('SELECT day FROM trading_dates WHERE market=%s AND day BETWEEN %s AND %s ORDER BY day', (market, dataset['schedule_from'], cutoff))]
+                    dates = [row['day'] for row in self.store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s ORDER BY day', (self.provider,market, dataset['schedule_from'], cutoff))]
                 calendars[market] = dates
             if any(not values for values in calendars.values()):
                 continue
@@ -220,13 +292,15 @@ class Worker:
                     continue
                 try:
                     active = [market for market, values in calendars.items() if date in values]
-                    previous = [self.source.get_trading_dates(representatives[market], '', date.strftime('%Y%m%d'), 5) for market in active]
+                    previous = [self.calendar(representatives[market], '', date.strftime('%Y%m%d'), 5,adapter) for market in active]
                     lookbacks = [sorted({timestamp(value).date() for value in values if timestamp(value).date() <= date}) for values in previous]
                     if any(len(days) < 5 for days in lookbacks):
                         self.last_error = '最近五个交易日尚未就绪，调度等待重试'
                         continue
-                    payload = {'dataset_id': str(dataset['id']), 'members': [code for code in dataset['members'] if market_of(code) in active], 'periods': dataset['periods'],
+                    payload = {'dataset_id': str(dataset['id']), 'members': [code for code in dataset['members'] if source_market(code,self.provider) in active], 'periods': dataset['periods'],
                                'start': min(days[-5] for days in lookbacks).isoformat(), 'end': date.isoformat()}
+                    payload.update(source=self.provider,account_id=dataset['account_id'],endpoint=dataset['endpoint'])
+                    payload['members'] = [code for code in dataset['members'] if source_market(code,self.provider) in active]
                     payload['chunks'] = chunks(payload)
                     self.store.create_job('download', payload, key)
                 except Exception:
@@ -256,7 +330,7 @@ class Worker:
                     offset = 0
                     while True:
                         self.check(identifier)
-                        page = self.store.history(code, payload['period'], payload['start'], payload['end'], 5000, offset, conn)
+                        page = self.store.history(code, payload['period'], payload['start'], payload['end'], 5000, offset, conn, source=payload.get('source','qmt'))
                         rows = page.pop('rows')
                         metadata = page
                         if not rows:
