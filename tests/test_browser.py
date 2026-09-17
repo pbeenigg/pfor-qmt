@@ -21,10 +21,17 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
     if os.environ.get('PFOR_QMT_BROWSER_TEST') != '1':
         pytest.skip('设置 PFOR_QMT_BROWSER_TEST=1 执行浏览器验收')
     app = Application(Settings(tmp_path,config_path=tmp_path / 'config.toml'),store=store)
-    from pfor_qmt import service
+    from pfor_qmt import service, client as pipe_client
     monkeypatch.setattr(service,'get_client',lambda: SimpleNamespace(request=lambda *args,**kwargs: {'mode':'market-only'}))
+    monkeypatch.setattr(pipe_client,'get_client',lambda: SimpleNamespace(request=lambda *args,**kwargs: {'instance':'browser','generation':1}))
+    subscriptions, released = [], []
+    def subscribe(codes, callback):
+        subscriptions.append(callback)
+        callback({code:{'lastPrice':len(subscriptions),'time':20260917140000} for code in codes})
+        return len(subscriptions)
     app.source = SimpleNamespace(get_full_tick=lambda codes:{codes[0]:{'lastPrice':10}},
-                                get_local_data=lambda **params:{},get_trading_dates=lambda *args:[])
+                                get_local_data=lambda **params:{},get_trading_dates=lambda *args:[],
+                                subscribe_whole_quote=subscribe,unsubscribe_quote=lambda seq:released.append(seq))
     # Only this isolated test schema contains these synthetic prices.
     seed = store.create_job('download',{'members':['000300.SH'],'periods':['1d']})
     start = datetime(2026,9,1,tzinfo=SHANGHAI)
@@ -53,6 +60,33 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
             page.get_by_label('API Key 或网页登录密码').fill(app.settings.data['api_key'])
             page.locator('#login-form button').click()
             expect(page.locator('#login-dialog')).not_to_be_visible()
+            page.locator('#quote-form button[type="submit"]').click()
+            expect(page.locator('#quote-status')).to_have_text('已订阅 3 个证券')
+            expect(page.locator('#quotes tr')).to_have_count(3)
+            page.locator('#quote-form button[type="submit"]').click()
+            expect(page.locator('#quote-status')).to_have_text('已订阅 3 个证券')
+            assert len(subscriptions) == 1
+            page.locator('#quote-form [name="codes"]').fill('510300.SH')
+            page.locator('#quote-form button[type="submit"]').click()
+            expect(page.locator('#quote-status')).to_have_text('已订阅 1 个证券')
+            expect(page.locator('#quotes tr')).to_have_count(1)
+            subscriptions[0]({'000300.SH':{'lastPrice':999}})
+            page.locator('#quote-stop').click()
+            expect(page.locator('#quote-status')).to_have_text('已停止订阅')
+            subscriptions[1]({'510300.SH':{'lastPrice':999}})
+            expect(page.locator('#quote-stop')).to_be_disabled()
+            expect(page.locator('#quotes')).not_to_contain_text('999')
+            page.screenshot(path=str(output / 'market-stopped-desktop.png'),full_page=True)
+            page.locator('#quote-form button[type="submit"]').click()
+            expect(page.locator('#quote-status')).to_have_text('已订阅 1 个证券')
+            assert released == [1,2]
+            page.evaluate('state.socket.close()')
+            expect(page.locator('#quote-status')).to_have_text('连接已断开，等待恢复')
+            expect(page.locator('#quote-status')).to_have_text('已订阅 1 个证券',timeout=12000)
+            assert len(subscriptions) == 4 and released == [1,2,3]
+            page.locator('#quote-stop').click()
+            expect(page.locator('#quote-status')).to_have_text('已停止订阅')
+            assert released == [1,2,3,4]
             page.locator('nav [data-view="history"]').click()
             page.locator('#history-form [name="start"]').fill('2026-09-01')
             page.locator('#history-form [name="end"]').fill('2026-09-10')

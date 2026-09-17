@@ -168,6 +168,90 @@ def test_websocket_ticket_and_job_event(app_server):
         websocket.shutdown()
 
 
+@pytest.mark.postgres
+def test_websocket_watch_switch_stop_and_recovery(app_server,monkeypatch):
+    from websockets.sync.client import connect
+    from pfor_qmt import client as pipe_client, server as module
+    app, server, client = app_server
+    callbacks, released = [], []
+    identity, now = [1], [100.0]
+    monkeypatch.setattr(pipe_client,'get_client',lambda: SimpleNamespace(request=lambda *args,**kwargs: {'instance':'test','generation':identity[0]}))
+    monkeypatch.setattr(module,'time',SimpleNamespace(time=time.time,monotonic=lambda:now[0]))
+    def subscribe(codes,callback):
+        callbacks.append(callback)
+        callback({codes[0]:{'lastPrice':len(callbacks)}})
+        return len(callbacks)
+    app.source = SimpleNamespace(subscribe_whole_quote=subscribe,unsubscribe_quote=lambda seq:released.append(seq))
+    websocket = start_websocket(app,0,server.server_port)
+    app.ws_port = websocket.socket.getsockname()[1]
+    def receive(socket,event):
+        for _ in range(8):
+            message = json.loads(socket.recv(timeout=3))
+            if message['event'] == event:
+                return message
+        pytest.fail('Expected event: ' + event)
+    try:
+        ticket = client.request('/ws-ticket',{})
+        with connect('ws://127.0.0.1:%s/?ticket=%s' % (app.ws_port,ticket['ticket'])) as socket:
+            socket.send(json.dumps({'action':'watch','codes':['000300.SH']}))
+            assert receive(socket,'quote')['data'] == {'000300.SH':{'lastPrice':1}}
+            socket.send(json.dumps({'action':'watch','codes':['510300.SH']}))
+            assert receive(socket,'quote')['data'] == {'510300.SH':{'lastPrice':2}}
+            callbacks[0]({'000300.SH':{'lastPrice':999}})
+            identity[0], now[0] = 2, 120
+            assert receive(socket,'source')['connected'] is False
+            now[0] = 126
+            assert receive(socket,'quote')['data'] == {'510300.SH':{'lastPrice':3}}
+            socket.send(json.dumps({'action':'unwatch'}))
+            assert receive(socket,'watch')['codes'] == []
+            callbacks[2]({'510300.SH':{'lastPrice':999}})
+            app.publish({'event':'job','data':{'state':'completed'}})
+            assert json.loads(socket.recv(timeout=3)) == {'event':'job','data':{'state':'completed'}}
+            with pytest.raises(TimeoutError):
+                socket.recv(timeout=.4)
+            now[0] = 200
+            socket.send(json.dumps({'action':'watch','codes':['000001.SZ']}))
+            assert receive(socket,'quote')['data'] == {'000001.SZ':{'lastPrice':4}}
+        deadline = time.monotonic() + 3
+        while app.listeners and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert not app.listeners and released == [1,2,3,4]
+    finally:
+        websocket.shutdown()
+
+
+@pytest.mark.postgres
+def test_websocket_invalid_commands_and_failed_unwatch_keep_connection(app_server,monkeypatch):
+    from websockets.sync.client import connect
+    from pfor_qmt import client as pipe_client
+    app, server, client = app_server
+    callbacks = []
+    monkeypatch.setattr(pipe_client,'get_client',lambda: SimpleNamespace(request=lambda *args,**kwargs: {'instance':'test','generation':1}))
+    app.source = SimpleNamespace(subscribe_whole_quote=lambda codes,cb:callbacks.append(cb) or 1,
+                                unsubscribe_quote=lambda seq:False)
+    websocket = start_websocket(app,0,server.server_port)
+    app.ws_port = websocket.socket.getsockname()[1]
+    try:
+        ticket = client.request('/ws-ticket',{})
+        with connect('ws://127.0.0.1:%s/?ticket=%s' % (app.ws_port,ticket['ticket'])) as socket:
+            for command in [[],None,{'action':'unknown'},{'action':'watch','codes':[]}]:
+                socket.send(json.dumps(command))
+                assert json.loads(socket.recv(timeout=3))['event'] == 'error'
+            socket.send(json.dumps({'action':'watch','codes':['000300.SH']}))
+            assert json.loads(socket.recv(timeout=3))['event'] == 'source'
+            assert json.loads(socket.recv(timeout=3))['event'] == 'watch'
+            socket.send(json.dumps({'action':'unwatch'}))
+            error = json.loads(socket.recv(timeout=3))
+            assert error['event'] == 'error' and error['codes'] == ['000300.SH']
+            callbacks[0]({'000300.SH':{'lastPrice':5}})
+            assert json.loads(socket.recv(timeout=3))['data']['000300.SH']['lastPrice'] == 5
+            app.source.unsubscribe_quote = lambda seq:True
+            socket.send(json.dumps({'action':'unwatch'}))
+            assert json.loads(socket.recv(timeout=3)) == {'event':'watch','codes':[]}
+    finally:
+        websocket.shutdown()
+
+
 def test_real_windows_pipe_market_request_reconnect_and_trade_rejection(tmp_path,monkeypatch):
     import os
     if os.name != 'nt':

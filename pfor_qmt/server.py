@@ -171,38 +171,63 @@ def start_websocket(app, port, http_port):
         watch = []
         last_attempt = 0
         source_identity = None
+        watch_generation = 0
         with app.lock:
             app.listeners.add(listener)
-        def callback(data):
-            try:
-                listener.put_nowait({'event': 'quote', 'data': encode_value(data)})
-            except queue.Full:
-                pass
+        def callback_for(generation):
+            def callback(data):
+                if generation != watch_generation:
+                    return
+                try:
+                    listener.put_nowait({'event':'quote','data':encode_value(data),'_generation':generation})
+                except queue.Full:
+                    pass
+            return callback
+
+        def release_subscription():
+            if subscription is not None:
+                try:
+                    result = app.source.unsubscribe_quote(subscription)
+                    if result is False or isinstance(result, (int, float)) and result < 0:
+                        raise RuntimeError('Unsubscribe rejected')
+                except Exception as error:
+                    raise ValueError('退订失败，原订阅仍保留，请重试') from error
         try:
             while True:
                 try:
                     raw = socket.recv(timeout=0.25)
                     command = json.loads(raw)
-                    if command.get('action') == 'watch':
+                    if not isinstance(command, dict) or command.get('action') not in ('watch', 'unwatch'):
+                        raise ValueError('无效的订阅请求')
+                    if command['action'] == 'watch':
                         selected = codes(command.get('codes', []))
                         if len(selected) > 100:
                             raise ValueError('网页最多订阅 100 个证券')
-                        if subscription:
-                            app.source.unsubscribe_quote(subscription)
+                        release_subscription()
+                        watch_generation += 1
                         watch, subscription, last_attempt = selected, None, 0
+                    else:
+                        release_subscription()
+                        watch_generation += 1
+                        watch, subscription = [], None
+                        socket.send(json.dumps({'event':'watch','codes':[]}))
                 except TimeoutError:
                     pass
-                except (ValueError, KeyError):
-                    socket.send(json.dumps({'event':'error','message':'无效的订阅请求'}))
+                except (ValueError, KeyError, TypeError) as error:
+                    message = str(error) if isinstance(error, ValueError) else '无效的订阅请求'
+                    socket.send(json.dumps({'event':'error','message':message,'codes':watch}))
                 if watch and subscription is None and time.monotonic() - last_attempt > 5:
                     last_attempt = time.monotonic()
                     try:
                         from .client import get_client
                         status = get_client().request('pfor.ping', timeout=3)
                         source_identity = (status.get('instance'), status.get('generation'))
-                        subscription = app.source.subscribe_whole_quote(watch, callback)
+                        watch_generation += 1
+                        subscription = app.source.subscribe_whole_quote(watch, callback_for(watch_generation))
                         socket.send(json.dumps({'event':'source','connected':True}))
+                        socket.send(json.dumps({'event':'watch','codes':watch}))
                     except Exception:
+                        watch_generation += 1
                         socket.send(json.dumps({'event':'source','connected':False}))
                 if subscription and time.monotonic() - last_attempt > 15:
                     last_attempt = time.monotonic()
@@ -212,20 +237,26 @@ def start_websocket(app, port, http_port):
                         if source_identity != (status.get('instance'), status.get('generation')):
                             raise ConnectionError('QMT bridge reconnected')
                     except Exception:
+                        watch_generation += 1
                         try:
-                            app.source.unsubscribe_quote(subscription)
+                            release_subscription()
                         except Exception:
                             pass
                         subscription = None
                         socket.send(json.dumps({'event':'source','connected':False}))
                 for _ in range(30):
                     try:
-                        socket.send(json.dumps(listener.get_nowait(), default=json_default, ensure_ascii=False))
+                        event = listener.get_nowait()
+                        generation = event.pop('_generation', None)
+                        if event['event'] == 'quote' and generation != watch_generation:
+                            continue
+                        socket.send(json.dumps(event, default=json_default, ensure_ascii=False))
                     except queue.Empty:
                         break
         except (ConnectionClosed, OSError):
             pass
         finally:
+            watch_generation += 1
             with app.lock:
                 app.listeners.discard(listener)
             if subscription:

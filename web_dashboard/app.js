@@ -1,7 +1,7 @@
 'use strict';
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
-const state = { view: 'market', indices: [], datasets: [], jobs: [], quotes: {}, socket: null, offset: 0, next: null, snapshot: null, authenticated: false, reconnect: null };
+const state = { view: 'market', indices: [], datasets: [], jobs: [], quotes: {}, socket: null, offset: 0, next: null, snapshot: null, authenticated: false, reconnect: null, connecting: false, watch: [] };
 const names = { market: '行情', indices: '指数', history: '历史库', jobs: '下载任务', settings: '数据源设置' };
 const statuses = { queued: '排队中', running: '运行中', completed: '已完成', partial: '待核验', failed: '失败', cancelled: '已取消' };
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -25,6 +25,7 @@ async function api(path, payload) {
   if (!response.ok) {
     if (response.status === 401 && path !== '/login') {
       state.authenticated = false;
+      closeQuotes();
       if (!$('#login-dialog').open) $('#login-dialog').showModal();
     }
     throw new Error(result.error || '请求失败');
@@ -92,28 +93,68 @@ function renderQuotes(data) {
 }
 
 async function connectSocket() {
-  if (!state.authenticated || state.socket?.readyState === WebSocket.OPEN) return;
-  const ticket = await api('/ws-ticket', {});
-  const socket = new WebSocket(`ws://127.0.0.1:${ticket.port}/?ticket=${encodeURIComponent(ticket.ticket)}`);
-  state.socket = socket;
-  socket.onopen = () => { if (state.watch) socket.send(JSON.stringify({ action: 'watch', codes: state.watch })); };
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.event === 'quote') renderQuotes(message.data);
-    if (message.event === 'job' && state.view === 'jobs') loadJobs().catch((error) => notice(error.message));
-    if (message.event === 'source') {
-      $('#qmt-state').textContent = message.connected ? '行情桥已连接' : '行情桥未连接';
-      $('#qmt-state').classList.toggle('online', !!message.connected);
-    }
-    if (message.event === 'error') notice(message.message);
-  };
-  socket.onclose = () => {
-    if (state.socket !== socket) return;
-    state.socket = null;
-    $('#qmt-state').textContent = '行情桥待检查';
-    $('#qmt-state').classList.remove('online');
-    if (state.authenticated) state.reconnect = setTimeout(() => connectSocket().catch((error) => notice(error.message)), 5000);
-  };
+  if (!state.authenticated || state.connecting || [WebSocket.OPEN, WebSocket.CONNECTING].includes(state.socket?.readyState)) return;
+  clearTimeout(state.reconnect);
+  state.connecting = true;
+  try {
+    const ticket = await api('/ws-ticket', {});
+    if (!state.authenticated) return;
+    const socket = new WebSocket(`ws://127.0.0.1:${ticket.port}/?ticket=${encodeURIComponent(ticket.ticket)}`);
+    state.socket = socket;
+    socket.onopen = () => { if (state.watch.length) sendWatch(); };
+    socket.onmessage = (event) => {
+      if (state.socket !== socket || !state.authenticated) return;
+      const message = JSON.parse(event.data);
+      if (message.event === 'quote' && state.watch.length) renderQuotes(Object.fromEntries(Object.entries(message.data).filter(([code]) => state.watch.includes(code))));
+      if (message.event === 'watch' && message.codes.join(',') === state.watch.join(',')) {
+        $('#quote-status').textContent = state.watch.length ? `已订阅 ${state.watch.length} 个证券` : '已停止订阅';
+        $('#quote-stop').disabled = !state.watch.length;
+      }
+      if (message.event === 'job' && state.view === 'jobs') loadJobs().catch((error) => notice(error.message));
+      if (message.event === 'source') {
+        $('#qmt-state').textContent = message.connected ? '行情桥已连接' : '行情桥未连接';
+        $('#qmt-state').classList.toggle('online', !!message.connected);
+        if (!message.connected && state.watch.length) $('#quote-status').textContent = '等待行情桥恢复';
+      }
+      if (message.event === 'error') {
+        if (message.codes) {
+          state.watch = message.codes;
+          socket.watchKey = message.codes.join(',');
+          $('#quote-stop').disabled = !state.watch.length;
+          $('#quote-status').textContent = state.watch.length ? `保留原订阅：${state.watch.join(', ')}` : '未订阅';
+        }
+        notice(message.message);
+      }
+    };
+    socket.onclose = () => {
+      if (state.socket !== socket) return;
+      state.socket = null;
+      $('#qmt-state').textContent = '行情桥待检查';
+      $('#qmt-state').classList.remove('online');
+      if (state.watch.length) $('#quote-status').textContent = '连接已断开，等待恢复';
+      if (state.authenticated) state.reconnect = setTimeout(() => connectSocket().catch((error) => notice(error.message)), 5000);
+    };
+  } catch (error) {
+    if (state.authenticated) state.reconnect = setTimeout(() => connectSocket().catch((failure) => notice(failure.message)), 5000);
+    throw error;
+  } finally { state.connecting = false; }
+}
+
+function sendWatch() {
+  const socket = state.socket;
+  if (!state.authenticated || socket?.readyState !== WebSocket.OPEN) return;
+  const key = state.watch.join(',');
+  if (socket.watchKey === key) return;
+  socket.send(JSON.stringify(key ? { action:'watch', codes:state.watch } : { action:'unwatch' }));
+  socket.watchKey = key;
+}
+
+function closeQuotes() {
+  state.watch = [];
+  clearTimeout(state.reconnect);
+  state.socket?.close();
+  $('#quote-stop').disabled = true;
+  $('#quote-status').textContent = '未订阅';
 }
 
 async function loadIndices() {
@@ -181,14 +222,24 @@ $('#login-form').addEventListener('submit', action(async () => {
 $('#logout').addEventListener('click', action(async () => {
   await api('/logout', {});
   state.authenticated = false;
-  clearTimeout(state.reconnect);
-  state.socket?.close();
+  closeQuotes();
   $('#login-dialog').showModal();
 }));
 $('#security-form').addEventListener('submit', action(loadSecurities));
 $('#sync-form').addEventListener('submit', action(async () => { const p = values($('#sync-form')); await api('/securities/sync', { ...p, members: splitCodes(p.members) }); await loadSecurities(); notice('证券资料已同步'); }));
 $('#quote-refresh').addEventListener('click', action(async () => { const result = await api('/quotes?codes=' + encodeURIComponent(values($('#quote-form')).codes)); renderQuotes(result); }));
-$('#quote-form').addEventListener('submit', action(async () => { state.watch = splitCodes(values($('#quote-form')).codes); state.quotes = {}; empty('#quotes',7,'等待行情源推送'); await connectSocket(); if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ action:'watch', codes:state.watch })); }));
+$('#quote-form').addEventListener('submit', action(async () => {
+  const selected = [...new Set(splitCodes(values($('#quote-form')).codes))];
+  if (state.watch.join(',') === selected.join(',') && state.socket?.readyState === WebSocket.OPEN) return;
+  state.watch = selected;
+  state.quotes = {};
+  empty('#quotes',7,'等待行情源推送');
+  $('#quote-stop').disabled = false;
+  $('#quote-status').textContent = '正在订阅';
+  await connectSocket();
+  sendWatch();
+}));
+$('#quote-stop').addEventListener('click', () => { state.watch = []; $('#quote-stop').disabled = true; $('#quote-status').textContent = state.socket?.readyState === WebSocket.OPEN ? '正在停止订阅' : '已停止订阅'; sendWatch(); });
 $('#load-sectors').addEventListener('click', action(async () => { const sectors = await api('/sectors'); $('#sector-options').innerHTML = sectors.map((sector) => `<option value="${escape(sector)}"></option>`).join(''); notice(`已读取 ${sectors.length} 个板块`); }));
 $('#index-form').addEventListener('submit', action(async () => { await api('/indices/refresh', values($('#index-form'))); await loadIndices(); notice('当前成分快照已保存'); }));
 $('#history-form').addEventListener('submit', action(() => loadHistory(0)));

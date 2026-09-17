@@ -27,7 +27,8 @@
     <div id="notice" role="status" hidden></div>
     <section id="market" class="view">
       <div class="section-heading"><h2>实时行情</h2><span class="source">QMT · Asia/Shanghai</span></div>
-      <form id="quote-form" class="toolbar"><label class="grow">证券代码<input name="codes" value="000300.SH, 000001.SZ, 510300.SH" required></label><button type="submit" class="primary"><i data-lucide="radio"></i>订阅行情</button><button id="quote-refresh" type="button" class="icon" title="刷新快照" aria-label="刷新快照"><i data-lucide="refresh-cw"></i></button></form>
+      <form id="quote-form" class="toolbar"><label class="grow">证券代码<input name="codes" value="000300.SH, 000001.SZ, 510300.SH" required></label><button type="submit" class="primary"><i data-lucide="radio"></i>订阅行情</button><button id="quote-stop" type="button" class="icon" title="停止订阅" aria-label="停止订阅" disabled><i data-lucide="square"></i></button><button id="quote-refresh" type="button" class="icon" title="刷新快照" aria-label="刷新快照"><i data-lucide="refresh-cw"></i></button></form>
+      <p id="quote-status" role="status">未订阅</p>
       <div class="table-wrap"><table><thead><tr><th>证券</th><th>最新价</th><th>昨收</th><th>涨跌幅</th><th>成交量 · 原始单位</th><th>成交额 · 原始单位</th><th>行情时间</th></tr></thead><tbody id="quotes"><tr><td colspan="7" class="empty">暂无行情</td></tr></tbody></table></div>
       <div class="section-heading"><h2>证券资料</h2><span class="source">指数 / A 股 / 场内 ETF</span></div>
       <form id="security-form" class="toolbar"><label class="grow">查询<input name="search" placeholder="代码或名称"></label><label>类别<select name="kind"><option value="">全部</option><option value="index">指数</option><option value="stock">A 股</option><option value="etf">ETF</option></select></label><button type="submit"><i data-lucide="search"></i>查询</button></form>
