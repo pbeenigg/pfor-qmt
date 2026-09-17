@@ -38,6 +38,7 @@ def wait_job(client, identifier, timeout=300):
 def canonical(rows):
     return sorted((row['code'], row['period'], datetime.fromisoformat(str(row['time'])).astimezone(SHANGHAI).isoformat(),
                    *(None if row.get(field) in (None, '') else Decimal(str(row[field])) for field in FIELDS),
+                   str(row.get('trading_day') or ''),
                    row['source']) for row in rows)
 
 
@@ -81,7 +82,7 @@ def run(client, store, folder, start, end, report):
             raise ValueError('Repeated download changed values or keys; inspect terminal revisions')
         previous = actual
     report['stage'] = 'database_comparison'
-    database = store.query("SELECT code,period,time,open,high,low,close,volume,amount,source FROM bars WHERE code=ANY(%s) AND period='1d' AND time >= %s::date AND time < %s::date + interval '1 day'", (SAMPLES, start, end))
+    database = store.query("SELECT code,period,time,open,high,low,close,volume,amount,open_interest,settlement,previous_settlement,trading_day,source FROM bars WHERE code=ANY(%s) AND period='1d' AND coalesce(trading_day,time::date) BETWEEN %s::date AND %s::date", (SAMPLES, start, end))
     if canonical(database) != previous:
         raise ValueError('Database and paginated SDK rows differ')
     report.update(rows=len(previous), duplicate_upsert='passed', database_sdk='passed', exports={})

@@ -15,20 +15,24 @@
 | POST | /source/diagnostics | 可选code，默认000300.SH；只读检查桥、快照、近30天本地日线与交易日历 |
 | GET | /quotes | codes逗号分隔，读取QMT快照 |
 | GET | /securities | search、kind，可在终端离线时查库 |
-| POST | /securities/sync | members数组、kind=stock/index/etf，最多100证券 |
+| POST | /securities/sync | members数组、kind=future/option/stock/index/fund/bond；兼容etf，最多100证券 |
 | GET | /catalog | 已保存目录数量、板块和最近目录任务 |
-| GET | /catalog/securities | search、kind、limit=1..200、offset；返回rows、total、next_offset，支持完整目录分页 |
+| GET | /catalog/securities | search、kind、market、subtype、limit=1..200、offset；返回rows、total、next_offset，支持完整目录分页 |
+| GET | /catalog/detail | code；读取已保存原生详情、分类及合约元数据，支持QMT离线 |
 | POST | /catalog/resolve | members代码数组；批量读取已保存名称，不请求QMT |
-| POST | /catalog/sync | 可选kinds数组=index/stock/etf；创建持久化目录任务，已有活动同步时返回原任务 |
+| POST | /catalog/sync | 可选kinds数组=future/option/stock/index/fund/bond/board，默认全部，期货期权优先；兼容etf子类。相同范围活动任务去重，不会将新类别请求误报为已排队 |
+| GET | /boards | search、category=industry/concept、limit、offset；保存的板块目录分页 |
+| GET | /boards/members | name；最新观察快照及成员数组 |
+| POST | /boards/refresh | name；从QMT刷新当前成员快照，不改写已有数据集 |
 | GET | /sectors | 实时读取QMT板块目录 |
 | GET | /indices | 映射和最新成分快照 |
 | POST | /indices/refresh | code、sector，可选name；优先使用目录中的指数名称，保存观察时点快照 |
-| GET/POST | /datasets | 列出/创建；name、members、periods，可带index_code、snapshot_id |
-| POST | /datasets/{id}/refresh | 显式刷新指数数据集成员，不修改既有任务 |
+| GET/POST | /datasets | 列出/创建；name、members、periods，可带index_code与snapshot_id，或board_name与board_snapshot_id；成员必须匹配快照 |
+| POST | /datasets/{id}/refresh | 显式刷新指数或行业概念数据集成员，不修改既有任务 |
 | POST | /datasets/{id}/schedule | enabled布尔值，启用当天开始跟踪17:00到期日 |
 | GET | /history | code、period、start、end、limit=1..5000、offset；返回rows与next_offset |
 | GET | /factors | code，原始因子和观察时间 |
-| GET | /calendar | market=SH/SZ/BJ、start、end；读取已保存交易日期 |
+| GET | /calendar | market=SH/SZ/BJ/SHO/SZO/IF/SF/DF/ZF/INE/GF、start、end；读取已保存交易日期 |
 | POST | /downloads | dataset_id、可选start/end，立即返回持久化任务ID |
 | GET | /jobs, /jobs/{id} | 最近200任务 / 单任务与检查点、覆盖、错误 |
 | POST | /jobs/{id}/cancel, /retry | 取消后续处理 / 失败、取消、partial任务重试 |
@@ -46,11 +50,17 @@ WebSocket默认 `ws://127.0.0.1:8767/?ticket=...`。不在URL传API Key。发送
 
 配置QMT目录后，增加terminal_history项：从当日datasource日志末尾最多2MiB提取最近历史请求的证券、周期、时间与received数组，不返回原始日志、服务器地址或账户信息。仅全零结果标为空，其他接收记录仍待回读校验；过去请求不能证明当前连接状态。
 
-目录任务kind为catalog，使用独立串行队列和schema级锁，不受历史任务排队影响；已有QMT原生调用阻塞时仍需等待桥端响应。每批最多16个证券、8个并发只读RPC，资料与检查点在同一事务保存。网络失败最多重试3次，失败/取消重试继续检查点，partial重试全部读取。缺少名称时保留旧资料并列入result.missing，不构造名称；不删除旧证券，不触发K线下载。`/status.catalog_worker`报告队列错误，目录可脱离QMT查询。
+目录任务kind为catalog，使用独立串行队列和schema级锁，不受历史任务排队影响；原生调用阻塞时仍需等待桥端响应。新版桥每批最多100个合约资料；可用的金融/ETF期权专用详情最多8个并发补齐，商品期权未返回的字段保持缺失。旧资料接口按16条批次回退。资料或板块快照与检查点同事务保存。网络失败最多重试3次，失败/取消重试继续检查点，partial重试全部读取。缺少名称或板块成员时保留旧资料并列入result.missing，不构造名称；不删除旧证券，不触发K线下载。`/status.catalog_worker`报告队列错误。
+
+分类kind为future、option、stock、index、fund、bond，ETF为fund的subtype=etf，旧kind=etf查询仍可用。行业概念为独立板块及成员快照，不作为证券。期货期权代码保留大小写和组合符号，例如`cu2610.SF`、`HO2609-C-2500.IF`、`10010971.SHO`、`SP a2611&a2701.DF`。文本代码列表使用逗号分隔，推荐SDK数组；不能将期货代码全部转换为大写。
+
+新增`xtdata.get_instrument_details(stock_list)`（最多100个）、`get_sector_tree()`及`get_option_detail_data(stock_code)`。旧桥无法提供新增能力时明确报错；单条普通证券资料可回退原接口。`/source/test`的catalog_version=2表示已加载扩展桥，不表示市场数据已可用。
 
 ## 时间、数值与覆盖
 
-日期为 `YYYY-MM-DD`，查询包含结束日。行情时间以Asia/Shanghai解析；日线统一到交易日零点，分钟保留原始行情时间。QMT毫秒epoch与YYYYMMDD/YYYYMMDDHHMMSS格式显式解析。
+日期为 `YYYY-MM-DD`，查询包含结束日。行情时间以Asia/Shanghai解析；日线统一到交易日零点，分钟保留原始行情时间。QMT毫秒epoch与YYYYMMDD/YYYYMMDDHHMMSS格式显式解析。新增open_interest、settlement、previous_settlement和trading_day可空字段，原生settle映射结算价，openInterest映射持仓量。
+
+夜盘按终端明确提供的tradingDay/tradingDate归属，保留实际行情时间；未提供则trading_day为空、按上海自然日查询且覆盖待核验，不推断周末或假期归属。日线使用终端日线标签。历史查询与导出采用相同日期口径。期货、期权及债券不请求股票复权因子；调度按数据集各市场实际成员取得日历，仍在交易日17:00回补最近五个已结束交易日。
 
 所有历史来源是 `postgresql`，adjustment为none。价格、量额以十进制字符串传给HTTP/SDK，空值是null。CSV为UTF-8 BOM、空字段代表NULL；Parquet由PyArrow生成，数值列string避免截断，NULL仍为null。UI图表转换为JS Number只用于显示，表格和导出不丢失数据库精度。
 
