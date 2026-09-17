@@ -1,5 +1,6 @@
 """Explicit capability boundary shared by SDK, hub and QMT."""
 import re
+from .symbols import normalize_code, MARKETS
 
 PERIODS = ("1d", "1m", "5m")
 ACTIONS = frozenset("xtdata." + method for method in (
@@ -7,13 +8,14 @@ ACTIONS = frozenset("xtdata." + method for method in (
     "get_sector_list", "get_stock_list_in_sector", "get_trading_dates", "get_divid_factors",
     "download_history_data", "download_history_data2", "subscribe_quote", "subscribe_whole_quote",
     "unsubscribe_quote",
+    "get_instrument_details", "get_sector_tree", "get_option_detail_data",
 )) | frozenset(("pfor.ping", "pfor.status"))
 
 
 def validate(action, params=None):
     if action not in ACTIONS:
         raise ValueError("Unsupported market action: %s" % action)
-    params = params or {}
+    params = dict(params or {})
     period = params.get("period")
     allowed = PERIODS + (("tick",) if action == "xtdata.subscribe_quote" else ())
     if period is not None and period not in allowed:
@@ -27,9 +29,8 @@ def validate(action, params=None):
         if not value:
             continue
         values = value if isinstance(value, (list, tuple)) else [value]
-        for code in values:
-            if action == 'xtdata.subscribe_whole_quote' and code in ('SH', 'SZ', 'BJ'):
-                continue
-            if not isinstance(code, str) or not re.match(r'^\d{6}\.(SH|SZ|BJ)$', code):
-                raise ValueError('Only domestic six-digit SH/SZ/BJ securities are supported')
+        normalized = [code if action == 'xtdata.subscribe_whole_quote' and code in MARKETS else normalize_code(code) for code in values]
+        params[key] = normalized if isinstance(value, (list, tuple)) else normalized[0]
+    if action == 'xtdata.get_instrument_details' and (not isinstance(params.get('stock_list'), (list, tuple)) or not 1 <= len(params['stock_list']) <= 100):
+        raise ValueError('Instrument detail batches require 1 to 100 codes')
     return params

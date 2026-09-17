@@ -122,10 +122,13 @@ class QmtMethods(object):
         return func(sector, timetag)
 
     def _get_sector_list(self):
+        return list(dict.fromkeys(item['name'] for item in self._get_sector_tree()))
+
+    def _get_sector_tree(self):
         func = self._require_qmt_callable("get_sector_list")
-        pending, visited, sectors, seen = [""], set(), [], set()
+        pending, visited, sectors = [("", [])], set(), []
         while pending:
-            node = pending.pop()
+            node, ancestors = pending.pop()
             if node in visited:
                 continue
             visited.add(node)
@@ -139,10 +142,8 @@ class QmtMethods(object):
             if any(not isinstance(name, str) or not name for items in info for name in items):
                 raise ValueError("invalid QMT sector or folder name")
             for sector in info[0]:
-                if sector not in seen:
-                    seen.add(sector)
-                    sectors.append(sector)
-            pending.extend(reversed(info[1]))
+                sectors.append({'name': sector, 'path': ancestors})
+            pending.extend((folder, ancestors + [folder]) for folder in reversed(info[1]))
         return sectors
 
     def _first_param(self, params, names, default=None):
@@ -189,4 +190,3 @@ class QmtMethods(object):
                 if callable(func):
                     return func
         return None
-

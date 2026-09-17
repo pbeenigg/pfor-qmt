@@ -9,6 +9,7 @@ from .client import CfquantError, CfquantTimeout
 from .data import SHANGHAI, FIELDS, chunks, day, timestamp, normalize_bars, json_default
 from .protocol import encode_value
 from .storage import job_summary
+from .symbols import market_of, derivative_kind
 
 
 class Cancelled(Exception):
@@ -128,8 +129,11 @@ class Worker:
         for index, part in enumerate(parts[job['checkpoint']:], start=job['checkpoint']):
             self.check(identifier)
             code, period, start, end = part['code'], part['period'], day(part['start']), day(part['end'])
+            derivative = derivative_kind(code)
+            # Include the preceding session; only explicit terminal trading days assign night bars.
+            read_start = start - timedelta(days=7) if derivative and period != '1d' else start
             def read():
-                result = self.source.download_history_data2([code], period, start.strftime('%Y%m%d'), end.strftime('%Y%m%d'))
+                result = self.source.download_history_data2([code], period, read_start.strftime('%Y%m%d'), end.strftime('%Y%m%d'))
                 def rejected(value):
                     if value is False or isinstance(value, (int,float)) and value < 0:
                         return True
@@ -140,7 +144,7 @@ class Worker:
                     raise ValueError('终端拒绝下载请求，未将旧缓存视为下载成功')
                 for poll in range(6):
                     self.check(identifier)
-                    data = self.source.get_local_data(stock_list=[code], period=period, start_time=start.strftime('%Y%m%d'), end_time=end.strftime('%Y%m%d') + '235959')
+                    data = self.source.get_local_data(stock_list=[code], period=period, start_time=read_start.strftime('%Y%m%d'), end_time=end.strftime('%Y%m%d') + '235959')
                     rows = normalize_bars((data or {}).get(code), code, period, start, end)
                     if rows:
                         return rows
@@ -155,8 +159,8 @@ class Worker:
             trading_days = sorted({timestamp(value).date() for value in calendar})
             with self.store.connect() as conn:
                 with conn.cursor() as cursor:
-                    cursor.executemany('INSERT INTO trading_dates(market,day) VALUES(%s,%s) ON CONFLICT DO NOTHING', [(code[-2:], item) for item in trading_days])
-            actual = {row['time'].date() for row in rows}
+                    cursor.executemany('INSERT INTO trading_dates(market,day) VALUES(%s,%s) ON CONFLICT DO NOTHING', [(market_of(code), item) for item in trading_days])
+            actual = {row['trading_day'] or row['time'].date() for row in rows}
             gaps = [{'day': value.isoformat(), 'reason': '无行情，停牌或缺失待确认'} for value in trading_days if value not in actual]
             if not rows:
                 gaps.append({'range': [part['start'], part['end']], 'reason': '空表未确认为成功'})
@@ -164,13 +168,17 @@ class Worker:
                 gaps.append({'reason': '交易日历为空，覆盖情况未确认'})
             if period != '1d':
                 gaps.append({'reason': '分钟内完整性需按终端交易时段复核，未伪造缺失分钟'})
+                if derivative and any(row['trading_day'] is None for row in rows):
+                    gaps.append({'reason': '终端未提供交易日字段，夜盘交易日归属待核验；时间按原值保存'})
             factor = None
-            try:
-                factor = encode_value(self.retry_network(identifier, lambda: self.source.get_divid_factors(code)))
-            except (NotImplementedError, CfquantError) as error:
-                if not isinstance(error, NotImplementedError) and error.remote_type not in ('NotImplementedError', 'SignatureUnavailable'):
-                    raise
-                gaps.append({'reason': '当前终端未提供复权因子'})
+            security = self.store.query('SELECT kind FROM securities WHERE code=%s', (code,), one=True)
+            if not derivative and (not security or security['kind'] != 'bond'):
+                try:
+                    factor = encode_value(self.retry_network(identifier, lambda: self.source.get_divid_factors(code)))
+                except (NotImplementedError, CfquantError) as error:
+                    if not isinstance(error, NotImplementedError) and error.remote_type not in ('NotImplementedError', 'SignatureUnavailable'):
+                        raise
+                    gaps.append({'reason': '当前终端未提供复权因子'})
             self.check(identifier)
             self.store.write_chunk(identifier, part, rows, gaps, index + 1, factor)
             self.publish({'event': 'job', 'data': job_summary(self.store.job(identifier))})
@@ -188,30 +196,37 @@ class Worker:
         for dataset in datasets:
             if dataset['schedule_from'] > cutoff:
                 continue
-            # Refresh an authoritative calendar; no weekday-based holiday guessing.
-            try:
-                calendar = self.source.get_trading_dates('000001.SH', dataset['schedule_from'].strftime('%Y%m%d'), cutoff.strftime('%Y%m%d'))
-                dates = sorted({timestamp(value).date() for value in calendar if dataset['schedule_from'] <= timestamp(value).date() <= cutoff})
-                if not dates:
-                    self.last_error = '交易日历为空，无法确认到期交易日，调度等待重试'
-                with self.store.connect() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.executemany('INSERT INTO trading_dates(market,day) VALUES(%s,%s) ON CONFLICT DO NOTHING', [('SH', item) for item in dates])
-            except Exception:
-                self.last_error = '交易日历请求失败，调度仅使用已保存日期并等待重试'
-                dates = [row['day'] for row in self.store.query("SELECT day FROM trading_dates WHERE market='SH' AND day BETWEEN %s AND %s ORDER BY day", (dataset['schedule_from'], cutoff))]
+            representatives = {market_of(code): code for code in dataset['members']}
+            calendars = {}
+            for market, representative in representatives.items():
+                try:
+                    calendar = self.source.get_trading_dates(representative, dataset['schedule_from'].strftime('%Y%m%d'), cutoff.strftime('%Y%m%d'))
+                    dates = sorted({timestamp(value).date() for value in calendar if dataset['schedule_from'] <= timestamp(value).date() <= cutoff})
+                    if not dates:
+                        self.last_error = market + ' 交易日历为空，无法确认到期交易日，调度等待重试'
+                    with self.store.connect() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.executemany('INSERT INTO trading_dates(market,day) VALUES(%s,%s) ON CONFLICT DO NOTHING', [(market, item) for item in dates])
+                except Exception:
+                    self.last_error = market + ' 交易日历请求失败，调度仅使用已保存日期并等待重试'
+                    dates = [row['day'] for row in self.store.query('SELECT day FROM trading_dates WHERE market=%s AND day BETWEEN %s AND %s ORDER BY day', (market, dataset['schedule_from'], cutoff))]
+                calendars[market] = dates
+            if any(not values for values in calendars.values()):
+                continue
+            dates = sorted(set(value for values in calendars.values() for value in values))
             for date in dates:
                 key = str(dataset['id']) + ':' + date.isoformat()
                 if self.store.query('SELECT id FROM jobs WHERE schedule_key=%s', (key,), one=True):
                     continue
                 try:
-                    previous = self.source.get_trading_dates('000001.SH', '', date.strftime('%Y%m%d'), 5)
-                    days = sorted(timestamp(value).date() for value in previous)
-                    if len(days) < 5:
+                    active = [market for market, values in calendars.items() if date in values]
+                    previous = [self.source.get_trading_dates(representatives[market], '', date.strftime('%Y%m%d'), 5) for market in active]
+                    lookbacks = [sorted({timestamp(value).date() for value in values if timestamp(value).date() <= date}) for values in previous]
+                    if any(len(days) < 5 for days in lookbacks):
                         self.last_error = '最近五个交易日尚未就绪，调度等待重试'
                         continue
-                    payload = {'dataset_id': str(dataset['id']), 'members': dataset['members'], 'periods': dataset['periods'],
-                               'start': days[-5].isoformat(), 'end': date.isoformat()}
+                    payload = {'dataset_id': str(dataset['id']), 'members': [code for code in dataset['members'] if market_of(code) in active], 'periods': dataset['periods'],
+                               'start': min(days[-5] for days in lookbacks).isoformat(), 'end': date.isoformat()}
                     payload['chunks'] = chunks(payload)
                     self.store.create_job('download', payload, key)
                 except Exception:
@@ -225,7 +240,7 @@ class Worker:
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / (str(identifier) + '.' + payload['format'])
         temp = target.with_suffix(target.suffix + '.partial')
-        fields = ['code', 'period', 'time', *FIELDS, 'source']
+        fields = ['code', 'period', 'time', *FIELDS, 'trading_day', 'source']
         total = 0
         parquet = None
         metadata = None
@@ -250,7 +265,7 @@ class Worker:
                             writer.writerows(rows)
                         else:
                             # Decimal text preserves arbitrary PostgreSQL NUMERIC without rounding.
-                            clean = [{key: json_default(value) if value is not None and key in (*FIELDS, 'time') else value for key, value in row.items()} for row in rows]
+                            clean = [{key: json_default(value) if value is not None and key in (*FIELDS, 'time', 'trading_day') else value for key, value in row.items()} for row in rows]
                             schema = pa.schema([(key, pa.string()) for key in fields])
                             table = pa.Table.from_pylist(clean, schema=schema)
                             if parquet is None:

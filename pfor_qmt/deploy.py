@@ -11,7 +11,7 @@ from .qmt_strategy_package import build_package
 
 MODEL = 'PFOR_MARKET'
 EMBEDDED = ('__init__.py', 'version.py', 'config.py', 'protocol.py', 'pipe_transport.py',
-            'policy.py', 'qmt_methods.py', 'quote.py', 'market_bridge.py', 'logging_i18n.py')
+            'symbols.py', 'policy.py', 'qmt_methods.py', 'quote.py', 'market_bridge.py', 'logging_i18n.py')
 
 
 def root_path(value):
@@ -82,7 +82,7 @@ def prepare(value, process_checker=running, pipe_config=None):
         atomic(queue, build_package(MODEL, source))
     atomic(owner, json.dumps({'model': MODEL, 'files': manifest}, indent=2).encode())
     return {'state': 'restart_required' if script.exists() else 'waiting_import', 'model': MODEL,
-            'message': '启动 QMT 完成模型导入，然后退出并执行模型启用；更新后需重启终端'}
+            'message': '自有模型已更新，请启动并登录 QMT；现有启用设置保持不变' if script.exists() else '启动 QMT 完成模型导入，然后退出并执行模型启用'}
 
 
 def activate(value, account='', process_checker=running):

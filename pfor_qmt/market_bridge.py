@@ -62,12 +62,18 @@ class MarketBridge(QmtMethods):
         message = message or {}
         if action in ('pfor.ping', 'pfor.status'):
             return {'source': 'qmt', 'mode': 'market-only', 'actions': sorted(ACTIONS),
-                    'instance': self.instance, 'generation': self.generation}
+                    'instance': self.instance, 'generation': self.generation, 'catalog_version': 2}
         method = action.split('.', 1)[1]
         if method in ('get_market_data_ex', 'get_local_data', 'get_instrument_detail', 'get_stock_list_in_sector'):
             return getattr(self, '_' + method)(p)
         if method == 'get_sector_list':
             return self._get_sector_list()
+        if method == 'get_sector_tree':
+            return self._get_sector_tree()
+        if method == 'get_instrument_details':
+            return {code: self._get_instrument_detail({'stock_code': code, 'iscomplete': True}) for code in p['stock_list']}
+        if method == 'get_option_detail_data':
+            return self._require_qmt_callable(method)(p['stock_code'])
         if method == 'get_full_tick':
             return self._require_qmt_callable(method)(p.get('code_list', []))
         if method == 'get_trading_dates':

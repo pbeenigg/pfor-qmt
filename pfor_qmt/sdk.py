@@ -23,11 +23,23 @@ class DataClient:
     def securities(self, search='', kind=''):
         return self.request('/securities', search=search, kind=kind)
 
-    def catalog(self, search='', kind='', limit=50, offset=0):
-        return self.request('/catalog/securities', search=search, kind=kind, limit=limit, offset=offset)
+    def catalog(self, search='', kind='', limit=50, offset=0, market='', subtype=''):
+        return self.request('/catalog/securities', search=search, kind=kind, limit=limit, offset=offset, market=market, subtype=subtype)
 
-    def sync_catalog(self, kinds=('index', 'stock', 'etf')):
+    def sync_catalog(self, kinds=('future', 'option', 'stock', 'index', 'fund', 'bond', 'board')):
         return self.request('/catalog/sync', {'kinds': list(kinds)})
+
+    def instrument(self, code):
+        return self.request('/catalog/detail', code=code)
+
+    def boards(self, search='', category='', limit=50, offset=0):
+        return self.request('/boards', search=search, category=category, limit=limit, offset=offset)
+
+    def board_members(self, name):
+        return self.request('/boards/members', name=name)
+
+    def refresh_board(self, name):
+        return self.request('/boards/refresh', {'name': name})
 
     def indices(self):
         return self.request('/indices')

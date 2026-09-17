@@ -38,8 +38,10 @@ def test_discovery_uses_directory_sectors_not_index_constituents():
 def test_catalog_sync_deduplication_search_and_partial_retry(store, tmp_path):
     source = Directory()
     app = Application(Settings(tmp_path, config_path=tmp_path / 'config.toml'), store, source)
-    job = app.dispatch('POST', '/catalog/sync', {})
-    assert app.dispatch('POST', '/catalog/sync', {})['id'] == job['id']
+    job = app.dispatch('POST', '/catalog/sync', {'kinds': ['index', 'stock', 'etf']})
+    assert app.dispatch('POST', '/catalog/sync', {'kinds': ['index', 'stock', 'etf']})['id'] == job['id']
+    with pytest.raises(ValueError, match='其他类别'):
+        app.dispatch('POST', '/catalog/sync', {'kinds': ['future']})
     source.missing = True
     app.worker.execute(store.job(job['id']))
     result = store.job(job['id'])
@@ -95,4 +97,4 @@ def test_catalog_pagination_has_no_thousand_security_ceiling(store):
     assert len(result) == len(set(result)) == page['total'] == 1003
     assert store.catalog_page(search='001003')['rows'][0]['name'] == '证券1003'
     with pytest.raises(ValueError):
-        store.catalog_page(kind='future')
+        store.catalog_page(kind='unknown')

@@ -17,7 +17,7 @@ def terminal_history(qmt_root, now):
     except OSError:
         return dict(state='unverified', message='当日终端历史日志不可读，未推断连接状态')
     latest = None
-    pattern = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ .*?QSDataImp::getHistoryData done, stockCode: (\d{6}\.(?:SH|SZ|BJ)), period: (\d+), .*?receive: \[(\d+), (\d+), (\d+)\]')
+    pattern = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ .*?QSDataImp::getHistoryData done, stockCode: ([A-Za-z0-9_ &()\-]{1,80}\.(?:SHO|SZO|SH|SZ|BJ|IF|SF|DF|ZF|INE|GF)), period: (\d+), .*?receive: \[(\d+), (\d+), (\d+)\]')
     for line in tail.splitlines():
         match = pattern.match(line)
         if match:

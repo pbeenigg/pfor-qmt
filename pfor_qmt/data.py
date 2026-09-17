@@ -4,16 +4,26 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
+from .symbols import normalize_code, derivative_kind
+
 SHANGHAI = ZoneInfo('Asia/Shanghai')
-FIELDS = ('open', 'high', 'low', 'close', 'volume', 'amount')
+FIELDS = ('open', 'high', 'low', 'close', 'volume', 'amount', 'open_interest', 'settlement', 'previous_settlement')
 
 
 def codes(value):
     if isinstance(value, str):
-        value = re.split(r'[,\s]+', value.strip())
-    result = list(dict.fromkeys(str(item).strip().upper() for item in value))
-    if not result or len(result) > 10000 or any(not re.fullmatch(r'\d{6}\.(SH|SZ|BJ)', item) for item in result):
-        raise ValueError('证券代码使用 000300.SH、000001.SZ、920001.BJ 格式')
+        pieces = re.split(r'[,，;\r\n]+', value.strip())
+        value = []
+        for piece in pieces:
+            try:
+                value.append(normalize_code(piece))
+            except ValueError:
+                value.extend(piece.split())
+    if not isinstance(value, (list, tuple)):
+        raise ValueError('证券代码必须是代码数组或逗号分隔文本')
+    result = list(dict.fromkeys(normalize_code(item) for item in value))
+    if not result or len(result) > 10000:
+        raise ValueError('一次选择 1 至 10000 个证券或合约')
     return result
 
 
@@ -69,18 +79,25 @@ def normalize_bars(frame, code, period, start, end):
     result = {}
     for record, index in zip(records, indices):
         when = timestamp(record.get('time', index))
-        if not start <= when.date() <= end:
+        raw_day = record.get('tradingDay', record.get('tradingDate', record.get('trading_day')))
+        if isinstance(raw_day, float) and math.isfinite(raw_day) and raw_day.is_integer():
+            raw_day = int(raw_day)
+        trading_day = timestamp(raw_day).date() if str(raw_day) not in ('None', '', '0', 'nan', 'NaN', 'NaT', '<NA>') else when.date() if period == '1d' or not derivative_kind(code) else None
+        if not start <= (trading_day or when.date()) <= end:
             continue
         if period == '1d':
-            when = when.replace(hour=0, minute=0, second=0, microsecond=0)
-        values = {field: number(record.get(field)) for field in FIELDS}
+            when = datetime.combine(trading_day, datetime.min.time(), SHANGHAI)
+        aliases = {'open_interest': 'openInterest', 'settlement': 'settlementPrice', 'previous_settlement': 'preSettlementPrice'}
+        values = {field: number(record.get(field, record.get(aliases.get(field)))) for field in FIELDS}
+        if values['settlement'] is None and 'settle' in record:
+            values['settlement'] = number(record['settle'])
         if all(values[key] is None for key in ('open','high','low','close')):
             raise ValueError('行情缺少全部 OHLC 字段')
         if values['high'] is not None and values['low'] is not None and values['high'] < values['low']:
             raise ValueError('行情最高价低于最低价')
         if any(values[key] is not None and values[key] < 0 for key in ('volume','amount')):
             raise ValueError('成交量或成交额为负')
-        result[when] = dict(code=code, period=period, time=when, **values)
+        result[when] = dict(code=code, period=period, time=when, trading_day=trading_day, **values)
     return [result[key] for key in sorted(result)]
 
 

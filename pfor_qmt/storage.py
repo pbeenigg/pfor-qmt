@@ -8,7 +8,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .data import codes, day, periods, json_default
+from .data import codes, day, periods, json_default, FIELDS
+from .symbols import KINDS, market_of
 
 
 def document(value):
@@ -66,36 +67,69 @@ class Store:
             return {'connected': False, 'message': '数据库未连接或尚未初始化'}
 
     def securities(self, search='', kind=''):
-        return self.query("SELECT * FROM securities WHERE (code ILIKE %s OR name ILIKE %s) AND (%s='' OR kind=%s) ORDER BY code LIMIT 1000",
-                          ('%' + search + '%', '%' + search + '%', kind, kind))
+        return self.query("SELECT * FROM securities WHERE (code ILIKE %s OR name ILIKE %s) AND (%s='' OR kind=%s OR (%s='etf' AND subtype='etf')) ORDER BY code LIMIT 1000",
+                          ('%' + search + '%', '%' + search + '%', kind, kind, kind))
 
-    def catalog_page(self, search='', kind='', limit=50, offset=0):
+    def catalog_page(self, search='', kind='', limit=50, offset=0, market='', subtype=''):
         limit, offset = int(limit), int(offset)
-        if kind not in ('', 'stock', 'index', 'etf') or not 1 <= limit <= 200 or offset < 0:
+        if kind not in ('', 'etf') + KINDS or not 1 <= limit <= 200 or offset < 0:
             raise ValueError('无效目录筛选或分页参数')
-        query = "FROM securities WHERE (code ILIKE %s OR name ILIKE %s) AND (%s='' OR kind=%s)"
-        args = ('%' + search + '%', '%' + search + '%', kind, kind)
+        query = "FROM securities WHERE (code ILIKE %s OR name ILIKE %s) AND (%s='' OR kind=%s OR (%s='etf' AND subtype='etf')) AND (%s='' OR market=%s) AND (%s='' OR subtype=%s)"
+        args = ('%' + search + '%', '%' + search + '%', kind, kind, kind, market, market, subtype, subtype)
         with self.connect() as conn:
             conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
             total = conn.execute('SELECT count(*) AS n ' + query, args).fetchone()['n']
-            rows = conn.execute('SELECT code,name,kind,updated_at ' + query + ' ORDER BY code LIMIT %s OFFSET %s', args + (limit, offset)).fetchall()
+            rows = conn.execute('SELECT code,name,kind,market,subtype,metadata,updated_at ' + query + ' ORDER BY code LIMIT %s OFFSET %s', args + (limit, offset)).fetchall()
         return dict(rows=rows, total=total, offset=offset, next_offset=offset + len(rows) if offset + len(rows) < total else None)
 
     def create_catalog_job(self, kinds):
         from .catalog import KINDS
         if not isinstance(kinds, list) or not kinds or any(kind not in KINDS for kind in kinds):
-            raise ValueError('选择指数、A 股或 ETF 目录')
+            raise ValueError('选择有效的证券或行业概念目录')
         with self.connect() as conn:
             conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (self.schema + '.catalog-create',))
             active = conn.execute("SELECT * FROM jobs WHERE kind='catalog' AND state IN ('queued','running') ORDER BY created_at LIMIT 1").fetchone()
             if active:
+                if not set(kinds).issubset(active['payload']['kinds']):
+                    raise ValueError('已有目录同步正在进行，请等待完成后再同步其他类别')
                 return active
             return conn.execute("INSERT INTO jobs(id,kind,payload) VALUES(%s,'catalog',%s) RETURNING *",
                                 (str(uuid.uuid4()), document({'kinds': list(dict.fromkeys(kinds))}))).fetchone()
 
-    def save_security(self, code, name, kind, detail):
-        self.query('INSERT INTO securities(code,name,kind,details) VALUES(%s,%s,%s,%s) ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,kind=EXCLUDED.kind,details=EXCLUDED.details,updated_at=now()',
-                   (codes([code])[0], name, kind, document(detail)))
+    def save_security(self, code, name, kind, detail, subtype='', metadata=None, conn=None):
+        if kind == 'etf':
+            kind, subtype = 'fund', 'etf'
+        statement = 'INSERT INTO securities(code,name,kind,details,market,subtype,metadata) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,kind=EXCLUDED.kind,details=EXCLUDED.details,market=EXCLUDED.market,subtype=EXCLUDED.subtype,metadata=EXCLUDED.metadata,updated_at=now()'
+        args = (codes([code])[0], name, kind, document(detail), market_of(code), subtype, document(metadata or {}))
+        if conn is not None:
+            conn.execute(statement, args)
+        else:
+            self.query(statement, args)
+
+    def save_board(self, part, members, conn):
+        if not members:
+            raise ValueError('板块成员为空，保留原快照')
+        members = codes(members)
+        conn.execute('INSERT INTO catalog_sectors(name,category,path) VALUES(%s,%s,%s) ON CONFLICT(name) DO UPDATE SET category=EXCLUDED.category,path=EXCLUDED.path,observed_at=now()', (part['name'], part['category'], document(part['path'])))
+        conn.execute('INSERT INTO board_snapshots(id,name,category,members) VALUES(%s,%s,%s,%s)', (str(uuid.uuid4()), part['name'], part['category'], document(members)))
+
+    def boards(self, search='', category='', limit=50, offset=0):
+        limit, offset = int(limit), int(offset)
+        if category not in ('', 'industry', 'concept') or not 1 <= limit <= 200 or offset < 0:
+            raise ValueError('无效板块筛选或分页参数')
+        query = "FROM catalog_sectors c WHERE category IN ('industry','concept') AND name ILIKE %s AND (%s='' OR category=%s)"
+        args = ('%' + search + '%', category, category)
+        with self.connect() as conn:
+            conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+            total = conn.execute('SELECT count(*) AS n ' + query, args).fetchone()['n']
+            rows = conn.execute('SELECT name,category,path,observed_at ' + query + ' ORDER BY name LIMIT %s OFFSET %s', args + (limit, offset)).fetchall()
+        return dict(rows=rows, total=total, next_offset=offset + len(rows) if offset + len(rows) < total else None)
+
+    def board(self, name):
+        row = self.query('SELECT * FROM board_snapshots WHERE name=%s ORDER BY observed_at DESC LIMIT 1', (name,), one=True)
+        if not row:
+            raise ValueError('板块尚未同步成员')
+        return row
 
     def snapshot(self, code, sector, name, members):
         identifier = str(uuid.uuid4())
@@ -115,12 +149,18 @@ class Store:
             raise ValueError('scheduled 必须为布尔值')
         snapshot = payload.get('snapshot_id')
         index_code = payload.get('index_code')
+        board_name = payload.get('board_name')
+        board_snapshot = payload.get('board_snapshot_id')
+        if board_name:
+            row = self.query('SELECT * FROM board_snapshots WHERE id=%s AND name=%s', (board_snapshot, board_name), one=True)
+            if index_code or not row or row['members'] != members:
+                raise ValueError('数据集成员必须匹配指定板块快照')
         if index_code:
             row = self.query('SELECT * FROM constituent_snapshots WHERE id=%s AND index_code=%s', (snapshot, index_code), one=True)
             if not row or row['members'] != members:
                 raise ValueError('数据集成员必须匹配指定成分快照')
-        return self.query('INSERT INTO datasets(id,name,members,periods,index_code,snapshot_id,scheduled) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING *',
-                          (str(uuid.uuid4()), name, document(members), document(selected), index_code, snapshot, bool(payload.get('scheduled'))), one=True)
+        return self.query('INSERT INTO datasets(id,name,members,periods,index_code,snapshot_id,scheduled,board_name,board_snapshot_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *',
+                          (str(uuid.uuid4()), name, document(members), document(selected), index_code, snapshot, bool(payload.get('scheduled')), board_name, board_snapshot), one=True)
 
     def create_job(self, kind, payload, schedule_key=None):
         return self.query('INSERT INTO jobs(id,kind,payload,schedule_key) VALUES(%s,%s,%s,%s) ON CONFLICT(schedule_key) DO UPDATE SET schedule_key=EXCLUDED.schedule_key RETURNING *',
@@ -144,7 +184,12 @@ class Store:
         with self.connect() as conn:
             if rows:
                 with conn.cursor() as cursor:
-                    cursor.executemany('INSERT INTO bars(code,period,time,open,high,low,close,volume,amount) VALUES(%(code)s,%(period)s,%(time)s,%(open)s,%(high)s,%(low)s,%(close)s,%(volume)s,%(amount)s) ON CONFLICT(code,period,time) DO UPDATE SET open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,close=EXCLUDED.close,volume=EXCLUDED.volume,amount=EXCLUDED.amount,updated_at=now()', rows)
+                    fields = ('code', 'period', 'time', *FIELDS, 'trading_day')
+                    columns = sql.SQL(',').join(map(sql.Identifier, fields))
+                    placeholders = sql.SQL(',').join(sql.Placeholder(field) for field in fields)
+                    updates = sql.SQL(',').join(sql.SQL('{}=EXCLUDED.{}').format(sql.Identifier(field), sql.Identifier(field)) for field in (*FIELDS, 'trading_day'))
+                    statement = sql.SQL('INSERT INTO bars({}) VALUES({}) ON CONFLICT(code,period,time) DO UPDATE SET {},updated_at=now()').format(columns, placeholders, updates)
+                    cursor.executemany(statement, [{field: row.get(field) for field in fields} for row in rows])
             conn.execute('INSERT INTO coverage(job_id,code,period,requested_start,requested_end,actual_start,actual_end,row_count,gaps) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(job_id,code,period,requested_start) DO UPDATE SET actual_start=EXCLUDED.actual_start,actual_end=EXCLUDED.actual_end,row_count=EXCLUDED.row_count,gaps=EXCLUDED.gaps',
                          (job_id, part['code'], part['period'], part['start'], part['end'], rows[0]['time'] if rows else None, rows[-1]['time'] if rows else None, len(rows), document(gaps)))
             if factor is not None:
@@ -157,9 +202,10 @@ class Store:
         limit, offset = int(limit), int(offset)
         if not 1 <= limit <= 5000 or offset < 0:
             raise ValueError('分页 limit 需要 1 至 5000，offset 不得为负')
-        statement = "SELECT code,period,time,open,high,low,close,volume,amount,source FROM bars WHERE code=%s AND period=%s AND time >= %s::date AND time < %s::date + interval '1 day' ORDER BY time LIMIT %s OFFSET %s"
+        statement = "SELECT code,period,time,open,high,low,close,volume,amount,open_interest,settlement,previous_settlement,trading_day,source FROM bars WHERE code=%s AND period=%s AND coalesce(trading_day,time::date) BETWEEN %s::date AND %s::date ORDER BY time LIMIT %s OFFSET %s"
         args = (code, period, day(start), day(end), limit, offset)
         rows = conn.execute(statement, args).fetchall() if conn else self.query(statement, args)
         return {'rows': rows, 'offset': offset, 'limit': limit, 'next_offset': offset + len(rows) if len(rows) == limit else None,
                 'source': 'postgresql', 'adjustment': 'none', 'timezone': 'Asia/Shanghai',
-                'units': {'price': 'QMT 原始报价', 'volume': 'QMT 原始成交量单位（未换算）', 'amount': 'QMT 原始成交额单位（未换算）'}}
+                'date_basis': '优先使用终端 trading_day；未提供时按行情时间的上海自然日查询，夜盘归属待核验',
+                'units': {'price': 'QMT 原始报价', 'volume': 'QMT 原始成交量单位（未换算）', 'amount': 'QMT 原始成交额单位（未换算）', 'open_interest': 'QMT 原始持仓量单位（未换算）'}}

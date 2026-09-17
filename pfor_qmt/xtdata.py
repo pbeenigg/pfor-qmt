@@ -27,6 +27,27 @@ def get_instrument_detail(stock_code, iscomplete=False):
     return get_client().request("xtdata.get_instrument_detail", dict(stock_code=stock_code, iscomplete=iscomplete))
 
 
+def get_instrument_details(stock_list):
+    from .client import CfquantError
+    from .symbols import derivative_kind
+    try:
+        return get_client().request('xtdata.get_instrument_details', dict(stock_list=list(stock_list)), timeout=60)
+    except CfquantError as error:
+        if error.remote_type != 'ValueError' or 'Unsupported market action' not in str(error):
+            raise
+        if any(derivative_kind(code) for code in stock_list):
+            raise ValueError('行情模型版本较旧，请退出 QMT 后更新 PFOR_MARKET，再启动终端同步期货和期权') from None
+        return {code: get_instrument_detail(code, True) for code in stock_list}
+
+
+def get_option_detail_data(stock_code):
+    return get_client().request('xtdata.get_option_detail_data', dict(stock_code=stock_code))
+
+
+def get_sector_tree():
+    return get_client().request('xtdata.get_sector_tree', timeout=60)
+
+
 def get_sector_list():
     return get_client().request("xtdata.get_sector_list")
 

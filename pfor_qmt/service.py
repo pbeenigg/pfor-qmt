@@ -15,6 +15,7 @@ from .protocol import encode_value
 from .settings import Settings
 from .storage import Store, job_summary
 from .tasks import Worker
+from .symbols import KINDS, MARKETS
 
 
 class Application:
@@ -106,20 +107,38 @@ class Application:
         if method == 'GET' and path == '/securities':
             return store.securities(p.get('search', ''), p.get('kind', ''))
         if method == 'GET' and path == '/catalog/securities':
-            return store.catalog_page(p.get('search', ''), p.get('kind', ''), p.get('limit', 50), p.get('offset', 0))
+            return store.catalog_page(p.get('search', ''), p.get('kind', ''), p.get('limit', 50), p.get('offset', 0), p.get('market', ''), p.get('subtype', ''))
         if method == 'POST' and path == '/catalog/resolve':
-            return store.query('SELECT code,name,kind FROM securities WHERE code=ANY(%s) ORDER BY code', (codes(p['members']),))
+            return store.query('SELECT code,name,kind,market,subtype,metadata FROM securities WHERE code=ANY(%s) ORDER BY code', (codes(p['members']),))
+        if method == 'GET' and path == '/catalog/detail':
+            row = store.query('SELECT * FROM securities WHERE code=%s', (codes([p['code']])[0],), one=True)
+            if not row:
+                raise ValueError('该证券或合约尚未同步资料')
+            return row
         if method == 'GET' and path == '/catalog':
             job = store.query("SELECT * FROM jobs WHERE kind='catalog' ORDER BY created_at DESC LIMIT 1", one=True)
             return {'counts': store.query('SELECT kind,count(*) AS count,max(updated_at) AS updated_at FROM securities GROUP BY kind'),
                     'sectors': [row['name'] for row in store.query('SELECT name FROM catalog_sectors ORDER BY name')],
+                    'boards': store.query("SELECT category,count(*) AS count FROM catalog_sectors WHERE category IN ('industry','concept') GROUP BY category"),
                     'job': job_summary(job) if job else None, 'error': self.worker.catalog_error}
         if method == 'POST' and path == '/catalog/sync':
-            return job_summary(store.create_catalog_job(p.get('kinds', ['index', 'stock', 'etf'])))
+            return job_summary(store.create_catalog_job(p.get('kinds', list(KINDS) + ['board'])))
+        if method == 'GET' and path == '/boards':
+            return store.boards(p.get('search', ''), p.get('category', ''), p.get('limit', 50), p.get('offset', 0))
+        if method == 'GET' and path == '/boards/members':
+            return store.board(p['name'])
+        if method == 'POST' and path == '/boards/refresh':
+            board = store.query("SELECT * FROM catalog_sectors WHERE name=%s AND category IN ('industry','concept')", (p['name'],), one=True)
+            if not board:
+                raise ValueError('请先同步行业概念目录')
+            members = self.source.get_stock_list_in_sector(board['name'])
+            with store.connect() as conn:
+                store.save_board(board, members, conn)
+            return store.board(board['name'])
         if method == 'POST' and path == '/securities/sync':
             selected = codes(p['members'])
             kind = p['kind']
-            if kind not in ('stock', 'index', 'etf'):
+            if kind not in KINDS + ('etf',):
                 raise ValueError('无效证券类别')
             if len(selected) > 100:
                 raise ValueError('一次同步不超过 100 个证券')
@@ -127,7 +146,11 @@ class Application:
                 detail = self.source.get_instrument_detail(code)
                 if not detail:
                     raise ValueError('证券资料为空: ' + code)
-                store.save_security(code, detail.get('InstrumentName') or detail.get('StockName') or code, kind, encode_value(detail))
+                name = detail.get('InstrumentName') or detail.get('StockName')
+                if not name:
+                    raise ValueError('证券名称为空: ' + code)
+                from .catalog import instrument_metadata
+                store.save_security(code, name, kind, encode_value(detail), metadata=instrument_metadata(detail))
             return store.securities()
         if method == 'GET' and path == '/quotes':
             return encode_value(self.source.get_full_tick(codes(p['codes'])))
@@ -155,6 +178,13 @@ class Application:
                 store.query('UPDATE datasets SET scheduled=%s,schedule_from=%s WHERE id=%s', (bool(p['enabled']), datetime.now(SHANGHAI).date(), parts[1]))
                 return {'scheduled': bool(p['enabled'])}
             if method == 'POST' and len(parts) == 3 and parts[2] == 'refresh':
+                if dataset.get('board_name'):
+                    snapshot = self.dispatch('POST', '/boards/refresh', {'name': dataset['board_name']})
+                    if not snapshot['members']:
+                        raise ValueError('板块成员为空，保留原数据集')
+                    from .storage import document
+                    store.query('UPDATE datasets SET members=%s,board_snapshot_id=%s WHERE id=%s', (document(snapshot['members']), snapshot['id'], parts[1]))
+                    return snapshot
                 mapping = store.query('SELECT * FROM index_mapping WHERE code=%s', (dataset['index_code'],), one=True)
                 if not mapping:
                     raise ValueError('此数据集没有指数映射')
@@ -168,8 +198,8 @@ class Application:
             return store.query('SELECT * FROM factors WHERE code=%s', (codes([p['code']])[0],), one=True)
         if method == 'GET' and path == '/calendar':
             market = p.get('market','SH')
-            if market not in ('SH','SZ','BJ'):
-                raise ValueError('交易所仅支持 SH、SZ、BJ')
+            if market not in MARKETS:
+                raise ValueError('不支持的交易所代码')
             return store.query('SELECT day FROM trading_dates WHERE market=%s AND day BETWEEN %s AND %s ORDER BY day',
                                (market,day(p.get('start','1990-01-01')),day(p.get('end','2100-01-01'))))
         if method == 'GET' and path == '/jobs':
