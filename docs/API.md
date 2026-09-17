@@ -36,6 +36,8 @@
 
 WebSocket默认 `ws://127.0.0.1:8767/?ticket=...`。不在URL传API Key。发送 `{"action":"watch","codes":["000300.SH"]}` 订阅；接收 `event=quote/job/source/error`，最新行情不会入库。页面重连时重新取得票据和订阅。事件队列有界，缓慢客户端应通过任务GET或行情快照重新同步。
 
+发送 `{"action":"unwatch"}` 停止行情订阅，WebSocket保留用于任务推送。订阅成功或停止后返回 `{"event":"watch","codes":[...]}`，空数组表示已停止。切换证券先退订原订阅；退订失败返回error及仍保留的codes，不声称停止成功。旧订阅的迟到回调及排队行情在切换、停止、桥重连后丢弃，任务事件不受影响。无效命令返回error并保持连接。
+
 诊断返回 `checks` 数组，每项含name、state、message，适用时含rows和time。state为 `ok/empty/error/unverified`；桥失败则后续项未验证。`history_readable=true` 只表示有可读日线和区间内交易日历，不承诺行情在线、数据完整或下载通过。诊断不触发下载，不保存资料或历史数据。
 
 ## 时间、数值与覆盖
