@@ -23,6 +23,12 @@ class DataClient:
     def securities(self, search='', kind=''):
         return self.request('/securities', search=search, kind=kind)
 
+    def catalog(self, search='', kind='', limit=50, offset=0):
+        return self.request('/catalog/securities', search=search, kind=kind, limit=limit, offset=offset)
+
+    def sync_catalog(self, kinds=('index', 'stock', 'etf')):
+        return self.request('/catalog/sync', {'kinds': list(kinds)})
+
     def indices(self):
         return self.request('/indices')
 

@@ -15,7 +15,7 @@ for path in artifacts:
             names = archive.getnames()
     else:
         continue
-    required = ['pfor_qmt/diagnostics.py','pfor_qmt/migrations/001_initial.sql','qmt_scripts/PFOR_MARKET.py','web_dashboard/index.html',
+    required = ['pfor_qmt/diagnostics.py','pfor_qmt/catalog.py','pfor_qmt/migrations/001_initial.sql','pfor_qmt/migrations/002_catalog.sql','qmt_scripts/PFOR_MARKET.py','web_dashboard/index.html','web_dashboard/picker.js',
                 'web_dashboard/vendor/echarts.min.js','web_dashboard/vendor/lucide.min.js',
                 'web_dashboard/vendor/ECHARTS-LICENSE.txt','web_dashboard/vendor/ECHARTS-NOTICE.txt',
                 'web_dashboard/vendor/LUCIDE-LICENSE.txt','THIRD_PARTY_NOTICES.md','LICENSE']

@@ -40,13 +40,13 @@ class Application:
         store = self.store
         if method == 'GET' and path == '/status':
             return {'settings': self.settings.public(), 'database': store.health(), 'source': 'qmt',
-                    'worker': self.worker.last_error, 'export_worker': self.worker.export_error,
+                    'worker': self.worker.last_error, 'export_worker': self.worker.export_error, 'catalog_worker': self.worker.catalog_error,
                     'version': '0.1.0', 'ws_port': self.ws_port}
         if method == 'POST' and path == '/source/test':
             return get_client().request('pfor.ping', timeout=4)
         if method == 'POST' and path == '/source/diagnostics':
             from .diagnostics import check_source
-            return check_source(self.source, lambda: get_client().request('pfor.ping', timeout=4), p.get('code', '000300.SH'))
+            return check_source(self.source, lambda: get_client().request('pfor.ping', timeout=4), p.get('code', '000300.SH'), qmt_root=self.settings.qmt_root)
         if method == 'GET' and path == '/settings':
             return self.settings.public()
         if method == 'POST' and path == '/settings':
@@ -105,6 +105,17 @@ class Application:
                 return activate(root, p.get('account', ''))
         if method == 'GET' and path == '/securities':
             return store.securities(p.get('search', ''), p.get('kind', ''))
+        if method == 'GET' and path == '/catalog/securities':
+            return store.catalog_page(p.get('search', ''), p.get('kind', ''), p.get('limit', 50), p.get('offset', 0))
+        if method == 'POST' and path == '/catalog/resolve':
+            return store.query('SELECT code,name,kind FROM securities WHERE code=ANY(%s) ORDER BY code', (codes(p['members']),))
+        if method == 'GET' and path == '/catalog':
+            job = store.query("SELECT * FROM jobs WHERE kind='catalog' ORDER BY created_at DESC LIMIT 1", one=True)
+            return {'counts': store.query('SELECT kind,count(*) AS count,max(updated_at) AS updated_at FROM securities GROUP BY kind'),
+                    'sectors': [row['name'] for row in store.query('SELECT name FROM catalog_sectors ORDER BY name')],
+                    'job': job_summary(job) if job else None, 'error': self.worker.catalog_error}
+        if method == 'POST' and path == '/catalog/sync':
+            return job_summary(store.create_catalog_job(p.get('kinds', ['index', 'stock', 'etf'])))
         if method == 'POST' and path == '/securities/sync':
             selected = codes(p['members'])
             kind = p['kind']
@@ -125,8 +136,10 @@ class Application:
         if method == 'GET' and path == '/indices':
             return store.query('SELECT m.*,s.id AS snapshot_id,s.members,s.observed_at FROM index_mapping m LEFT JOIN LATERAL (SELECT * FROM constituent_snapshots WHERE index_code=m.code ORDER BY observed_at DESC LIMIT 1) s ON true ORDER BY m.code')
         if method == 'POST' and path == '/indices/refresh':
+            code = codes([p['code']])[0]
+            security = store.query("SELECT name FROM securities WHERE code=%s AND kind='index'", (code,), one=True)
             members = self.source.get_stock_list_in_sector(p['sector'])
-            return store.snapshot(p['code'], p['sector'], p.get('name') or p['sector'], members)
+            return store.snapshot(code, p['sector'], security['name'] if security else p.get('name') or p['sector'], members)
         if method == 'GET' and path == '/datasets':
             return store.query('SELECT * FROM datasets ORDER BY created_at DESC')
         if method == 'POST' and path == '/datasets':

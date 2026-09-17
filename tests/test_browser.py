@@ -31,7 +31,12 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
         return len(subscriptions)
     app.source = SimpleNamespace(get_full_tick=lambda codes:{codes[0]:{'lastPrice':10}},
                                 get_local_data=lambda **params:{},get_trading_dates=lambda *args:[],
-                                subscribe_whole_quote=subscribe,unsubscribe_quote=lambda seq:released.append(seq))
+                                subscribe_whole_quote=subscribe,unsubscribe_quote=lambda seq:released.append(seq),
+                                get_stock_list_in_sector=lambda sector:['000001.SZ'])
+    for code,name,kind in [('000300.SH','沪深300','index'),('000001.SZ','平安银行','stock'),('510300.SH','沪深300ETF','etf')]:
+        store.save_security(code,name,kind,{})
+    with store.connect() as conn:
+        conn.execute("INSERT INTO catalog_sectors(name) VALUES('沪深300')")
     # Only this isolated test schema contains these synthetic prices.
     seed = store.create_job('download',{'members':['000300.SH'],'periods':['1d']})
     start = datetime(2026,9,1,tzinfo=SHANGHAI)
@@ -66,7 +71,14 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
             page.locator('#quote-form button[type="submit"]').click()
             expect(page.locator('#quote-status')).to_have_text('已订阅 3 个证券')
             assert len(subscriptions) == 1
-            page.locator('#quote-form [name="codes"]').fill('510300.SH')
+            page.locator('[data-picker="quotes"]').click()
+            page.locator('#picker-clear').click()
+            page.locator('#picker-search').fill('ETF')
+            expect(page.locator('#picker-rows input')).to_have_count(1)
+            page.locator('#picker-rows input').check()
+            page.locator('#picker-apply').click()
+            expect(page.locator('[data-picker="quotes"]')).to_be_focused()
+            expect(page.locator('#quote-selection')).to_contain_text('沪深300ETF')
             page.locator('#quote-form button[type="submit"]').click()
             expect(page.locator('#quote-status')).to_have_text('已订阅 1 个证券')
             expect(page.locator('#quotes tr')).to_have_count(1)
@@ -98,8 +110,12 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
             nonblank = canvas.evaluate('(canvas) => { const data = canvas.getContext("2d").getImageData(0,0,canvas.width,canvas.height).data; let n=0; for(let i=0;i<data.length;i+=4) if(data[i+3]>0 && (data[i]<180 || data[i+1]<180 || data[i+2]<180)) n++; return n; }')
             assert nonblank > 100
             page.locator('#dataset-form [name="name"]').fill('浏览器测试指数')
-            page.locator('#dataset-form [name="members"]').fill('000300.SH')
-            page.locator('#dataset-form button').click()
+            page.locator('[data-picker="dataset"]').click()
+            page.locator('#picker-search').fill('沪深300')
+            expect(page.locator('#picker-rows input')).to_have_count(2)
+            page.locator('#picker-rows input[value="000300.SH"]').check()
+            page.locator('#picker-apply').click()
+            page.locator('#dataset-form button[type="submit"]').click()
             expect(page.locator('#datasets')).to_contain_text('浏览器测试指数')
             page.evaluate('scrollTo(0,0)')
             page.screenshot(path=str(output / 'history-desktop.png'),full_page=True)
@@ -116,6 +132,15 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
             page.locator('#refresh-jobs').click()
             expect(page.locator('#worker-status')).to_be_hidden()
             page.screenshot(path=str(output / 'jobs-desktop.png'),full_page=True)
+            page.locator('nav [data-view="indices"]').click()
+            page.locator('[data-picker="index"]').click()
+            expect(page.locator('#picker-kind')).to_be_disabled()
+            expect(page.locator('#picker-rows input')).to_have_count(1)
+            page.locator('#picker-rows input').check()
+            page.locator('#picker-apply').click()
+            expect(page.locator('#index-form [name="sector"]')).to_have_value('沪深300')
+            page.locator('#index-form button[type="submit"]').click()
+            expect(page.locator('#index-rows')).to_contain_text('沪深300')
             page.locator('nav [data-view="settings"]').click()
             page.locator('#diagnose-source').click()
             expect(page.locator('#source-checks tr')).to_have_count(4)
@@ -129,6 +154,19 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
                     expect(page.locator('#'+view)).to_be_visible()
                     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
                     page.screenshot(path=str(output / f'{view}-{label}.png'),full_page=True)
+                page.locator('nav [data-view="market"]').click()
+                page.locator('[data-picker="quotes"]').click()
+                expect(page.locator('#picker-rows input')).to_have_count(3)
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+                box = page.locator('#security-picker').bounding_box()
+                assert box['x'] >= 0 and box['x'] + box['width'] <= width
+                page.screenshot(path=str(output / f'picker-{label}.png'),full_page=True)
+                page.locator('#picker-search').fill('平安')
+                expect(page.locator('#picker-rows input')).to_have_count(1)
+                page.keyboard.press('Escape')
+                expect(page.locator('#security-picker')).not_to_be_visible()
+                expect(page.locator('[data-picker="quotes"]')).to_be_focused()
+            page.locator('nav [data-view="settings"]').click()
             assert errors == [], errors
             page.locator('#settings-form [name="login_enabled"]').check()
             page.locator('#settings-form [name="password"]').fill('browser-test-password-only')
@@ -143,6 +181,56 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
     finally:
         app.worker.stop.set()
         app.worker.thread.join(timeout=5)
+        websocket.shutdown()
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.browser
+@pytest.mark.postgres
+def test_selector_keeps_cross_page_choices_and_cancel_restores_form(store, tmp_path):
+    if os.environ.get('PFOR_QMT_BROWSER_TEST') != '1':
+        pytest.skip('设置 PFOR_QMT_BROWSER_TEST=1 执行浏览器验收')
+    with store.connect() as conn:
+        conn.execute("INSERT INTO securities(code,name,kind) SELECT lpad(i::text,6,'0')||'.SZ','测试证券'||i,'stock' FROM generate_series(1,65) i")
+    app = Application(Settings(tmp_path, config_path=tmp_path / 'config.toml'), store=store)
+    server = HTTPServer(('127.0.0.1',0), handler_for(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    websocket = start_websocket(app,0,server.server_port)
+    app.ws_port = websocket.socket.getsockname()[1]
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto('http://127.0.0.1:' + str(server.server_port))
+            page.get_by_label('API Key 或网页登录密码').fill(app.settings.api_key)
+            page.locator('#login-form button').click()
+            page.locator('nav [data-view="history"]').click()
+            page.locator('[data-picker="dataset"]').click()
+            expect(page.locator('#picker-rows input')).to_have_count(50)
+            page.locator('#picker-all').check()
+            expect(page.locator('#picker-count')).to_have_text('已选 50 个')
+            page.locator('#picker-next').click()
+            expect(page.locator('#picker-rows input')).to_have_count(15)
+            page.locator('#picker-rows input[value="000065.SZ"]').check()
+            page.locator('#picker-selected-only').check()
+            expect(page.locator('#picker-page')).to_contain_text('共 51 个')
+            page.locator('#picker-search').fill('测试证券65')
+            expect(page.locator('#picker-rows input')).to_have_count(1)
+            expect(page.locator('#picker-rows input')).to_be_checked()
+            page.locator('#picker-apply').click()
+            selected = page.locator('#dataset-form [name="members"]').input_value()
+            assert len(selected.split(',')) == 51 and '000065.SZ' in selected
+            page.locator('[data-picker="dataset"]').click()
+            page.locator('#picker-clear').click()
+            expect(page.locator('#picker-count')).to_have_text('已选 0 个')
+            expect(page.locator('#picker-apply')).to_be_disabled()
+            page.keyboard.press('Escape')
+            assert page.locator('#dataset-form [name="members"]').input_value() == selected
+            expect(page.locator('[data-picker="dataset"]')).to_be_focused()
+            browser.close()
+    finally:
         websocket.shutdown()
         server.shutdown()
         server.server_close()

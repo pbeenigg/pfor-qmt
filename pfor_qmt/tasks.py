@@ -33,6 +33,7 @@ class Worker:
         self.thread = None
         self.last_error = ''
         self.export_error = ''
+        self.catalog_error = ''
         self.last_schedule = None
 
     def start(self):
@@ -47,16 +48,19 @@ class Worker:
 
     def run(self):
         exports = threading.Thread(target=self.run_queue, args=('export',), daemon=True, name='pfor-export-worker')
+        catalog = threading.Thread(target=self.run_queue, args=('catalog',), daemon=True, name='pfor-catalog-worker')
         exports.start()
+        catalog.start()
         try:
             self.run_queue('download')
         finally:
             self.stop.set()
             exports.join()
+            catalog.join()
 
     def run_queue(self, kind):
-        error_field = 'last_error' if kind == 'download' else 'export_error'
-        lock_name = '.source' if kind == 'download' else '.exports'
+        error_field = {'download': 'last_error', 'export': 'export_error', 'catalog': 'catalog_error'}[kind]
+        lock_name = {'download': '.source', 'export': '.exports', 'catalog': '.catalog'}[kind]
         while not self.stop.is_set():
             try:
                 with self.store.connect() as lease:
@@ -87,7 +91,11 @@ class Worker:
         self.store.update_job(identifier, state='running', error=None)
         try:
             self.check(identifier)
-            result = self.download(job) if job['kind'] == 'download' else self.export(job)
+            if job['kind'] == 'catalog':
+                from .catalog import synchronize
+                result = synchronize(self, job)
+            else:
+                result = self.download(job) if job['kind'] == 'download' else self.export(job)
             self.check(identifier)
             state = result.pop('state', 'completed')
             self.store.update_job(identifier, state=state, result=result)
@@ -143,7 +151,7 @@ class Worker:
             self.check(identifier)
             calendar = self.retry_network(identifier, lambda: self.source.get_trading_dates(code, start.strftime('%Y%m%d'), end.strftime('%Y%m%d')))
             if not rows and not calendar:
-                raise ValueError('QMT 历史行情和交易日历均为空，已停止后续下载；请检查终端行情服务器登录与连接，恢复后重试。当前分块未推进检查点')
+                raise ValueError(f'{code} / {period} / {start} 至 {end}：QMT 历史行情和交易日历均为空，已停止后续下载；请检查终端行情服务器登录与连接，恢复后重试。当前分块未推进检查点')
             trading_days = sorted({timestamp(value).date() for value in calendar})
             with self.store.connect() as conn:
                 with conn.cursor() as cursor:

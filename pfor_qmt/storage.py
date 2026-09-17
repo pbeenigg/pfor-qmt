@@ -69,6 +69,30 @@ class Store:
         return self.query("SELECT * FROM securities WHERE (code ILIKE %s OR name ILIKE %s) AND (%s='' OR kind=%s) ORDER BY code LIMIT 1000",
                           ('%' + search + '%', '%' + search + '%', kind, kind))
 
+    def catalog_page(self, search='', kind='', limit=50, offset=0):
+        limit, offset = int(limit), int(offset)
+        if kind not in ('', 'stock', 'index', 'etf') or not 1 <= limit <= 200 or offset < 0:
+            raise ValueError('无效目录筛选或分页参数')
+        query = "FROM securities WHERE (code ILIKE %s OR name ILIKE %s) AND (%s='' OR kind=%s)"
+        args = ('%' + search + '%', '%' + search + '%', kind, kind)
+        with self.connect() as conn:
+            conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+            total = conn.execute('SELECT count(*) AS n ' + query, args).fetchone()['n']
+            rows = conn.execute('SELECT code,name,kind,updated_at ' + query + ' ORDER BY code LIMIT %s OFFSET %s', args + (limit, offset)).fetchall()
+        return dict(rows=rows, total=total, offset=offset, next_offset=offset + len(rows) if offset + len(rows) < total else None)
+
+    def create_catalog_job(self, kinds):
+        from .catalog import KINDS
+        if not isinstance(kinds, list) or not kinds or any(kind not in KINDS for kind in kinds):
+            raise ValueError('选择指数、A 股或 ETF 目录')
+        with self.connect() as conn:
+            conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (self.schema + '.catalog-create',))
+            active = conn.execute("SELECT * FROM jobs WHERE kind='catalog' AND state IN ('queued','running') ORDER BY created_at LIMIT 1").fetchone()
+            if active:
+                return active
+            return conn.execute("INSERT INTO jobs(id,kind,payload) VALUES(%s,'catalog',%s) RETURNING *",
+                                (str(uuid.uuid4()), document({'kinds': list(dict.fromkeys(kinds))}))).fetchone()
+
     def save_security(self, code, name, kind, detail):
         self.query('INSERT INTO securities(code,name,kind,details) VALUES(%s,%s,%s,%s) ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,kind=EXCLUDED.kind,details=EXCLUDED.details,updated_at=now()',
                    (codes([code])[0], name, kind, document(detail)))
