@@ -4,6 +4,7 @@ from itertools import islice
 
 from .data import SHANGHAI, MINUTE_PERIODS, AGGREGATE_PERIODS, filter_values, timestamp
 from .identifiers import source_market, TS_EXCHANGES
+from .quality_checks import aggregate_issues
 
 
 def targets(conn):
@@ -36,8 +37,16 @@ def assess(conn, target, now, calendars):
     if target['schedule_from'] and cutoff < target['schedule_from']:
         return finish('not_due','SCHEDULE_NOT_DUE','尚未到达启用后的首次维护时间','等待设定时间')
     if resource == 'catalog':
-        record = conn.execute("SELECT id,state,updated_at FROM jobs WHERE payload->>'maintenance_id'=%s AND kind='catalog' ORDER BY created_at DESC LIMIT 1",(target['scope_id'],)).fetchone()
+        record = conn.execute("SELECT id,state,updated_at,checkpoint,jsonb_array_length(coalesce(payload->'chunks','[]')) AS total FROM jobs WHERE payload->>'maintenance_id'=%s AND kind='catalog' AND NOT (payload ? 'retry_of') ORDER BY created_at DESC LIMIT 1",(target['scope_id'],)).fetchone()
         result['last_write'] = record['updated_at'] if record else None
+        result['expected_day']=cutoff
+        if record and record['state']=='succeeded' and record['total']>0 and record['checkpoint']==record['total']:
+            proof=conn.execute("SELECT count(*) AS n,bool_and(state='succeeded' AND quality_state='verified') AS verified FROM job_units WHERE job_id=%s",(record['id'],)).fetchone()
+            if proof['n']==record['total'] and proof['verified']:
+                result['actual_day']=record['updated_at'].date()
+                if result['actual_day']>=cutoff:
+                    return finish('current','CATALOG_CURRENT','该维护范围的目录分块已校验并提交','按原范围继续维护')
+                return finish('stale','CATALOG_STALE','最近一次完整目录同步早于维护截止日','检查目录维护任务与行情源')
         return finish('pending_verification','CATALOG_SCOPE_UNVERIFIED','目录仅有任务执行记录，尚未确认本次目录范围完整性','查看该维护范围的目录任务和缺失对象')
 
     metadata = {}
@@ -49,9 +58,16 @@ def assess(conn, target, now, calendars):
         result['actual_day'] = (record['as_of_date'] if period in AGGREGATE_PERIODS else record['trading_day'] or record['time'].date()) if record else None
         if period in MINUTE_PERIODS:
             return finish('pending_verification','SESSION_UNVERIFIED','分钟交易时段与夜盘归属未核验，最新一条不能证明完整','核验该合约交易时段和上游交易日字段')
-        if period in AGGREGATE_PERIODS:
-            return finish('pending_verification','PERIOD_PUBLICATION_UNVERIFIED','保留计算截至日期；周/月最终发布时点尚未核验','核对计算截至日及周期结束后的更新')
         market = source_market(code,source)
+        if period in AGGREGATE_PERIODS and record:
+            label=record['time'].date()
+            first=label-timedelta(days=4) if period=='1w' else label.replace(day=1)
+            period_dates=conn.execute('SELECT day,is_open FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s',(source,market,first,label)).fetchall()
+            problems=aggregate_issues([dict(record,period=period)],period_dates,now)
+            if problems:
+                problem=problems[0]
+                result['expected_day']=label
+                return finish(problem['quality_state'],problem['code'],problem['reason'],problem['action'])
     else:
         market = source_market(code,source) if resource=='mapping' else TS_EXCHANGES[target['exchange']]
         if resource == 'calendar':

@@ -27,7 +27,10 @@ function enableMulti(select, emptyLabel='请选择', required=false) {
     button.setAttribute('aria-label',select.parentElement.firstChild.textContent.trim() || select.name);
     button.innerHTML='<span></span><small class="selection-count"></small>'+icon('chevron-down');select.after(button);
     select.addEventListener('change',()=>refreshMulti(select));
-    new MutationObserver(()=>refreshMulti(select)).observe(select,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','selected','label']});
+    new MutationObserver(()=>{
+      refreshMulti(select);
+      if(optionSelect===select && $('#option-picker').open)renderOptions();
+    }).observe(select,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','selected','label']});
   }
   refreshMulti(select);
 }

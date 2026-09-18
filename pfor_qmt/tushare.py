@@ -166,7 +166,7 @@ class TushareSource:
         last = datetime.combine(end, datetime.max.time().replace(microsecond=0), SHANGHAI)
         api = 'fut_weekly_monthly' if aggregate else 'fut_daily' if period == '1d' else 'ft_mins'
         rows = self.bounded(api, code, first, last, period)
-        records = []
+        records = {}
         summaries = {}
         for row in rows:
             if row.get('ts_code') != code:
@@ -180,18 +180,24 @@ class TushareSource:
                     raise SourceError('周/月线缺少正确周期或计算截至日期', 'invalid_response')
                 label = timestamp(row['trade_date'])
                 as_of = timestamp(row['end_date']).date()
+                first_day = label.date()-timedelta(days=4) if period=='1w' else label.date().replace(day=1)
+                if label.date()!=period_label(label.date(),period) or not first_day<=as_of<=label.date():
+                    raise SourceError('周/月线周期标签或计算截至日期无效', 'invalid_response')
                 if as_of > datetime.now(SHANGHAI).date():
                     raise SourceError('周/月线计算截至日期位于未来', 'invalid_response')
                 previous = summaries.get(label)
+                if previous and previous['as_of_date']==as_of and previous['source_fields']!=row:
+                    raise SourceError('相同周期和截至日存在冲突数据', 'invalid_response')
                 if previous and previous['as_of_date'] >= as_of:
                     continue
                 summaries[label] = dict(as_of_date=as_of,source_fields=row)
-            records.append(dict(time=row.get('trade_date') if period not in MINUTE_PERIODS else row.get('trade_time'),
-                                trading_day=row.get('trade_date') if period == '1d' else None,
+            record = dict(time=row.get('trade_date') if period not in MINUTE_PERIODS else row.get('trade_time'),
+                                trading_day=row.get('trade_date') if period == '1d' else row.get('trading_day') if period in MINUTE_PERIODS else None,
                                 **{key: row.get(key) for key in ('open', 'high', 'low', 'close')},
                                 volume=row.get('vol'), amount=amount,
-                                open_interest=row.get('oi'), settlement=row.get('settle'), previous_settlement=row.get('pre_settle')))
-        normalized = normalize_bars(records, code, period, start, end, 'tushare')
+                                open_interest=row.get('oi'), settlement=row.get('settle'), previous_settlement=row.get('pre_settle'))
+            records[label if aggregate else len(records)] = record
+        normalized = normalize_bars(list(records.values()), code, period, start, end, 'tushare')
         if aggregate:
             for row in normalized:
                 row.update(summaries[row['time']])

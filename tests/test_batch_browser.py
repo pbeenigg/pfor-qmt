@@ -106,7 +106,16 @@ def test_batch_selection_dates_records_and_jobs(batch_app):
             assert len(response.value.json()['jobs'])==2
             page.locator('nav [data-view=futures]').click()
             choose_many(page,'#futures-form [name=resource]','calendar','warehouse','holding','mapping')
+            pending=[]
+            page.route('**/api/v1/futures/options?*',lambda route:pending.append(route))
             choose_many(page,'#futures-form [name=exchange]','SHFE','DCE')
+            page.locator('[data-multi-for=futures-form-symbol]').click()
+            expect(page.locator('#option-picker')).to_be_visible()
+            assert pending
+            for route in pending:route.fulfill(response=route.fetch())
+            expect(page.locator('#option-rows input[value="SHFE:CU"]')).to_be_visible()
+            page.keyboard.press('Escape')
+            page.unroute('**/api/v1/futures/options?*')
             choose_many(page,'#futures-form [name=symbol]','SHFE:CU','DCE:A')
             choose_many(page,'#futures-form [name=code]','CU.SHF','A.DCE')
             page.locator('[data-date-preset=futures-form]').select_option('today')

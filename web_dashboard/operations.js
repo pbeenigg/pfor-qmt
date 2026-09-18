@@ -1,7 +1,8 @@
 'use strict';
 
-const freshnessNames={current:'已跟上维护目标',stale:'更新滞后',missing:'尚无数据',pending_verification:'待核验',not_applicable:'不适用',not_due:'未到维护时间'};
+const freshnessNames={current:'已跟上维护目标',stale:'更新滞后',missing:'尚无数据',pending_verification:'待核验',not_applicable:'不适用',not_due:'未到维护时间',not_published:'周期未结束',rejected:'校验未通过'};
 let freshnessOffset=0, freshnessNext=null, freshnessRequest=0;
+let operationsDatabaseReady=true;
 
 const qualityNames={verified:'校验通过',pending_verification:'待核验',not_published:'等待发布',not_applicable:'不适用',missing:'缺失',rejected:'已拒绝',stale:'已过期'};
 const levelNames={info:'信息',warning:'警告',error:'错误'};
@@ -9,8 +10,19 @@ let eventNext=null, eventRequest=0, operationsRequest=0, unitJob=null, unitOffse
 
 async function loadOperations() {
   const request=++operationsRequest;
-  const health=await api('/health'), plans=await api('/maintenance');
+  const health=await api('/health'), runtime=await api('/runtime/events');
+  const plans=health.database.connected?await api('/maintenance'):[];
   if(request!==operationsRequest)return;
+  operationsDatabaseReady=health.database.connected;
+  $('#runtime-rows').innerHTML=runtime.rows.map(row=>`<tr><td>${formatTime(row.time)}<span class="muted">${escape(row.source||'')}</span></td><td>${escape(row.lane||'')}</td><td>${escape(row.code||'')}</td><td class="wrap-text">${escape(row.message||'')}<span class="muted">${escape(row.action||'')}</span></td></tr>`).join('') || '<tr><td colspan="4" class="empty">尚无运行故障日志</td></tr>';
+  $('#runtime-note').textContent=runtime.truncated?'只展示日志末尾最近100条':'最近运行故障';
+  if(!operationsDatabaseReady) {
+    $('#operations-summary').innerHTML=detailFields({数据库:'未连接，任务与行情状态暂不可读取',运行目录可用空间:(health.runtime_disk.free_bytes/1024**3).toFixed(2)+' GB',建议动作:'检查连接配置、PostgreSQL进程及磁盘，再刷新'});
+    for(const id of ['freshness-rows','attention-rows','maintenance-rows'])$('#'+id).innerHTML='<tr><td colspan="6" class="empty">数据库不可用，暂不能读取</td></tr>';
+    $('#freshness-page').textContent='暂不可读取';$('#attention-count').textContent='暂不可读取';
+    $('#freshness-prev').disabled=true;$('#freshness-next').disabled=true;
+    return;
+  }
   await loadFreshness(freshnessOffset);
   if(request!==operationsRequest)return;
   const gib=bytes=>(bytes/1024**3).toFixed(2)+' GB';
@@ -41,6 +53,7 @@ $('#freshness-next').addEventListener('click',action(()=>loadFreshness(freshness
 enableMulti($('#freshness-filter [name=sources]'),'全部');
 
 async function loadEvents(before=null) {
+  if(!operationsDatabaseReady) { $('#event-rows').innerHTML='<tr><td colspan="6" class="empty">数据库不可用，任务事件暂不可读取；运行故障见下方日志</td></tr>';$('#event-next').disabled=true;return; }
   const request=++eventRequest;
   const result=await api('/events/query',{...values($('#event-filter')),limit:50,...(before?{before}:{})});
   if(request!==eventRequest)return;
@@ -57,7 +70,8 @@ async function loadUnits(id,offset=0) {
   $('#unit-position').textContent=page.rows.length?`${offset+1} - ${offset+page.rows.length}`:'旧任务未记录分块质量';
   $('#unit-prev').disabled=!offset;$('#unit-next').disabled=unitNext===null;
   const retryAllowed=['failed','partial','blocked','cancelled'].includes(job.state);
-  $('#unit-rows').innerHTML=page.rows.map(row=>`<tr><td>第 ${row.unit_index+1} 块<span class="muted">${escape(row.request.code || row.request.exchange || row.request.name || '')} / ${escape(row.request.period || '')}</span><span class="muted">${escape(row.request.start || '')} ~ ${escape(row.request.end || '')}</span></td><td>${statuses[row.state]}</td><td>${qualityNames[row.quality_state]}</td><td class="numeric">${row.row_count}</td><td class="wrap-text">${row.issues.map(item=>escape(item.code+'：'+item.reason)+'<span class="muted">'+escape(item.action)+'</span>').join('') || '已读回并入库'}</td><td>${retryAllowed && (row.state!=='succeeded' || row.retryable)?`<button type="button" data-retry-unit="${row.unit_index}" data-unit-job="${id}" title="仅重试此分块" aria-label="仅重试此分块">${icon('rotate-cw')}</button>`:''}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">无分块记录，请查看任务原始覆盖结果</td></tr>';
+  recordSets.units={title:'分块核验详情',rows:page.rows,labels:{job_id:'任务ID',updated_at:'记录时间',state:'执行状态',quality_state:'数据质量',unit_index:'分块编号（从0起）',row_count:'读取行数',error_code:'错误码',retryable:'允许补数'},extra:row=>'<h3>核验依据与异常区间</h3><dl class="detail-grid">'+detailFields({对象:row.request.code||row.request.name||row.request.exchange,周期:row.request.period,起始日期:row.request.start,结束日期:row.request.end,规则版本:job.result.rule_version||'旧版本'})+'</dl>'+row.issues.map(item=>'<h3>'+escape(item.code)+'</h3><dl class="detail-grid">'+detailFields({结论:item.reason,建议动作:item.action,...(item.session_description?{时段描述:item.session_description}:{}),...(item.day?{日期:item.day}:{}),...(item.gap_count?{可疑间隔数:item.gap_count}:{})})+'</dl>'+(item.samples?'<div class="table-wrap"><table><thead><tr><th>前一记录</th><th>后一记录</th><th>间隔（分钟）</th></tr></thead><tbody>'+item.samples.map(sample=>`<tr><td>${escape(sample.after)}</td><td>${escape(sample.before)}</td><td>${escape(sample.elapsed_minutes)}</td></tr>`).join('')+'</tbody></table></div>'+(item.samples_truncated?'<p>仅展示前20个间隔，完整数量见上方。</p>':''):'')).join('')};
+  $('#unit-rows').innerHTML=page.rows.map((row,index)=>`<tr><td>第 ${row.unit_index+1} 块<span class="muted">${escape(row.request.code || row.request.exchange || row.request.name || '')} / ${escape(row.request.period || '')}</span><span class="muted">${escape(row.request.start || '')} ~ ${escape(row.request.end || '')}</span></td><td>${statuses[row.state]}</td><td>${qualityNames[row.quality_state]}</td><td class="numeric">${row.row_count}</td><td class="wrap-text">${row.issues.map(item=>escape(item.code+'：'+item.reason)+'<span class="muted">'+escape(item.action)+'</span>').join('') || '校验通过'}</td><td>${recordButton('units',index)}${retryAllowed && (row.state!=='succeeded' || row.retryable)?`<button type="button" data-retry-unit="${row.unit_index}" data-unit-job="${id}" title="仅重试此分块" aria-label="仅重试此分块">${icon('rotate-cw')}</button>`:''}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">无分块记录，请查看任务原始覆盖结果</td></tr>';
   if(!$('#unit-dialog').open)$('#unit-dialog').showModal();icons();
 }
 
@@ -75,8 +89,9 @@ $('#maintenance-form').addEventListener('submit',action(async()=>{
 document.addEventListener('click',async event=>{
   const button=event.target.closest('button');if(!button)return;
   const d=button.dataset;
-  if(!['units','events','maintain','maintenanceId','retryUnit'].some(key=>key in d))return;
+  if(!['units','events','maintain','maintenanceId','retryUnit','verify'].some(key=>key in d))return;
   await action(async()=>{
+    if(d.verify) { const job=await api('/jobs/'+d.verify+'/verify',{});$('#record-dialog').close();notice('只读核验已排队：'+job.id.slice(0,8));await switchView('jobs'); }
     if(d.units) { $('#record-dialog').close();await loadUnits(d.units); }
     if(d.events) { $('#record-dialog').close();$('#event-filter').reset();$('#event-filter [name=job_id]').value=d.events;await switchView('operations'); }
     if(d.maintain) {
@@ -95,3 +110,5 @@ for(const select of $$('#event-filter select'))enableMulti(select,'全部');
 const jobStates=$('#job-filter [name=states]');
 jobStates.innerHTML='<option value="">全部</option>'+Object.entries(statuses).filter(([key])=>key!=='completed').map(([key,label])=>`<option value="${key}">${label}</option>`).join('');
 refreshMulti(jobStates);
+$('#job-filter [name=kinds]').insertAdjacentHTML('beforeend','<option value="verify">只读核验</option>');
+refreshMulti($('#job-filter [name=kinds]'));

@@ -86,6 +86,8 @@ def normalize_report(resource, records, exchange, symbol, start, end):
         for key in definition['fields']:
             if key in definition['numeric']:
                 row[key] = number(row[key])
+                if key in ('vol','pre_vol','long_hld','short_hld') and row[key] is not None and row[key]<0:
+                    raise ValueError('仓单量、成交量或持仓量不得为负；变化量可为负')
             elif row[key] is not None and key != 'trade_date':
                 row[key] = str(row[key])
         if resource == 'warehouse':

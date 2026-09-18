@@ -23,6 +23,9 @@ for path in artifacts:
     required.extend(['pfor_qmt/futures.py','pfor_qmt/migrations/005_futures_reports.sql','web_dashboard/controls.js'])
     required.extend(['pfor_qmt/reliability.py','pfor_qmt/maintenance.py','pfor_qmt/migrations/006_reliability.sql','web_dashboard/operations.js'])
     required.append('pfor_qmt/freshness.py')
+    required.extend(['pfor_qmt/quality_checks.py','pfor_qmt/migrations/007_verification.sql'])
+    if path.name.endswith('.tar.gz'):
+        required.append('docs/QUALITY_VERIFICATION.md')
     if path.name.endswith('.tar.gz'):
         required.extend(['tools/live_acceptance.py','tools/verify_backup.py','docs/FRESHNESS.md','docs/LIVE_ACCEPTANCE.md','docs/MULTI_ASSET_PLAN.md','pfor.ps1'])
     for suffix in required:

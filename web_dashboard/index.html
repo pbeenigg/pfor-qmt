@@ -119,6 +119,8 @@
       <form id="event-filter" class="toolbar"><label class="grow">任务 ID<input name="job_id" type="search"></label><label>级别<select name="levels"><option value="">全部</option><option value="info">信息</option><option value="warning">警告</option><option value="error">错误</option></select></label><label>来源<select name="sources"><option value="">全部</option><option value="qmt">QMT</option><option value="tushare">Tushare</option></select></label><label>事件代码<input name="code" type="search"></label><label>开始日期<input name="start" type="date"></label><label>结束日期<input name="end" type="date"></label><button type="submit"><i data-lucide="search"></i>查询日志</button><button type="reset" class="icon" title="重置日志筛选" aria-label="重置日志筛选"><i data-lucide="filter-x"></i></button></form>
       <div class="table-wrap"><table><thead><tr><th>时间 / 来源</th><th>任务 / 分块</th><th>级别</th><th>事件代码</th><th>事件</th><th>详情</th></tr></thead><tbody id="event-rows"></tbody></table></div>
       <div class="pagination"><button type="button" id="event-first" class="icon" title="最新日志" aria-label="最新日志"><i data-lucide="chevrons-left"></i></button><button type="button" id="event-next" class="icon" title="更早日志" aria-label="更早日志"><i data-lucide="chevron-right"></i></button></div>
+      <div class="section-heading"><h2>运行故障日志</h2><span id="runtime-note" class="source"></span></div>
+      <div class="table-wrap"><table><thead><tr><th>时间 / 来源</th><th>队列</th><th>错误码</th><th>原因 / 下一步</th></tr></thead><tbody id="runtime-rows"></tbody></table></div>
     </section>
     <section id="settings" class="view" hidden>
       <div class="section-heading"><h2>Tushare 账号</h2><button type="button" id="account-new"><i data-lucide="plus"></i>新增账号</button></div>

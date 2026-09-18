@@ -91,20 +91,23 @@ def tick(worker, now=None):
 def repair(worker, now):
     store = worker.store
     # Repair only opted-in maintenance jobs, never old ad-hoc failures or permission denials.
-    jobs = store.query("SELECT j.* FROM jobs j WHERE coalesce(payload->>'source','qmt')=%s AND state IN ('partial','failed','blocked') AND NOT cancel_requested AND NOT EXISTS(SELECT 1 FROM jobs child WHERE child.parent_id=j.id) AND ((payload ? 'maintenance_id' AND EXISTS(SELECT 1 FROM maintenance_plans p WHERE p.id::text=j.payload->>'maintenance_id' AND enabled)) OR EXISTS(SELECT 1 FROM datasets d WHERE d.id::text=j.payload->>'dataset_id' AND scheduled)) AND EXISTS(SELECT 1 FROM job_units u WHERE u.job_id=j.id AND retryable) ORDER BY updated_at LIMIT 100",(worker.provider,))
+    jobs = store.query("SELECT j.* FROM jobs j WHERE coalesce(payload->>'source','qmt')=%s AND parent_id IS NULL AND kind!='verify' AND state IN ('partial','failed','blocked') AND NOT cancel_requested AND ((payload ? 'maintenance_id' AND EXISTS(SELECT 1 FROM maintenance_plans p WHERE p.id::text=j.payload->>'maintenance_id' AND enabled)) OR EXISTS(SELECT 1 FROM datasets d WHERE d.id::text=j.payload->>'dataset_id' AND scheduled)) AND EXISTS(SELECT 1 FROM job_units u WHERE u.job_id=j.id AND retryable) ORDER BY updated_at",(worker.provider,))
     maximum = worker.options.get('repair_attempts',3)
     for job in jobs:
-        if job.get('error_code') in ('SOURCE_PERMISSION','SOURCE_AUTHENTICATION','SOURCE_CONFIGURATION','SOURCE_UNSUPPORTED','SOURCE_RATE_LIMIT'):
+        if worker.stop.is_set():
+            raise InterruptedError()
+        if job.get('error_code') in ('SOURCE_AUTHENTICATION','SOURCE_CONFIGURATION','SOURCE_RATE_LIMIT'):
             continue
-        attempt = int(job['payload'].get('repair_attempt',0))
+        family=store.query("WITH RECURSIVE family AS (SELECT * FROM jobs WHERE id=%s UNION ALL SELECT j.* FROM jobs j JOIN family f ON j.parent_id=f.id) SELECT state,payload,updated_at FROM family",(job['id'],))
+        if any(row['state'] in ('queued','running','retrying') for row in family):
+            continue
+        if max(family,key=lambda row:row['updated_at'])['state']=='cancelled':
+            continue
+        attempt = max(int(row['payload'].get('repair_attempt',0)) for row in family)
         delay = (900,3600,86400)[min(attempt,2)]
-        if attempt >= maximum or (now-job['updated_at']).total_seconds() < delay:
+        if attempt >= maximum or (now-max(row['updated_at'] for row in family)).total_seconds() < delay:
             continue
-        if any(item['code']=='PERIOD_OPEN' for row in store.query('SELECT issues FROM job_units WHERE job_id=%s',(job['id'],)) for item in row['issues']):
-            labels = [day(gap['day']) for row in store.query('SELECT issues FROM job_units WHERE job_id=%s',(job['id'],)) for gap in row['issues'] if gap.get('code')=='PERIOD_OPEN' and gap.get('day')]
-            if not labels or max(labels) >= now.date():
-                continue
         try:
-            store.retry_job(job['id'],automatic=True)
+            store.retry_job(job['id'],automatic=True,now=now)
         except ValueError:
             continue

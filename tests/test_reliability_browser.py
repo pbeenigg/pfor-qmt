@@ -1,4 +1,5 @@
 import os
+import json
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ from test_storage_tasks import Source, make_job
 
 @pytest.mark.browser
 @pytest.mark.postgres
-def test_operations_quality_retry_logs_and_maintenance(store,tmp_path):
+def test_operations_quality_retry_logs_and_maintenance(store,tmp_path,monkeypatch):
     if os.environ.get('PFOR_QMT_BROWSER_TEST')!='1':
         pytest.skip('PFOR_QMT_BROWSER_TEST=1 enables Chromium')
     source=Source();source.fail=ValueError('bad response')
@@ -64,6 +65,21 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path):
             app.worker.execute(store.job(child['id']))
             page.locator('#refresh-jobs').click()
             expect(page.locator('#job-rows')).to_contain_text('已完成')
+            page.locator(f'#job-rows [data-job-detail="{child["id"]}"]').click()
+            with page.expect_response(lambda response:response.url.endswith('/verify')) as response:
+                page.locator('[data-verify]').click()
+            verification=response.value.json()
+            assert verification['kind']=='verify'
+            app.worker.execute(store.job(verification['id']))
+            page.locator('#refresh-jobs').click()
+            expect(page.locator('#job-rows')).to_contain_text('只读核验')
+            page.locator(f'#job-rows [data-job-detail="{verification["id"]}"]').click()
+            expect(page.locator('#record-extra')).to_contain_text('coverage-v2')
+            page.locator('[data-units]').click()
+            page.locator('#unit-rows [data-record]').first.click()
+            expect(page.locator('#record-extra')).to_contain_text('核验依据与异常区间')
+            page.keyboard.press('Escape')
+            page.keyboard.press('Escape')
             page.locator(f'#job-rows [data-job-detail="{job["id"]}"]').click()
             page.locator('[data-maintain]').click()
             page.locator('#maintenance-form [name=name]').fill('日线自动维护')
@@ -82,6 +98,13 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path):
                 page.screenshot(path=str(output/f'reliability-{label}.png'),full_page=True)
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 expect(page.locator('#event-filter button[type=submit]')).to_be_visible()
+            assert not errors,errors
+            (app.settings.runtime/'worker-qmt.jsonl').write_text(json.dumps(dict(time='2026-09-18T10:00:00Z',source='qmt',lane='download',code='DATABASE_ERROR',message='数据库连接中断',action='恢复数据库后刷新')),encoding='utf-8')
+            monkeypatch.setattr(store,'health',lambda:{'connected':False,'message':'database offline'})
+            page.locator('#operations-refresh').click()
+            expect(page.locator('#operations-summary')).to_contain_text('未连接')
+            expect(page.locator('#event-rows')).to_contain_text('暂不可读取')
+            expect(page.locator('#runtime-rows')).to_contain_text('DATABASE_ERROR')
             assert not errors,errors
             browser.close()
     finally:

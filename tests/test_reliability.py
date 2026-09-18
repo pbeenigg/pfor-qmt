@@ -118,7 +118,7 @@ def test_events_pagination_redaction_retention_and_health(store,tmp_path):
     assert len(rows)==2 and next(row for row in rows if row['id']==first['rows'][0]['id'])['sample'] is None
     app=Application(Settings(config_path=tmp_path/'config.toml'),store)
     health=app.dispatch('GET','/health',{})
-    assert health['database']['version']==6 and health['database_free_space']['state']=='unverified'
+    assert health['database']['version']==7 and health['database_free_space']['state']=='unverified'
     assert health['runtime_disk']['free_bytes']>0
 
 
@@ -128,7 +128,7 @@ def test_maintenance_explicit_scope_calendar_and_idempotency(store,tmp_path,monk
     worker=Worker(store,tmp_path,provider='tushare',account_resolver=lambda _:account())
     job=download_job(store)
     plan=save_plan(store,{'job_id':str(job['id']),'name':'铜日线维护'})
-    monkeypatch.setattr(TushareSource,'calendar',lambda self,market,start,end: [day('2026-09-08'),day('2026-09-09'),day('2026-09-10'),day('2026-09-11'),day('2026-09-14')])
+    monkeypatch.setattr(TushareSource,'request',fake_request)
     tick(worker,datetime(2026,9,14,18,59,tzinfo=SHANGHAI))
     assert len(store.query('SELECT * FROM jobs'))==1
     tick(worker,datetime(2026,9,14,19,tzinfo=SHANGHAI));tick(worker,datetime(2026,9,14,19,tzinfo=SHANGHAI))
@@ -203,7 +203,7 @@ def test_all_report_maintenance_reuses_exact_selection(store,tmp_path,monkeypatc
     p['chunks']=request_chunks(p)
     job=store.create_job('download',p)
     save_plan(store,{'job_id':str(job['id']),'name':resource})
-    monkeypatch.setattr(TushareSource,'calendar',lambda *args:[day('2026-09-08'),day('2026-09-09'),day('2026-09-10'),day('2026-09-11'),day('2026-09-14')])
+    monkeypatch.setattr(TushareSource,'request',fake_request)
     worker=Worker(store,tmp_path,provider='tushare',account_resolver=lambda _:account())
     tick(worker,datetime(2026,9,14,19,tzinfo=SHANGHAI))
     created=store.query('SELECT payload FROM jobs WHERE schedule_key IS NOT NULL',one=True)['payload']

@@ -103,7 +103,7 @@ class Store:
             raise ValueError('请选择至少一个期货交易所')
         with self.connect() as conn:
             conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (self.schema + '.catalog-create',))
-            active = conn.execute("SELECT * FROM jobs WHERE kind='catalog' AND coalesce(payload->>'source','qmt')=%s AND state IN ('queued','running') ORDER BY created_at LIMIT 1", (source,)).fetchone()
+            active = conn.execute("SELECT * FROM jobs WHERE kind='catalog' AND coalesce(payload->>'source','qmt')=%s AND state IN ('queued','running','retrying') ORDER BY created_at LIMIT 1", (source,)).fetchone()
             if active:
                 if not set(kinds).issubset(active['payload']['kinds']) or active['payload'].get('account_id') != account_id:
                     raise ValueError('已有目录同步正在进行，请等待完成后再同步其他类别')
@@ -225,14 +225,14 @@ class Store:
         row = self.query('SELECT * FROM jobs WHERE id=%s', (identifier,), one=True)
         if not row:
             raise ValueError('任务不存在')
-        if row['kind'] == 'download' and 'rows' not in row['result']:
+        if row['kind'] in ('download','verify') and 'rows' not in row['result']:
             row['result']['rows'] = self.query('SELECT coalesce(sum(row_count),0) AS n FROM coverage WHERE job_id=%s', (identifier,), one=True)['n']
         return row
 
     def jobs_page(self, payload):
         states = filter_values(payload.get('states', []), (*STATES, 'completed'), '任务状态')
         states = ['succeeded' if state == 'completed' else state for state in states]
-        kinds = filter_values(payload.get('kinds', []), ('download','export','catalog'), '任务类型')
+        kinds = filter_values(payload.get('kinds', []), ('download','export','catalog','verify'), '任务类型')
         sources = filter_values(payload.get('sources', []), ('qmt','tushare'), '任务来源')
         limit, offset = int(payload.get('limit', 50)), int(payload.get('offset', 0))
         start, end = day(payload.get('start') or '1990-01-01'), day(payload.get('end') or '2100-01-01')
@@ -241,7 +241,7 @@ class Store:
         where = "FROM jobs WHERE (%s OR state=ANY(%s)) AND (%s OR kind=ANY(%s)) AND (%s OR coalesce(payload->>'source','qmt')=ANY(%s)) AND created_at::date BETWEEN %s AND %s AND (id::text ILIKE %s OR coalesce(error,'') ILIKE %s)"
         search = '%'+str(payload.get('search',''))+'%'
         args = (not states,states,not kinds,kinds,not sources,sources,start,end,search,search)
-        fields = "id,kind,state,parent_id,error_code,action,run_number,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,CASE WHEN kind='download' THEN jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=jobs.id)) || (result-'coverage') ELSE result-'coverage' END AS result,error,created_at,updated_at"
+        fields = "id,kind,state,parent_id,error_code,action,run_number,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,CASE WHEN kind IN ('download','verify') THEN jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=jobs.id)) || (result-'coverage') ELSE result-'coverage' END AS result,error,created_at,updated_at"
         with self.connect() as conn:
             conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
             total = conn.execute('SELECT count(*) AS n '+where,args).fetchone()['n']
@@ -327,7 +327,20 @@ class Store:
         rows = self.query("SELECT e.*,coalesce(j.payload->>'source','qmt') AS source FROM job_events e LEFT JOIN jobs j ON j.id=e.job_id WHERE e.id<%s AND (%s='' OR e.job_id::text=%s) AND (%s OR e.level=ANY(%s)) AND (%s OR coalesce(j.payload->>'source','qmt')=ANY(%s)) AND (%s='' OR e.code=%s) AND e.created_at::date BETWEEN %s AND %s ORDER BY e.id DESC LIMIT %s", (before,job_id,job_id,not levels,levels,not sources,sources,code,code,start,end,limit+1))
         return dict(rows=rows[:limit],next_before=rows[limit-1]['id'] if len(rows)>limit else None)
 
-    def retry_job(self, identifier, unit_indices=None, automatic=False):
+    def create_verification(self, identifier):
+        with self.connect() as conn:
+            job=conn.execute('SELECT * FROM jobs WHERE id=%s FOR UPDATE',(identifier,)).fetchone()
+            if not job or job['kind'] not in ('download','verify') or job['state'] in ('queued','running','retrying') or not job['payload'].get('chunks'):
+                raise ValueError('请选择已有处理范围的非活动采集任务重新核验')
+            active=conn.execute("SELECT * FROM jobs WHERE kind='verify' AND payload->>'verification_of'=%s AND state IN ('queued','running','retrying') LIMIT 1",(str(identifier),)).fetchone()
+            if active: return active
+            payload={key:value for key,value in job['payload'].items() if key not in ('retry_of','repair_attempt','maintenance_id')}
+            payload['verification_of']=str(identifier)
+            result=conn.execute("INSERT INTO jobs(id,kind,payload) VALUES(%s,'verify',%s) RETURNING *",(str(uuid.uuid4()),document(payload))).fetchone()
+            self.event(result['id'],'VERIFICATION_CREATED','已创建只读核验，保留原任务证据',context={'original_job':str(identifier)},conn=conn)
+            return result
+
+    def retry_job(self, identifier, unit_indices=None, automatic=False, now=None):
         with self.connect() as conn:
             job = conn.execute('SELECT * FROM jobs WHERE id=%s FOR UPDATE', (identifier,)).fetchone()
             if not job or job['state'] not in ('failed','cancelled','partial','blocked'):
@@ -352,6 +365,11 @@ class Store:
                         needed = unit['state'] != 'succeeded' or unit['retryable']
                         if automatic and not unit['retryable']:
                             needed = False
+                        elif automatic and unit['issues']:
+                            from datetime import datetime
+                            from .data import SHANGHAI
+                            today=(now or datetime.now(SHANGHAI)).date()
+                            needed=any(gap.get('retryable') and (gap.get('code')!='PERIOD_OPEN' or gap.get('day') and day(gap['day'])<today) for gap in unit['issues'])
                     else:
                         old = next((row for row in coverage if row['code']==part.get('code') and row['period']==part.get('period') and str(row['requested_start'])==part.get('start')),None)
                         needed = index >= job['checkpoint'] or bool(old and any(gap.get('retryable') for gap in classify_gaps(old['gaps']))) or part.get('code') in missing_catalog or 'board:'+str(part.get('name')) in missing_catalog
@@ -366,7 +384,8 @@ class Store:
                     raise ValueError('已有不同范围的重试任务，请等待完成后再选择剩余分块')
                 return existing
             if automatic:
-                payload['repair_attempt'] = int(payload.get('repair_attempt',0)) + 1
+                maximum=conn.execute("WITH RECURSIVE family AS (SELECT id,payload FROM jobs WHERE id=%s UNION ALL SELECT j.id,j.payload FROM jobs j JOIN family f ON j.parent_id=f.id) SELECT coalesce(max((payload->>'repair_attempt')::int),0) AS n FROM family",(identifier,)).fetchone()['n']
+                payload['repair_attempt'] = maximum + 1
             payload['retry_of'] = str(identifier)
             row = conn.execute('INSERT INTO jobs(id,kind,payload,parent_id) VALUES(%s,%s,%s,%s) RETURNING *', (str(uuid.uuid4()),job['kind'],document(payload),identifier)).fetchone()
             self.event(row['id'],'RETRY_CREATED','已创建关联重试任务',context={'parent_id':str(identifier),'chunks':len(payload.get('chunks',[]))},conn=conn)

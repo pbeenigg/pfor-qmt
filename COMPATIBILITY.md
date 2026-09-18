@@ -1,5 +1,9 @@
 # 兼容矩阵
 
+## 数据核验（schema7）
+
+jobs新增verify类型，复用现有coverage/job_units/job_events。POST /jobs/{id}/verify与DataClient.verify创建独立只读核验；不改行情、不重写原任务、不改变采集账号绑定。GET /runtime/events不依赖数据库。新鲜度的周/月及目录状态使用实际日历与分块证据，允许not_published/rejected。自动补数基于整个原任务链计算剩余范围和总尝试次数；采集与核验使用coverage-v2规则。详细依据与未验证项见docs/QUALITY_VERIFICATION.md。
+
 ## 新鲜度与恢复验证（2026-09-18）
 
 新增POST /freshness/query和DataClient.freshness；GET /health增加scheduled_freshness分页对象。仅评估启用的数据集与维护计划，返回逐对象目标日期、实际日期、状态、原因及动作，不覆盖原任务状态或质量。无schema迁移、无数据源请求，旧历史与导出接口不变；分钟及未核验发布规则不冒充已验证。备份恢复工具仅创建无网络临时容器，校验后清理，不向业务数据库恢复。

@@ -125,6 +125,9 @@ class DataClient:
     def retry(self, identifier, unit_indices=None):
         return self.request('/jobs/' + identifier + '/retry', {} if unit_indices is None else {'unit_indices':unit_indices})
 
+    def verify(self, identifier):
+        return self.request('/jobs/' + identifier + '/verify', {})
+
     def job_units(self, identifier, limit=50, offset=0):
         return self.request('/jobs/' + identifier + '/units', limit=limit, offset=offset)
 
@@ -136,6 +139,9 @@ class DataClient:
 
     def health(self):
         return self.request('/health')
+
+    def runtime_events(self):
+        return self.request('/runtime/events')
 
     def freshness(self, **filters):
         return self.request('/freshness/query', filters)

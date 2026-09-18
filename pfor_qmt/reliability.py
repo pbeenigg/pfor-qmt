@@ -50,6 +50,31 @@ def redact(value):
     return value
 
 
+def runtime_events(runtime):
+    rows,truncated=[],False
+    for provider in ('qmt','tushare'):
+        path=Path(runtime)/('worker-'+provider+'.jsonl')
+        if not path.exists(): continue
+        try:
+            with path.open('rb') as stream:
+                stream.seek(0,2)
+                size=stream.tell()
+                truncated=truncated or size>65536
+                stream.seek(max(0,size-65536))
+                lines=stream.read().decode('utf-8',errors='replace').splitlines()
+            for line in lines:
+                try:
+                    item=json.loads(line)
+                    if isinstance(item,dict):
+                        rows.append(redact({key:item.get(key) for key in ('time','source','lane','code','message','action')}))
+                except ValueError:
+                    continue
+        except OSError:
+            rows.append(dict(source=provider,code='LOG_READ_FAILED',message='运行日志暂不可读取'))
+    rows.sort(key=lambda row:str(row.get('time') or ''),reverse=True)
+    return dict(rows=rows[:100],truncated=truncated or len(rows)>100)
+
+
 def issue(code, state, reason, action, retryable=False, **details):
     return dict(code=code, quality_state=state, reason=reason, action=action, retryable=retryable, **details)
 

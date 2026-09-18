@@ -48,6 +48,9 @@ class Application:
 
     def dispatch(self, method, path, p):
         store = self.store
+        if method == 'GET' and path == '/runtime/events':
+            from .reliability import runtime_events
+            return runtime_events(self.settings.runtime)
         source = provider_name(p.get('source', 'qmt'))
         if source != 'qmt' and path in ('/quotes','/securities/sync','/indices','/indices/refresh','/boards','/boards/members','/boards/refresh','/source/test','/source/diagnostics','/sectors','/factors'):
             raise ValueError('Tushare本期不支持该接口，请选择期货目录或历史行情')
@@ -366,7 +369,12 @@ class Application:
             return row
         if method == 'GET' and path == '/health':
             import shutil
-            result = store.operations_health()
+            database=store.health()
+            if database['connected']:
+                result = store.operations_health()
+            else:
+                result = dict(database=database,database_bytes=None,queues=[],quality=[],attention=[],maintenance=[],freshness=[],scheduled_freshness=None,
+                              database_free_space={'state':'unverified','reason':'数据库未连接'})
             disk = shutil.disk_usage(self.settings.runtime)
             result['runtime_disk'] = dict(total_bytes=disk.total,free_bytes=disk.free,low=disk.free < max(1024**3,disk.total//20))
             return result
@@ -402,6 +410,8 @@ class Application:
                     store.event(job['id'],'CANCEL_REQUESTED','用户取消后续处理')
                 elif parts[2] == 'retry':
                     return store.retry_job(job['id'],p.get('unit_indices'))
+                elif parts[2] == 'verify':
+                    return store.create_verification(job['id'])
                 else:
                     raise ValueError('任务状态不允许此操作')
                 return store.job(job['id'])
