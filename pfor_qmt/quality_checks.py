@@ -77,3 +77,38 @@ def stored_issues(rows, part, calendar, metadata=None, now=None):
     if period in AGGREGATE_PERIODS:
         result.extend(aggregate_issues(rows,calendar,now))
     return result
+
+
+def repair_ranges(job, units, unit_indices=None, now=None):
+    """Select only dated, explicitly repairable findings within the verified request."""
+    parts=job['payload']['chunks']
+    if unit_indices is not None and (not isinstance(unit_indices,list) or not unit_indices or any(type(index) is not int or index<0 or index>=len(parts) for index in unit_indices)):
+        raise ValueError('请选择有效的核验分块')
+    today=(now or datetime.now(SHANGHAI)).date()
+    selected={}
+    for unit in units:
+        index=unit['unit_index']
+        if unit_indices is not None and index not in unit_indices: continue
+        part=parts[index]
+        if part['period'] in MINUTE_PERIODS: continue
+        intervals=[]
+        for finding in unit['issues']:
+            if not finding.get('retryable') or finding.get('code') not in ('BARS_MISSING','CALENDAR_MISSING','PERIOD_STALE','PERIOD_OPEN') or not finding.get('day'): continue
+            missing=day(finding['day'])
+            first=missing-timedelta(days=4) if part['period']=='1w' else missing.replace(day=1) if part['period']=='1mo' else missing
+            if part['period'] in AGGREGATE_PERIODS and missing>=today: continue
+            if part['period']!='calendar' and missing>today: continue
+            start,end=max(day(part['start']),first),min(day(part['end']),missing)
+            if start<=end: intervals.append((start,end))
+        merged=[]
+        for start,end in sorted(set(intervals)):
+            if merged and start<=merged[-1][1]+timedelta(days=1):
+                merged[-1]=(merged[-1][0],max(end,merged[-1][1]))
+            else:
+                merged.append((start,end))
+        for start,end in merged:
+            candidate=dict(part,start=start.isoformat(),end=end.isoformat())
+            selected[(index,start,end)]=dict(unit_index=index,request=candidate)
+            if len(selected)>100000:
+                raise ValueError('补数范围超过100000分块，请缩小选择范围')
+    return list(selected.values())

@@ -10,6 +10,22 @@ HTTP：`POST /api/v1/jobs/{id}/verify`，返回新任务ID；重复点击返回�
 
 「分块质量」的详情包含请求范围、错误码、规则版本和异常区间；规则版本为coverage-v2。核验只返回当前数据库快照的结论，未写入行情的坏响应仍需查看原任务异常样本。
 
+## 核验缺口补数
+
+核验任务详情提供「预览缺口补数」，分块详情也可只选一个分块。预览列出固定来源、原采集账号和端点，以及准确的对象、周期、起止日期；取消不创建任务。确认后创建普通download任务，继续复用原采集、校验、入库、取消、恢复和导出链路。
+
+只接受有明确日期的BARS_MISSING、CALENDAR_MISSING、PERIOD_STALE和已结束PERIOD_OPEN。同一分块的相邻日期合并，始终限制在原请求范围；分钟时段、未知夜盘、发布规则不明、坏响应等问题不会自动转成下载。若怀疑停牌或无成交，应先核对预览再提交。周/月未结束时不补；日历可以补原请求中的未来日期。
+
+预览不需要来源在线；提交Tushare补数要求原账号可用且端点一致，默认账号改变不影响绑定。提交携带preview_key，范围变化会要求重新预览；并发或重复确认返回同一活动任务。已校验通过的补数范围及其成功重试不重复创建。补数不加入自动维护、不修改原采集或核验结论；完成后通过「只读重新核验」验证结果。
+
+详情中的「关联任务」可跳转原任务、关联重试、核验和缺口补数，支持分页。HTTP新增POST /jobs/{id}/repair-preview、POST /jobs/{id}/repair、GET /jobs/{id}/links；SDK为preview_repair、repair和job_links。预览最多展示100个区间，total与truncated明确说明是否还有更多；确认仍处理完整选定范围，超过100000个区间直接拒绝。
+
+```python
+preview = client.preview_repair(verification_id, unit_indices=[0])
+job = client.repair(verification_id, preview['preview_key'], preview['unit_indices'])
+links = client.job_links(verification_id)
+```
+
 ## 判定规则
 
 - 日线：复查OHLC、数量、精度与已保存日历；缺日历不推断休市，空字段不补零，合约存续期外不要求补数。

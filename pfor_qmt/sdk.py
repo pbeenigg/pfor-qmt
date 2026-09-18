@@ -128,6 +128,15 @@ class DataClient:
     def verify(self, identifier):
         return self.request('/jobs/' + identifier + '/verify', {})
 
+    def preview_repair(self, identifier, unit_indices=None):
+        return self.request('/jobs/'+identifier+'/repair-preview',{} if unit_indices is None else {'unit_indices':unit_indices})
+
+    def repair(self, identifier, preview_key, unit_indices=None):
+        return self.request('/jobs/'+identifier+'/repair',dict(preview_key=preview_key,**({'unit_indices':unit_indices} if unit_indices is not None else {})))
+
+    def job_links(self, identifier, limit=50, offset=0):
+        return self.request('/jobs/'+identifier+'/links',limit=limit,offset=offset)
+
     def job_units(self, identifier, limit=50, offset=0):
         return self.request('/jobs/' + identifier + '/units', limit=limit, offset=offset)
 

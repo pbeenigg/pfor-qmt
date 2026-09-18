@@ -406,6 +406,8 @@ class Application:
                 return store.units_page(job['id'],p.get('limit',50),p.get('offset',0))
             if method == 'GET' and len(parts) == 3 and parts[2] == 'events':
                 return store.events_page(dict(p,job_id=str(job['id'])))
+            if method == 'GET' and len(parts) == 3 and parts[2] == 'links':
+                return store.job_links(job['id'],p.get('limit',50),p.get('offset',0))
             if method == 'POST' and len(parts) == 3:
                 if parts[2] == 'cancel' and job['state'] in ('queued','running','retrying'):
                     store.update_job(job['id'], cancel_requested=True, **({'state':'cancelled'} if job['state'] == 'queued' else {}))
@@ -414,6 +416,14 @@ class Application:
                     return store.retry_job(job['id'],p.get('unit_indices'))
                 elif parts[2] == 'verify':
                     return store.create_verification(job['id'])
+                elif parts[2] == 'repair-preview':
+                    return store.verification_repair(job['id'],p.get('unit_indices'))
+                elif parts[2] == 'repair':
+                    if job['payload'].get('source')=='tushare':
+                        account=self.settings.account(job['payload'].get('account_id'))
+                        if account['endpoint']!=job['payload'].get('endpoint'):
+                            raise ValueError('账号端点与核验任务固定端点不同，请恢复配置后补数')
+                    return store.verification_repair(job['id'],p.get('unit_indices'),p.get('preview_key'),create=True)
                 else:
                     raise ValueError('任务状态不允许此操作')
                 return store.job(job['id'])

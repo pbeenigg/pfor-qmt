@@ -1,6 +1,7 @@
 import json
 import re
 import uuid
+import hashlib
 from pathlib import Path
 
 import psycopg
@@ -334,11 +335,64 @@ class Store:
                 raise ValueError('请选择已有处理范围的非活动采集任务重新核验')
             active=conn.execute("SELECT * FROM jobs WHERE kind='verify' AND payload->>'verification_of'=%s AND state IN ('queued','running','retrying') LIMIT 1",(str(identifier),)).fetchone()
             if active: return active
-            payload={key:value for key,value in job['payload'].items() if key not in ('retry_of','repair_attempt','maintenance_id')}
+            payload={key:value for key,value in job['payload'].items() if key not in ('retry_of','repair_attempt','maintenance_id','repair_of','repair_units','repair_preview_key')}
             payload['verification_of']=str(identifier)
             result=conn.execute("INSERT INTO jobs(id,kind,payload) VALUES(%s,'verify',%s) RETURNING *",(str(uuid.uuid4()),document(payload))).fetchone()
             self.event(result['id'],'VERIFICATION_CREATED','已创建只读核验，保留原任务证据',context={'original_job':str(identifier)},conn=conn)
             return result
+
+    def verification_repair(self, identifier, unit_indices=None, preview_key=None, create=False):
+        from .quality_checks import repair_ranges
+        with self.connect() as conn:
+            job=conn.execute('SELECT * FROM jobs WHERE id=%s FOR UPDATE',(identifier,)).fetchone()
+            if not job or job['kind']!='verify' or job['state'] in ('queued','running','retrying'):
+                raise ValueError('请先完成只读核验，再预览可补缺口')
+            units=list(conn.execute('SELECT * FROM job_units WHERE job_id=%s ORDER BY unit_index',(identifier,)))
+            selected=repair_ranges(job,units,unit_indices)
+            indices=sorted(set(unit_indices if unit_indices is not None else [row['unit_index'] for row in selected]))
+            active=conn.execute("SELECT * FROM jobs WHERE payload->>'repair_of'=%s AND kind='download' AND state IN ('queued','running','retrying') ORDER BY created_at LIMIT 1",(str(identifier),)).fetchone()
+            if create and active:
+                if active['payload'].get('repair_units')==indices and active['payload'].get('repair_preview_key')==preview_key:
+                    return active
+                raise ValueError('该核验已有活动补数任务，请等待完成后再处理其他范围')
+            family=list(conn.execute("WITH RECURSIVE repairs AS (SELECT id FROM jobs WHERE payload->>'repair_of'=%s AND kind='download' UNION SELECT j.id FROM jobs j JOIN repairs r ON j.parent_id=r.id WHERE j.kind='download') SELECT DISTINCT ON (u.request-'source') u.* FROM job_units u JOIN repairs r ON r.id=u.job_id ORDER BY u.request-'source',u.updated_at DESC",(str(identifier),)))
+            key=lambda part:json.dumps({k:v for k,v in part.items() if k!='source'},sort_keys=True,default=json_default)
+            completed={key(row['request']) for row in family if row['state']=='succeeded' and row['quality_state'] in ('verified','not_applicable')}
+            selected=[row for row in selected if key(row['request']) not in completed]
+            parts=[row['request'] for row in selected]
+            original=job['payload']
+            payload={k:original[k] for k in ('source','account_id','endpoint','resource','exchange','symbol','code') if k in original}
+            payload.update(source=original.get('source','qmt'),repair_of=str(identifier),repair_units=indices,chunks=parts)
+            if parts:
+                payload.update(start=min(p['start'] for p in parts),end=max(p['end'] for p in parts))
+                if original.get('resource'):
+                    if original.get('selections'):
+                        payload['selections']=list({key(p['selection']):p['selection'] for p in parts}.values())
+                else:
+                    payload['members']=list(dict.fromkeys(p['code'] for p in parts))
+                    payload['periods']=list(dict.fromkeys(p['period'] for p in parts))
+            digest=hashlib.sha256(json.dumps(payload,sort_keys=True,default=json_default).encode()).hexdigest()
+            if not create:
+                return dict(verification_id=str(identifier),source=payload['source'],account_id=payload.get('account_id'),endpoint=payload.get('endpoint'),
+                            rows=selected[:100],total=len(parts),truncated=len(parts)>100,unit_indices=indices,preview_key=digest,
+                            active_job=str(active['id']) if active else None)
+            if not parts:
+                raise ValueError('没有明确可补的缺口，或已完成对应补数；请重新核验')
+            if preview_key!=digest:
+                raise ValueError('补数范围已变化，请重新预览确认')
+            payload['repair_preview_key']=digest
+            result=conn.execute("INSERT INTO jobs(id,kind,payload) VALUES(%s,'download',%s) RETURNING *",(str(uuid.uuid4()),document(payload))).fetchone()
+            self.event(result['id'],'REPAIR_CREATED','已按核验缺口创建采集任务',context={'verification_id':str(identifier),'chunks':len(parts),'unit_indices':indices},conn=conn)
+            self.event(identifier,'REPAIR_LINKED','缺口补数任务已创建，原核验结论保留',context={'repair_job':str(result['id'])},conn=conn)
+            return result
+
+    def job_links(self, identifier, limit=50, offset=0):
+        job=self.job(identifier)
+        limit,offset=int(limit),int(offset)
+        if not 1<=limit<=200 or offset<0: raise ValueError('无效关联任务分页参数')
+        references=[str(value) for value in (job.get('parent_id'),job['payload'].get('verification_of'),job['payload'].get('repair_of')) if value]
+        rows=self.query("SELECT id,kind,state,parent_id,payload->>'verification_of' AS verification_of,payload->>'repair_of' AS repair_of,payload->>'source' AS source,created_at,result->>'rows' AS rows FROM jobs WHERE id!=%s AND (id::text=ANY(%s) OR parent_id=%s OR payload->>'verification_of'=%s OR payload->>'repair_of'=%s) ORDER BY created_at DESC,id DESC LIMIT %s OFFSET %s",(identifier,references,identifier,str(identifier),str(identifier),limit+1,offset))
+        return dict(rows=rows[:limit],offset=offset,next_offset=offset+limit if len(rows)>limit else None)
 
     def retry_job(self, identifier, unit_indices=None, automatic=False, now=None):
         with self.connect() as conn:

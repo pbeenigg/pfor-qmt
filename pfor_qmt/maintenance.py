@@ -28,7 +28,7 @@ def check_conflict(conn, payload, identifier=None):
 
 def save_plan(store, params):
     job = store.job(params['job_id'])
-    if job['kind'] not in ('catalog','download') or job['payload'].get('retry_of') or job['payload'].get('maintenance_id'):
+    if job['kind'] not in ('catalog','download') or any(job['payload'].get(key) for key in ('retry_of','maintenance_id','repair_of')):
         raise ValueError('请选择原始目录或采集任务作为维护范围，不使用局部重试任务')
     name = str(params.get('name','')).strip()
     clock = params.get('schedule_time') or ('19:00' if job['payload'].get('source')=='tushare' else '17:00')

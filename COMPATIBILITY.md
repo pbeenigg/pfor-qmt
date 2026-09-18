@@ -1,5 +1,9 @@
 # 兼容矩阵
 
+## 核验到补数
+
+schema仍为7，不另建补数表。新增repair-preview、repair、links接口及SDK方法；补数复用download，payload.repair_of关联核验、repair_units保留选择、repair_preview_key校验确认范围。原retry仍保持原任务类型，不将只读核验重试偷偷转为采集。关联列表分页，原任务状态与证据不改写。补数不继承dataset_id或maintenance_id，避免新增自动范围；重新核验只保留verification_of，去除补数关联的旧字段。
+
 ## 自动维护闭环
 
 不增加schema版本，继续使用schema7。POST /maintenance/{id}新增可选名称、时间、回读天数，原enabled开关仍兼容；SDK新增update_maintenance。重复启用不重置起始日，数据集与关联维护计划禁止双重启用。新调度按范围/交易所/结束日生成键，旧日期键根据原任务实际范围继承，不重写旧任务。全局事件根据context.source保留Tushare来源，权限阻塞与恢复可追踪；界面使用同一编辑表单，暂停状态不因编辑而改变。

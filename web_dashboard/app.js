@@ -25,7 +25,7 @@ let chart;
 let provider = 'qmt', accounts = [], sourceCapabilities = {};
 let accountsRequest=0, datasetsRequest=0, jobsRequest=0, securitiesRequest=0, catalogRequest=0, historyRequest=0;
 let futuresRequest=0, futuresOptionsRequest=0, futuresOffset=0, futuresNext=null, futuresActive='calendar';
-let jobOffset=0, jobNext=null;
+let jobOffset=0, jobNext=null, jobDetailRequest=0;
 
 function notice(message) {
   $('#notice').textContent = message;
@@ -525,7 +525,11 @@ document.addEventListener('click', async (event) => {
   if (d.refreshDataset) { await api('/datasets/' + d.refreshDataset + '/refresh', {}); await loadDatasets(); notice('成员已按最新快照刷新，已创建任务仍使用原成员'); }
   if (d.job) { await api('/jobs/' + d.id + '/' + d.job, {}); await loadJobs(); }
   if (d.jobDetail) {
+    const request=++jobDetailRequest;
+    $('#record-extra').replaceChildren();$('#record-fields').replaceChildren();$('#record-title').textContent='正在读取任务';
     const job=await api('/jobs/'+d.jobDetail);
+    job.links=await api(`/jobs/${d.jobDetail}/links?limit=50&offset=${Number(d.linksOffset||0)}`);
+    if(request!==jobDetailRequest)return;
     recordSets.job={title:'任务详情',rows:[job],labels:{id:'任务ID',kind:'任务类型',state:'任务状态',checkpoint:'已处理检查点',attempts:'重试次数',cancel_requested:'取消请求',error:'错误信息',created_at:'创建时间',updated_at:'更新时间'},note:`${statuses[job.state]} · ${job.payload.source || 'qmt'} · ${job.result.rows ?? 0} 行`,extra:row=>renderJobDetails(row)};
     showRecord('job');
   }
@@ -781,7 +785,8 @@ function renderJobDetails(job) {
   const summary={来源:p.source || 'qmt',采集账号:p.account_id || '不适用',范围:`${p.start || '默认'} 至 ${p.end || '默认'}`,周期:(p.periods || (p.period?[p.period]:[])).map(value=>periodNames[value] || value).join('、') || reportNames[p.resource] || '目录',[job.kind==='verify'?'核验行数':'已入库行数']:job.result.rows ?? 0,固定对象数:p.selections?.length || p.members?.length || 1};
   const qualitySummary=(job.result.quality_summary || []).map(item=>`${qualityNames[item.quality_state] || item.quality_state} ${item.count} 块`).join('、');
   const verify=['download','verify'].includes(job.kind)&&!['queued','running','retrying'].includes(job.state)?`<button type="button" data-verify="${job.id}">${icon('scan-search')}只读重新核验</button>`:'';
-  return `<div class="toolbar"><button type="button" data-units="${job.id}">${icon('list-checks')}分块质量</button><button type="button" data-events="${job.id}">${icon('scroll-text')}任务日志</button>${verify}${['download','catalog'].includes(job.kind) && !p.retry_of && !p.maintenance_id?`<button type="button" data-maintain="${job.id}">${icon('calendar-clock')}设为自动维护</button>`:''}</div>`+'<h3>处理范围</h3><dl class="detail-grid">'+detailFields({...summary,数据质量:qualitySummary || '旧任务未记录分块质量',核验规则:job.result.rule_version || '旧版本',下一步:job.action || '查看分块质量与日志',原任务:job.parent_id || p.verification_of || '无'})+'</dl>'+(job.error?`<p class="error-note">${escape(job.error)}</p>`:'')+(coverage.length?'<h3>覆盖与缺口 · '+coverage.length+' 个分块</h3><div class="table-wrap coverage-table"><table><thead><tr><th>对象</th><th>周期</th><th>请求区间</th><th>行数</th><th>校验结果</th></tr></thead><tbody>'+coverage.map(row=>`<tr><td>${escape(row.code)}</td><td>${escape(periodNames[row.period] || reportNames[row.period] || row.period)}</td><td>${escape(row.requested_start)} 至 ${escape(row.requested_end)}</td><td class="numeric">${row.row_count}</td><td class="wrap-text">${row.gaps?.length?row.gaps.map(gap=>escape((gap.day?gap.day+' · ':'')+gap.reason)).join('<br>'):'已执行覆盖校验'}</td></tr>`).join('')+'</tbody></table></div>':'');
+  const repair=job.kind==='verify' && !['queued','running','retrying'].includes(job.state)?`<button type="button" data-repair="${job.id}">${icon('download')}预览缺口补数</button>`:'';
+  return `<div class="toolbar"><button type="button" data-units="${job.id}">${icon('list-checks')}分块质量</button><button type="button" data-events="${job.id}">${icon('scroll-text')}任务日志</button>${verify}${repair}${['download','catalog'].includes(job.kind) && !p.retry_of && !p.maintenance_id && !p.repair_of?`<button type="button" data-maintain="${job.id}">${icon('calendar-clock')}设为自动维护</button>`:''}</div>`+'<h3>处理范围</h3><dl class="detail-grid">'+detailFields({...summary,数据质量:qualitySummary || '旧任务未记录分块质量',核验规则:job.result.rule_version || '旧版本',下一步:job.action || '查看分块质量与日志',原任务:job.parent_id || p.verification_of || p.repair_of || '无'})+'</dl>'+(job.error?`<p class="error-note">${escape(job.error)}</p>`:'')+(coverage.length?'<h3>覆盖与缺口 · '+coverage.length+' 个分块</h3><div class="table-wrap coverage-table"><table><thead><tr><th>对象</th><th>周期</th><th>请求区间</th><th>行数</th><th>校验结果</th></tr></thead><tbody>'+coverage.map(row=>`<tr><td>${escape(row.code)}</td><td>${escape(periodNames[row.period] || reportNames[row.period] || row.period)}</td><td>${escape(row.requested_start)} 至 ${escape(row.requested_end)}</td><td class="numeric">${row.row_count}</td><td class="wrap-text">${row.gaps?.length?row.gaps.map(gap=>escape((gap.day?gap.day+' · ':'')+gap.reason)).join('<br>'):'已执行覆盖校验'}</td></tr>`).join('')+'</tbody></table></div>':'')+renderJobLinks(job);
 }
 
 initializeControls();

@@ -69,11 +69,12 @@ function dateRangeFor(preset, end=shanghaiDay()) {
   return {start:date.toISOString().slice(0,10),end};
 }
 
-async function confirmBatch(title, summary) {
+async function confirmBatch(title, summary, extra='') {
   const dialog=$('#batch-confirm');
   if(dialog.open) return false;
   $('#batch-title').textContent=title;
   $('#batch-summary').innerHTML=detailFields(summary);
+  $('#batch-extra').innerHTML=extra;
   dialog.returnValue='';dialog.showModal();
   return new Promise(resolve=>{batchResolve=resolve;});
 }

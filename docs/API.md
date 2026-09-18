@@ -13,6 +13,9 @@ GET /status新增worker_issues数组，包含source、lane、scope_kind/scope_id
 | POST | /events/query | job_id、levels、sources、code、start、end、limit、before；级别与来源支持多选 |
 | POST | /jobs/{id}/retry | 可选unit_indices（从0起）；返回新任务，parent_id保留关联。旧任务不改写，成功范围不重复采集 |
 | POST | /jobs/{id}/verify | 非活动采集或核验任务创建只读verify任务；verification_of关联原任务，活动核验去重，不请求数据源 |
+| POST | /jobs/{id}/repair-preview | 已结束核验，可选unit_indices；返回固定来源/账号/端点、rows、total、truncated、unit_indices、preview_key、active_job；只读 |
+| POST | /jobs/{id}/repair | preview_key及可选unit_indices；确认明确缺口后创建download，固定原账号端点，重复提交去重，范围变化拒绝 |
+| GET | /jobs/{id}/links | limit=1..200、offset；查询原任务、直接重试、核验及缺口补数关联，rows/next_offset |
 | GET | /runtime/events | 无需数据库连接；读取本项目固定轮转日志末尾，返回脱敏rows及truncated标志 |
 | GET | /health | 队列、分块质量、待处理任务、数据库大小、运行目录磁盘空间、来源/周期最近行情与维护状态 |
 | POST | /freshness/query | sources多选、search、limit=1..200、offset；返回已启用范围逐对象的新鲜度、目标日、原因与建议动作，健康接口scheduled_freshness为同口径首页 |
