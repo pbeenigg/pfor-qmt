@@ -13,6 +13,7 @@ from pfor_qmt.data import SHANGHAI, chunks
 from pfor_qmt.server import HTTPServer, handler_for, start_websocket
 from pfor_qmt.service import Application
 from pfor_qmt.settings import Settings
+from browser_helpers import choose_many
 
 
 @pytest.mark.browser
@@ -47,10 +48,10 @@ def test_derivative_selection_details_and_board_dataset(store, tmp_path, monkeyp
             page.get_by_label('API Key 或网页登录密码').fill(app.settings.api_key)
             page.locator('#login-form button').click()
             expect(page.locator('#catalog-counts')).to_contain_text('期货 2 个')
-            page.locator('#security-form [name="kind"]').select_option('future')
-            page.locator('#security-form [name="market"]').select_option('SF')
+            choose_many(page,'#security-form [name="kind"]','future')
+            choose_many(page,'#security-form [name="market"]','SF')
             page.locator('#security-form [name="search"]').fill('沪铜')
-            page.locator('#security-form button').click()
+            page.locator('#security-form button[type=submit]').click()
             expect(page.locator('#securities tr')).to_have_count(1)
             page.locator('#securities [data-instrument="cu2610.SF"]').click()
             expect(page.locator('#instrument-title')).to_have_text('沪铜2610')
@@ -59,8 +60,8 @@ def test_derivative_selection_details_and_board_dataset(store, tmp_path, monkeyp
             page.keyboard.press('Escape')
             page.locator('[data-picker="quotes"]').click()
             page.locator('#picker-clear').click()
-            page.locator('#picker-kind').select_option('future')
-            page.locator('#picker-market').select_option('SF')
+            choose_many(page,'#picker-kind','future')
+            choose_many(page,'#picker-market','SF')
             page.locator('#picker-search').fill('黄金')
             expect(page.locator('#picker-rows input')).to_have_count(1)
             expect(page.locator('#picker-rows input')).to_have_value('SP au2610&au2612.SF')
@@ -86,8 +87,8 @@ def test_derivative_selection_details_and_board_dataset(store, tmp_path, monkeyp
                     page.locator(f'nav [data-view="{view}"]').click()
                     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), view
                 page.locator('[data-picker="diagnostics"]').click()
-                page.locator('#picker-kind').select_option('option')
-                page.locator('#picker-market').select_option('SF')
+                choose_many(page,'#picker-kind','option')
+                choose_many(page,'#picker-market','SF')
                 expect(page.locator('#picker-rows input')).to_have_count(1)
                 expect(page.locator('#picker-rows input')).to_have_value('cu2610C80000.SF')
                 page.locator('#picker-rows input').check()

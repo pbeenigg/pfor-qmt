@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from playwright.sync_api import sync_playwright, expect
+from browser_helpers import choose_many
 
 from pfor_qmt.server import HTTPServer, handler_for, start_websocket
 from pfor_qmt.service import Application
@@ -60,7 +61,7 @@ def test_multi_account_tushare_full_workflow_without_qmt(store,tmp_path,monkeypa
             expect(page.locator('#catalog-status')).to_contain_text('已完成',timeout=20000)
             expect(page.locator('#catalog-counts')).to_contain_text('期货 12 个')
             page.locator('#security-form [name=search]').fill('CU2610')
-            page.locator('#security-form button').click()
+            page.locator('#security-form button[type=submit]').click()
             expect(page.locator('#securities tr')).to_have_count(1)
             page.locator('nav [data-view=history]').click()
             page.locator('#dataset-form [name=name]').fill('铜日线')
@@ -77,7 +78,7 @@ def test_multi_account_tushare_full_workflow_without_qmt(store,tmp_path,monkeypa
             page.locator('#download-form [name=start]').fill('2026-09-14')
             page.locator('#download-form [name=end]').fill('2026-09-14')
             with page.expect_response(lambda response: response.url.endswith('/downloads') and response.request.method=='POST') as download:
-                page.locator('#download-form button').click()
+                page.locator('#download-form button.primary').click()
             assert download.value.status==200, download.value.text()
             expect(page.locator('#job-rows')).to_contain_text('1 行',timeout=15000)
             page.locator('nav [data-view=history]').click()
@@ -153,16 +154,17 @@ def test_failed_minutes_keep_daily_rows_and_allow_daily_only_retry(store,tmp_pat
             expect(failed_row).to_contain_text('失败')
             expect(failed_row).to_contain_text('已入库 1 行')
             expect(failed_row).to_contain_text('只选日线')
-            page.locator('#download-form [name=dataset_id]').select_option(str(dataset['id']))
-            daily=page.locator('#download-form [value="1d"]')
-            minute=page.locator('#download-form [value="1m"]')
-            five=page.locator('#download-form [value="5m"]')
+            page.locator('#data-source').select_option('tushare')
+            choose_many(page,'#download-form [name=dataset_id]',str(dataset['id']))
+            daily=page.locator('#download-form input[value="1d"]')
+            minute=page.locator('#download-form input[value="1m"]')
+            five=page.locator('#download-form input[value="5m"]')
             expect(daily).to_be_checked();expect(minute).to_be_checked();expect(five).to_be_checked()
             minute.uncheck();five.uncheck()
             page.locator('#download-form [name=start]').fill('2026-09-14')
             page.locator('#download-form [name=end]').fill('2026-09-14')
             with page.expect_response(lambda r:r.url.endswith('/downloads') and r.request.method=='POST') as response:
-                page.locator('#download-form button').click()
+                page.locator('#download-form button.primary').click()
             assert response.value.status==200
             job=response.value.json()
             assert job['payload']['periods']==['1d'] and job['payload']['account_id']=='main'
@@ -181,8 +183,11 @@ def test_failed_minutes_keep_daily_rows_and_allow_daily_only_retry(store,tmp_pat
             expect(daily).to_be_visible()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             page.screenshot(path=str(output/'tushare-failed-minutes-mobile.png'),full_page=True)
-            # Switching the global source must not change the dataset's account or permissions.
+            # Source-scoped selection clears on switching, but persisted bindings and permissions remain.
+            page.locator('#data-source').select_option('qmt')
+            expect(daily).to_be_disabled()
             page.locator('#data-source').select_option('tushare')
+            choose_many(page,'#download-form [name=dataset_id]',str(dataset['id']))
             expect(minute).to_be_disabled()
             assert app.dispatch('GET','/datasets',{})[0]['periods']==['1d','1m','5m']
             assert not errors

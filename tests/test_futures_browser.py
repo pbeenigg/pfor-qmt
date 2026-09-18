@@ -7,6 +7,7 @@ from playwright.sync_api import sync_playwright, expect
 
 from pfor_qmt.server import HTTPServer, handler_for, start_websocket
 from test_futures_extensions import extension_app
+from browser_helpers import choose_many
 
 
 @pytest.mark.browser
@@ -34,13 +35,13 @@ def test_reports_and_extended_periods_browser(extension_app):
             expect(page.locator('#dataset-form [value="60m"]')).to_be_disabled()
             page.locator('nav [data-view=futures]').click()
             form=page.locator('#futures-form')
-            form.locator('[name=exchange]').select_option('SHFE')
+            choose_many(page,'#futures-form [name=exchange]','SHFE')
             for resource in ('calendar','warehouse','holding','mapping'):
                 page.locator('nav [data-view=futures]').click()
-                form.locator('[name=resource]').select_option(resource)
+                choose_many(page,'#futures-form [name=resource]',resource)
                 form.locator('[name=start]').fill('2026-09-14');form.locator('[name=end]').fill('2026-09-14')
-                if resource in ('warehouse','holding'): form.locator('[name=symbol]').select_option('CU')
-                if resource=='mapping': form.locator('[name=code]').select_option('CU.SHF')
+                if resource in ('warehouse','holding'): choose_many(page,'#futures-form [name=symbol]','SHFE:CU')
+                if resource=='mapping': choose_many(page,'#futures-form [name=code]','CU.SHF')
                 with page.expect_response(lambda r:r.url.endswith('/futures/sync') and r.request.method=='POST') as response:
                     page.locator('#futures-sync').click()
                 assert response.value.status==200,response.value.text()
@@ -66,7 +67,7 @@ def test_reports_and_extended_periods_browser(extension_app):
                 with page.expect_download() as file: download.click()
                 assert 'tushare' in Path(file.value.path()).read_text('utf-8-sig')
             page.locator('nav [data-view=futures]').click()
-            form.locator('[name=resource]').select_option('holding')
+            choose_many(page,'#futures-form [name=resource]','holding')
             form.locator('[name=scope]').select_option('contract')
             page.locator('[data-picker=report]').click();page.locator('#picker-search').fill('CU2610')
             page.locator('#picker-rows [value="CU2610.SHF"]').check();page.locator('#picker-apply').click()
@@ -85,13 +86,13 @@ def test_reports_and_extended_periods_browser(extension_app):
             page.locator('#dataset-form button[type=submit]').click()
             expect(page.locator('#datasets')).to_contain_text('铜周月')
             page.locator('#datasets [data-download]').click()
-            expect(page.locator('#download-form [value="1w"]')).to_be_checked()
-            expect(page.locator('#download-form [value="1mo"]')).to_be_enabled()
+            expect(page.locator('#download-form input[value="1w"]')).to_be_checked()
+            expect(page.locator('#download-form input[value="1mo"]')).to_be_enabled()
             page.locator('#download-form [name=start]').fill('2026-09-14');page.locator('#download-form [name=end]').fill('2026-09-17')
-            page.locator('#download-form button').click()
+            page.locator('#download-form button.primary').click()
             expect(page.locator('#job-rows')).to_contain_text('待核验',timeout=15000)
             page.locator('nav [data-view=history]').click()
-            page.locator('#history-form [name=period]').select_option('1w')
+            choose_many(page,'#history-form [name=period]','1w')
             page.locator('#history-form [name=start]').fill('2026-09-14');page.locator('#history-form [name=end]').fill('2026-09-17')
             page.locator('#history-form button.primary').click()
             expect(page.locator('#bars')).to_contain_text('周期未结束')
