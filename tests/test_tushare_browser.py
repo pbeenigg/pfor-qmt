@@ -9,8 +9,8 @@ from playwright.sync_api import sync_playwright, expect
 from pfor_qmt.server import HTTPServer, handler_for, start_websocket
 from pfor_qmt.service import Application
 from pfor_qmt.settings import Settings
-from pfor_qmt.tushare import TushareSource
-from test_tushare import fake_request
+from pfor_qmt.tushare import TushareSource, SourceError
+from test_tushare import fake_request, account, seed
 
 
 @pytest.mark.browser
@@ -35,6 +35,7 @@ def test_multi_account_tushare_full_workflow_without_qmt(store,tmp_path,monkeypa
             page.goto(f'http://127.0.0.1:{server.server_port}/#settings')
             page.get_by_label('API Key 或网页登录密码').fill(app.settings.api_key)
             page.locator('#login-form button').click()
+            expect(page.locator('#login-dialog')).not_to_be_visible()
             expect(page.locator('#account-form')).to_be_visible()
             page.locator('#account-form [name=id]').fill('main')
             page.locator('#account-form [name=name]').fill('研究账号')
@@ -107,6 +108,83 @@ def test_multi_account_tushare_full_workflow_without_qmt(store,tmp_path,monkeypa
             page.locator('#data-source').select_option('qmt')
             expect(page.locator('#history-form [name=code]')).to_have_value('')
             expect(page.locator('#bars')).not_to_contain_text('80123.1234567890123456789')
+            assert not errors
+            browser.close()
+    finally:
+        app.worker.stop.set();app.tushare_worker.stop.set()
+        app.worker.thread.join(timeout=10);app.tushare_worker.thread.join(timeout=10)
+        websocket.shutdown();server.shutdown();server.server_close();thread.join()
+
+
+@pytest.mark.browser
+@pytest.mark.postgres
+def test_failed_minutes_keep_daily_rows_and_allow_daily_only_retry(store,tmp_path,monkeypatch):
+    if os.environ.get('PFOR_QMT_BROWSER_TEST') != '1':
+        pytest.skip('PFOR_QMT_BROWSER_TEST=1 enables Chromium')
+    def request(self,api,p,fields=''):
+        if api=='ft_mins':
+            raise SourceError('ft_mins: 接口权限不足，请核对账号权限','permission')
+        return fake_request(self,api,p,fields)
+    monkeypatch.setattr(TushareSource,'request',request)
+    seed(store)
+    app=Application(Settings(config_path=tmp_path/'config.toml'),store=store)
+    app.settings.accounts=[account()]
+    app.settings.default_account_id='main'
+    dataset=app.dispatch('POST','/datasets',dict(source='tushare',name='铜多周期',members=['CU2610.SHF'],periods=['1d','1m','5m']))
+    failed=app.dispatch('POST','/downloads',dict(dataset_id=str(dataset['id']),start='2026-09-14',end='2026-09-14'))
+    app.tushare_worker.execute(store.job(failed['id']))
+    server=HTTPServer(('127.0.0.1',0),handler_for(app))
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    websocket=start_websocket(app,0,server.server_port)
+    app.ws_port=websocket.socket.getsockname()[1]
+    app.worker.start();app.tushare_worker.start()
+    output=Path(__file__).resolve().parents[1]/'output'/'playwright'
+    output.mkdir(parents=True,exist_ok=True)
+    try:
+        with sync_playwright() as pw:
+            browser=pw.chromium.launch()
+            page=browser.new_page(viewport={'width':1440,'height':980})
+            errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+            page.goto(f'http://127.0.0.1:{server.server_port}/#jobs')
+            page.get_by_label('API Key 或网页登录密码').fill(app.settings.api_key)
+            page.locator('#login-form button').click()
+            expect(page.locator('#login-dialog')).not_to_be_visible()
+            failed_row=page.locator('#job-rows tr').filter(has_text=str(failed['id'])[:8])
+            expect(failed_row).to_contain_text('失败')
+            expect(failed_row).to_contain_text('已入库 1 行')
+            expect(failed_row).to_contain_text('只选日线')
+            page.locator('#download-form [name=dataset_id]').select_option(str(dataset['id']))
+            daily=page.locator('#download-form [value="1d"]')
+            minute=page.locator('#download-form [value="1m"]')
+            five=page.locator('#download-form [value="5m"]')
+            expect(daily).to_be_checked();expect(minute).to_be_checked();expect(five).to_be_checked()
+            minute.uncheck();five.uncheck()
+            page.locator('#download-form [name=start]').fill('2026-09-14')
+            page.locator('#download-form [name=end]').fill('2026-09-14')
+            with page.expect_response(lambda r:r.url.endswith('/downloads') and r.request.method=='POST') as response:
+                page.locator('#download-form button').click()
+            assert response.value.status==200
+            job=response.value.json()
+            assert job['payload']['periods']==['1d'] and job['payload']['account_id']=='main'
+            completed_row=page.locator('#job-rows tr').filter(has_text=job['id'][:8])
+            expect(completed_row).to_contain_text('已完成',timeout=15000)
+            expect(completed_row).to_contain_text('已入库 1 行')
+            page.locator('nav [data-view=settings]').click()
+            page.locator('[data-account-test=main]').click()
+            expect(page.locator('#account-test-status')).to_contain_text('检测完成',timeout=15000)
+            expect(page.locator('#account-capabilities')).to_contain_text('权限不足')
+            page.locator('nav [data-view=jobs]').click()
+            expect(minute).to_be_disabled();expect(five).to_be_disabled();expect(daily).to_be_enabled()
+            expect(page.locator('#download-capability')).to_contain_text('历史分钟权限不可用')
+            page.screenshot(path=str(output/'tushare-failed-minutes-desktop.png'),full_page=True)
+            page.set_viewport_size({'width':390,'height':844})
+            expect(daily).to_be_visible()
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path=str(output/'tushare-failed-minutes-mobile.png'),full_page=True)
+            # Switching the global source must not change the dataset's account or permissions.
+            page.locator('#data-source').select_option('tushare')
+            expect(minute).to_be_disabled()
+            assert app.dispatch('GET','/datasets',{})[0]['periods']==['1d','1m','5m']
             assert not errors
             browser.close()
     finally:

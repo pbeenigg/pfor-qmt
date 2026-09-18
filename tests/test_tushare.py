@@ -8,6 +8,7 @@ import pytest
 
 from pfor_qmt.accounts import profile
 from pfor_qmt.data import SHANGHAI, chunks, day
+from pfor_qmt.identifiers import source_code
 from pfor_qmt.service import Application
 from pfor_qmt.settings import Settings
 from pfor_qmt.tasks import Worker
@@ -120,6 +121,24 @@ def test_normalization_precision_null_night_and_continuous_guard(monkeypatch):
     assert minute['time'].hour==21 and minute['settlement'] is None
     with pytest.raises(SourceError,match='具体月份'):
         adapter.history('CU.SHF','1m','2026-09-14','2026-09-14','continuous')
+
+
+def test_dce_monthly_average_catalog_codes(monkeypatch):
+    symbols = ['L_F', 'L_FL', 'PP_F', 'PP_FL', 'V_F', 'V_FL']
+    records = [dict(ts_code=symbol+'.DCE', symbol=symbol, exchange='DCE',
+                    name='月均价主力或连续', fut_code=symbol.removesuffix('L') if symbol.endswith('FL') else symbol,
+                    list_date=None, delist_date=None, d_month=None) for symbol in symbols]
+    monkeypatch.setattr(TushareSource, 'request', lambda *args, **kwargs: records)
+    rows = TushareSource(account()).catalog('DCE', '2')
+    assert [row['code'] for row in rows] == [symbol+'.DCE' for symbol in symbols]
+    assert all(row['subtype'] == 'continuous' and row['metadata']['delivery_month'] is None for row in rows)
+    assert source_code(' l_f.dce ', 'tushare') == 'L_F.DCE'
+
+
+@pytest.mark.parametrize('code', ['L_F.SF', 'L_F.UNKNOWN', 'L/F.DCE', '../L_F.DCE', 'L_F.DCE;DROP', '_F.DCE'])
+def test_tushare_code_validation_keeps_market_and_character_boundaries(code):
+    with pytest.raises(ValueError):
+        source_code(code, 'tushare')
 
 
 def test_saturated_responses_split_or_fail(monkeypatch):
@@ -334,7 +353,76 @@ def test_checkpoint_resume_uses_fixed_account_and_no_duplicate_rows(store,tmp_pa
     job=download_job(store,periods=['1d','1m']);worker.execute(job)
     failed=store.job(job['id'])
     assert failed['state']=='failed' and failed['checkpoint']==1
+    assert failed['result']['rows']==1
+    assert store.query('SELECT result FROM jobs WHERE id=%s',(job['id'],),one=True)['result']['rows']==1
     store.update_job(job['id'],state='queued');worker.execute(store.job(job['id']))
     assert store.job(job['id'])['state']=='partial'
     assert calls.count(('fut_daily',None))==1
     assert store.query('SELECT count(*) AS n FROM bars',one=True)['n']==2
+
+
+@pytest.mark.postgres
+def test_daily_only_download_from_mixed_dataset_and_legacy_progress(store,tmp_path,monkeypatch):
+    seed(store)
+    app=Application(Settings(config_path=tmp_path/'config.toml'),store=store)
+    app.settings.accounts=[account()]
+    app.settings.default_account_id='main'
+    dataset=app.dispatch('POST','/datasets',dict(source='tushare',name='铜多周期',members=['CU2610.SHF'],periods=['1d','1m','5m']))
+    app.capabilities['main']={'capabilities':{'minutes':{'state':'permission'}}}
+    request=dict(dataset_id=str(dataset['id']),start='2026-09-14',end='2026-09-14')
+    with pytest.raises(ValueError,match='分钟接口'):
+        app.dispatch('POST','/downloads',request)
+    job=app.dispatch('POST','/downloads',dict(request,periods=['1d']))
+    assert job['payload']['periods']==['1d'] and job['payload']['account_id']=='main'
+    assert job['total_chunks']==1
+    calls=[]
+    def daily_only(self,api,p,fields=''):
+        calls.append(api)
+        assert api!='ft_mins'
+        return fake_request(self,api,p,fields)
+    monkeypatch.setattr(TushareSource,'request',daily_only)
+    app.tushare_worker.execute(store.job(job['id']))
+    assert store.job(job['id'])['state']=='completed' and 'fut_daily' in calls
+    assert app.dispatch('GET','/datasets',{})[0]['periods']==['1d','1m','5m']
+    # Old failed jobs have coverage but no result count. Reads must preserve their status.
+    store.update_job(job['id'],state='failed',result={},error='ft_mins: 权限不足')
+    detail=app.dispatch('GET','/jobs/'+str(job['id']),{})
+    summary=next(row for row in app.dispatch('GET','/jobs',{}) if row['id']==job['id'])
+    assert detail['result']['rows']==summary['result']['rows']==1
+    assert detail['state']==summary['state']=='failed'
+    for invalid in ([], ['tick'], '1d', None):
+        with pytest.raises(ValueError):
+            app.dispatch('POST','/downloads',dict(request,periods=invalid))
+    narrow=app.dispatch('POST','/datasets',dict(source='tushare',name='铜日线',members=['CU2610.SHF'],periods=['1d']))
+    with pytest.raises(ValueError,match='数据集'):
+        app.dispatch('POST','/downloads',dict(request,dataset_id=str(narrow['id']),periods=['5m']))
+
+
+@pytest.mark.postgres
+def test_catalog_progress_survives_failure_and_resume(store,tmp_path,monkeypatch):
+    calls=[]
+    def request(self,api,p,fields=''):
+        calls.append((p['exchange'],p['fut_type']))
+        if len(calls)==6:
+            raise SourceError('合约资料异常','invalid_response')
+        return fake_request(self,api,p,fields)
+    monkeypatch.setattr(TushareSource,'request',request)
+    worker=Worker(store,tmp_path,provider='tushare',account_resolver=lambda _:account())
+    job=store.create_catalog_job(['future'],'tushare','main','https://api.tushare.pro')
+    worker.execute(job)
+    failed=store.job(job['id'])
+    assert failed['state']=='failed' and failed['checkpoint']==5 and failed['result']['rows']==5
+    worker.execute(failed)
+    result=store.job(job['id'])
+    assert result['state']=='completed' and result['result']['rows']==12
+    assert calls.count(('DCE','2'))==2 and calls.count(('CFFEX','1'))==1
+
+
+def test_sdk_download_optional_periods_preserves_old_default():
+    from pfor_qmt.sdk import DataClient
+    calls=[]
+    client=DataClient()
+    client.request=lambda path,payload: calls.append((path,payload))
+    client.download('dataset','2026-09-14','2026-09-17')
+    client.download('dataset','2026-09-14','2026-09-17',periods=['1d'])
+    assert 'periods' not in calls[0][1] and calls[1][1]['periods']==['1d']

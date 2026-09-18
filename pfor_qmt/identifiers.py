@@ -20,7 +20,7 @@ def source_code(value, source='qmt'):
     if not isinstance(value, str):
         raise ValueError('无效Tushare合约代码')
     value = value.strip().upper()
-    if not re.fullmatch(r'[A-Z][A-Z0-9]{0,30}\.(CFX|SHF|DCE|ZCE|INE|GFE)', value):
+    if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,30}\.(CFX|SHF|DCE|ZCE|INE|GFE)', value):
         raise ValueError('无效Tushare期货合约代码')
     return value
 

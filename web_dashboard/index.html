@@ -71,7 +71,8 @@
     </section>
     <section id="jobs" class="view" hidden>
       <div class="section-heading"><h2>下载与导出</h2><button class="icon" id="refresh-jobs" title="刷新任务" aria-label="刷新任务"><i data-lucide="refresh-cw"></i></button></div>
-      <form id="download-form" class="toolbar"><label class="grow">数据集<select name="dataset_id" required><option value="">选择数据集</option></select></label><label>开始日期<input name="start" type="date"></label><label>结束日期<input name="end" type="date"></label><button class="primary"><i data-lucide="download"></i>开始回补</button></form>
+      <form id="download-form" class="toolbar"><label class="grow">数据集<select name="dataset_id" required><option value="">选择数据集</option></select></label><fieldset><legend>本次回补周期</legend><label><input type="checkbox" name="period" value="1d" disabled>日线</label><label><input type="checkbox" name="period" value="1m" disabled>1 分钟</label><label><input type="checkbox" name="period" value="5m" disabled>5 分钟</label></fieldset><label>开始日期<input name="start" type="date"></label><label>结束日期<input name="end" type="date"></label><button class="primary"><i data-lucide="download"></i>开始回补</button></form>
+      <p id="download-capability" role="status" class="catalog-meta" hidden></p>
       <div class="defaults">默认范围：日线近一年，分钟线近 90 天</div>
       <p id="worker-status" role="status" hidden></p>
       <div class="table-wrap"><table><thead><tr><th>任务 / 创建时间</th><th>类型</th><th>状态</th><th>检查点</th><th>结果</th><th>操作</th></tr></thead><tbody id="job-rows"><tr><td colspan="6" class="empty">暂无下载或导出任务</td></tr></tbody></table></div>

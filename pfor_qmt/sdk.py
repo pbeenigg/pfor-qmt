@@ -74,8 +74,11 @@ class DataClient:
     def history(self, code, period='1d', start='1990-01-01', end='2100-01-01', limit=500, offset=0, source='qmt'):
         return self.request('/history', code=code, period=period, start=start, end=end, limit=limit, offset=offset,source=source)
 
-    def download(self, dataset_id, start=None, end=None):
-        return self.request('/downloads', dict(dataset_id=dataset_id, start=start, end=end))
+    def download(self, dataset_id, start=None, end=None, periods=None):
+        payload = dict(dataset_id=dataset_id, start=start, end=end)
+        if periods is not None:
+            payload['periods'] = list(periods)
+        return self.request('/downloads', payload)
 
     def job(self, identifier):
         return self.request('/jobs/' + identifier)

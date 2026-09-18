@@ -240,6 +240,7 @@ async function loadDatasets() {
   const selected = select.value;
   select.innerHTML = '<option value="">选择数据集</option>' + state.datasets.map((row) => `<option value="${row.id}">${escape(row.name)} · ${escape(row.source)} · ${row.members.length} 个证券</option>`).join('');
   select.value = selected;
+  updateDownloadPeriods();
   if (!state.datasets.length) return empty('#datasets', 5, '暂无数据集');
   $('#datasets').innerHTML = state.datasets.map((row) => `<tr><td>${escape(row.name)}${row.index_code || row.board_name ? `<span class="muted">${escape(row.board_name || row.index_code)} 当前成分快照</span>` : ''}</td><td>${row.members.length}</td><td>${row.periods.join(' / ')}</td><td><input type="checkbox" data-schedule="${row.id}" aria-label="${escape(row.name)} 交易日自动更新" ${row.scheduled ? 'checked' : ''}></td><td><div class="actions"><button data-download="${row.id}" aria-label="下载此数据集" title="下载此数据集">${icon('download')}</button>${row.index_code || row.board_name ? `<button data-refresh-dataset="${row.id}" title="显式刷新成员" aria-label="显式刷新成员">${icon('refresh-cw')}</button>` : ''}</div></td></tr>`).join('');
   icons();
@@ -249,6 +250,26 @@ async function loadDatasets() {
     tr.children[3].insertAdjacentHTML('beforeend',`<span class="muted">${escape(row.schedule_time?.slice(0,5) || '17:00')}</span>`);
     if (row.source === 'tushare') tr.children[4].insertAdjacentHTML('beforeend',`<select data-dataset-account="${row.id}" aria-label="${escape(row.name)} 采集账号">${accounts.filter(a=>a.enabled).map(a=>`<option value="${escape(a.id)}" ${a.id===row.account_id?'selected':''}>${escape(a.name)}</option>`).join('')}</select>`);
   });
+}
+
+function updateDownloadPeriods() {
+  const form = $('#download-form');
+  const dataset = state.datasets.find(row => row.id === form.elements.dataset_id.value);
+  const selection = dataset ? dataset.id + ':' + (dataset.account_id || '') : '';
+  const reset = form.dataset.selection !== selection;
+  form.dataset.selection = selection;
+  const cap = sourceCapabilities[dataset?.account_id]?.capabilities?.minutes;
+  const blocked = dataset?.source === 'tushare' && ['permission','authentication','unsupported'].includes(cap?.state);
+  $$('#download-form input[name="period"]').forEach(input => {
+    const allowed = dataset?.periods.includes(input.value);
+    if (reset) input.checked = Boolean(allowed);
+    input.disabled = !allowed || blocked && input.value !== '1d';
+    if (input.disabled) input.checked = false;
+  });
+  $('#download-capability').hidden = !dataset;
+  $('#download-capability').textContent = dataset?.source === 'tushare'
+    ? `Tushare · 采集账号 ${dataset.account_id} · ${blocked ? '历史分钟权限不可用' : cap?.state === 'available' ? '历史分钟接口可用' : '历史分钟权限待检测'}`
+    : 'QMT';
 }
 
 async function loadHistory(offset = 0) {
@@ -283,7 +304,8 @@ async function loadJobs() {
   if (!state.jobs.length) return empty('#job-rows', 6, '暂无下载或导出任务');
   $('#job-rows').innerHTML = state.jobs.map((job) => {
     const total = job.total_chunks;
-    return `<tr><td>${job.id.slice(0,8)}<span class="muted">${formatTime(job.created_at)}</span></td><td>${job.kind === 'download' ? '历史回补' : job.kind === 'catalog' ? '目录同步' : job.payload.format.toUpperCase()}</td><td><span class="badge ${job.state}">${statuses[job.state] || escape(job.state)}</span></td><td>${total ? `<progress value="${job.checkpoint}" max="${total}"></progress><span class="muted">${job.checkpoint} / ${total} ${job.kind === 'catalog' ? '证券' : '分块'}</span>` : job.checkpoint + ' 行'}</td><td>${job.result.rows === undefined ? '—' : job.result.rows + ' 行'}${job.error ? `<span class="muted">${escape(job.error.slice(0,60))}</span>` : ''}</td><td><div class="actions"><button data-job-detail="${job.id}" title="任务详情" aria-label="任务详情">${icon('list')}</button>${['queued','running'].includes(job.state) ? `<button data-job="cancel" data-id="${job.id}" title="取消后续处理" aria-label="取消后续处理">${icon('square')}</button>` : ''}${['failed','cancelled','partial'].includes(job.state) ? `<button data-job="retry" data-id="${job.id}" title="重试" aria-label="重试">${icon('rotate-cw')}</button>` : ''}${job.kind === 'export' && job.state === 'completed' ? `<a href="/api/v1/files/${job.id}" title="下载文件" aria-label="下载文件">${icon('download')}</a><a href="/api/v1/files/${job.id}/metadata" title="下载口径说明" aria-label="下载口径说明">${icon('file-text')}</a>` : ''}</div></td></tr>`;
+    const unit = job.kind === 'catalog' ? job.payload.source === 'tushare' ? '批次' : '证券' : '分块';
+    return `<tr><td>${job.id.slice(0,8)}<span class="muted">${formatTime(job.created_at)}</span></td><td>${job.kind === 'download' ? '历史回补' : job.kind === 'catalog' ? '目录同步' : job.payload.format.toUpperCase()}<span class="muted">${escape(job.payload.source || 'qmt')}${job.payload.periods ? ' · ' + escape(job.payload.periods.join(' / ')) : ''}</span></td><td><span class="badge ${job.state}">${statuses[job.state] || escape(job.state)}</span></td><td>${total ? `<progress value="${job.checkpoint}" max="${total}"></progress><span class="muted">${job.checkpoint} / ${total} ${unit}</span>` : job.checkpoint + ' 行'}</td><td>${job.result.rows === undefined ? '—' : job.kind === 'download' ? '已入库 ' + job.result.rows + ' 行' : job.result.rows + ' 行'}${job.error ? `<span class="muted">${escape(job.error)}</span>` : ''}</td><td><div class="actions"><button data-job-detail="${job.id}" title="任务详情" aria-label="任务详情">${icon('list')}</button>${['queued','running'].includes(job.state) ? `<button data-job="cancel" data-id="${job.id}" title="取消后续处理" aria-label="取消后续处理">${icon('square')}</button>` : ''}${['failed','cancelled','partial'].includes(job.state) ? `<button data-job="retry" data-id="${job.id}" title="重试" aria-label="重试">${icon('rotate-cw')}</button>` : ''}${job.kind === 'export' && job.state === 'completed' ? `<a href="/api/v1/files/${job.id}" title="下载文件" aria-label="下载文件">${icon('download')}</a><a href="/api/v1/files/${job.id}/metadata" title="下载口径说明" aria-label="下载口径说明">${icon('file-text')}</a>` : ''}</div></td></tr>`;
   }).join('');
   icons();
 }
@@ -343,7 +365,14 @@ $('#prev-page').addEventListener('click', action(() => loadHistory(Math.max(0,st
 $('#next-page').addEventListener('click', action(() => loadHistory(state.next)));
 for (const format of ['csv','parquet']) $(`#export-${format}`).addEventListener('click', action(async () => { const p = values($('#history-form')); await api('/exports', { ...p, members:[p.code], format }); await switchView('jobs'); notice('导出任务已创建'); }));
 $('#dataset-form').addEventListener('submit', action(async () => { const form = $('#dataset-form'); const p = values(form); const selected = new FormData(form).getAll('period'); if (!p.members) throw new Error('请选择数据集成员'); if (!selected.length) throw new Error('请选择至少一个周期'); const extra = state.snapshot ? state.snapshot.board ? {board_name:state.snapshot.name, board_snapshot_id:state.snapshot.id} : { index_code:state.snapshot.code, snapshot_id:state.snapshot.snapshot_id } : {}; await api('/datasets', { name:p.name, members:splitCodes(p.members), periods:selected, schedule_time:$('#dataset-schedule-time').value, ...extra }); state.snapshot = null; form.reset(); $('#dataset-form [name="members"]').value = ''; rememberSecurities([]); await loadDatasets(); notice('数据集已创建'); }));
-$('#download-form').addEventListener('submit', action(async () => { const p = values($('#download-form')); await api('/downloads', { ...p, start:p.start || null, end:p.end || null }); await loadJobs(); notice('回补任务已排队'); }));
+$('#download-form [name="dataset_id"]').addEventListener('change', updateDownloadPeriods);
+$('#download-form').addEventListener('submit', action(async () => {
+  const form = $('#download-form'), p = values(form);
+  const periods = new FormData(form).getAll('period');
+  if (!periods.length) throw new Error('请选择至少一个回补周期');
+  await api('/downloads', { dataset_id:p.dataset_id, periods, start:p.start || null, end:p.end || null });
+  await loadJobs(); notice('回补任务已排队');
+}));
 $('#refresh-jobs').addEventListener('click', action(loadJobs));
 $('#settings-form [name="login_enabled"]').addEventListener('change', (event) => { $('#settings-form [name="password"]').disabled = !event.target.checked; });
 $('#settings-form').addEventListener('submit', action(async () => { const p = values($('#settings-form')); p.login_enabled = $('#settings-form [name="login_enabled"]').checked; await api('/settings', p); $('#settings-form [name="dsn"]').value = ''; $('#settings-form [name="password"]').value = ''; await status(); notice('本地配置已保存'); }));
@@ -459,6 +488,7 @@ function updateCapabilities() {
   const blocked = provider==='tushare' && ['permission','authentication','unsupported'].includes(cap?.minutes?.state);
   $$('#dataset-form input[name="period"]').forEach(input=>{ if(input.value!=='1d') { input.disabled=blocked; if(blocked)input.checked=false; } });
   $('#source-capability').textContent = provider==='qmt' ? '实时 / 历史' : blocked ? '期货历史 · 分钟权限不可用' : '期货历史 · ' + (cap ? '接口能力已检测' : '接口权限未检测');
+  updateDownloadPeriods();
 }
 
 $('#data-source').addEventListener('change',action(async () => {

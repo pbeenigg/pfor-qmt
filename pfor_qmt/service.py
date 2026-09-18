@@ -296,16 +296,22 @@ class Application:
             return store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s ORDER BY day',
                                (source,market,day(p.get('start','1990-01-01')),day(p.get('end','2100-01-01'))))
         if method == 'GET' and path == '/jobs':
-            return store.query("SELECT id,kind,state,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,result-'coverage' AS result,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200")
+            return store.query("SELECT id,kind,state,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,CASE WHEN kind='download' THEN jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=jobs.id)) || (result-'coverage') ELSE result-'coverage' END AS result,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200")
         if method == 'POST' and path == '/downloads':
             dataset = store.query('SELECT * FROM datasets WHERE id=%s', (p['dataset_id'],), one=True)
             if not dataset:
                 raise ValueError('数据集不存在')
-            payload = {'dataset_id': str(dataset['id']), 'members': dataset['members'], 'periods': dataset['periods'], 'start': p.get('start'), 'end': p.get('end')}
+            selected = p.get('periods', dataset['periods'])
+            if not isinstance(selected, (list, tuple)):
+                raise ValueError('回补周期需要非空数组')
+            selected = periods(selected)
+            if set(selected) - set(dataset['periods']):
+                raise ValueError('回补周期必须属于所选数据集')
+            payload = {'dataset_id': str(dataset['id']), 'members': dataset['members'], 'periods': selected, 'start': p.get('start'), 'end': p.get('end')}
             payload.update(source=dataset['source'],account_id=dataset['account_id'],endpoint=dataset['endpoint'])
             if dataset['source'] == 'tushare':
                 self.settings.account(dataset['account_id'])
-                self.check_minutes(dataset['account_id'],dataset['periods'])
+                self.check_minutes(dataset['account_id'],selected)
             payload['chunks'] = chunks(payload)
             return job_summary(store.create_job('download', payload))
         if method == 'POST' and path == '/exports':

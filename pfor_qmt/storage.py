@@ -205,6 +205,8 @@ class Store:
         row = self.query('SELECT * FROM jobs WHERE id=%s', (identifier,), one=True)
         if not row:
             raise ValueError('任务不存在')
+        if row['kind'] == 'download' and 'rows' not in row['result']:
+            row['result']['rows'] = self.query('SELECT coalesce(sum(row_count),0) AS n FROM coverage WHERE job_id=%s', (identifier,), one=True)['n']
         return row
 
     def update_job(self, identifier, **changes):
@@ -230,7 +232,7 @@ class Store:
                          (job_id, part['code'], part['period'], part['start'], part['end'], rows[0]['time'] if rows else None, rows[-1]['time'] if rows else None, len(rows), document(gaps)))
             if factor is not None:
                 conn.execute('INSERT INTO factors(code,raw) VALUES(%s,%s) ON CONFLICT(code) DO UPDATE SET raw=EXCLUDED.raw,observed_at=now()', (part['code'], document(factor)))
-            conn.execute('UPDATE jobs SET checkpoint=%s,attempts=0,updated_at=now() WHERE id=%s', (checkpoint, job_id))
+            conn.execute("UPDATE jobs SET checkpoint=%s,attempts=0,result=result || jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=%s)),updated_at=now() WHERE id=%s", (checkpoint, job_id, job_id))
 
     def history(self, code, period='1d', start='1990-01-01', end='2100-01-01', limit=500, offset=0, conn=None, source='qmt'):
         code = codes([code], source)[0]

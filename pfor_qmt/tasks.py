@@ -141,7 +141,7 @@ class Worker:
                         self.check(identifier)
                     self.store.save_security(**row, conn=conn, source='tushare')
                 self.check(identifier)
-                conn.execute('UPDATE jobs SET checkpoint=%s,attempts=0,updated_at=now() WHERE id=%s', (index+1,identifier))
+                conn.execute("UPDATE jobs SET checkpoint=%s,attempts=0,result=result || jsonb_build_object('rows',(SELECT count(*) FROM securities WHERE source='tushare')),updated_at=now() WHERE id=%s", (index+1,identifier))
             self.publish({'event':'job', 'data':job_summary(self.store.job(identifier))})
         total = self.store.query("SELECT count(*) AS n FROM securities WHERE source='tushare'", one=True)['n']
         return {'rows':total,'message':'Tushare期货目录已同步'}
@@ -201,7 +201,12 @@ class Worker:
                     if poll < 5:
                         self.stop.wait(1)
                 return []
-            rows = self.retry_network(identifier, lambda: adapter.history(code,period,start,end,security['subtype'] if security else 'contract')) if adapter else self.retry_network(identifier, read)
+            try:
+                rows = self.retry_network(identifier, lambda: adapter.history(code,period,start,end,security['subtype'] if security else 'contract')) if adapter else self.retry_network(identifier, read)
+            except SourceError as error:
+                if adapter and period != '1d' and error.category == 'permission':
+                    raise SourceError(str(error) + '；已入库数据保留，可只选日线回补；分钟授权后重试原任务', error.category) from None
+                raise
             self.check(identifier)
             calendar_error = None
             try:

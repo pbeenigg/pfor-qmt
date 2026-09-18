@@ -97,8 +97,11 @@ class TushareSource:
         if not rows or len(rows) >= 10000:
             raise SourceError('合约目录为空或达到10000条上限，不能确认完整性', 'incomplete')
         result = []
-        for row in rows:
-            code = source_code(row.get('ts_code'), 'tushare')
+        for position, row in enumerate(rows, 1):
+            try:
+                code = source_code(row.get('ts_code'), 'tushare')
+            except ValueError:
+                raise SourceError(f'{exchange} / 类型 {contract_type} / 第 {position} 条合约代码无效', 'invalid_response') from None
             if source_market(code, 'tushare') != TS_EXCHANGES[exchange] or row.get('exchange') != exchange or not row.get('name'):
                 raise SourceError('合约资料的代码、市场或名称不完整', 'invalid_response')
             month = str(row.get('d_month') or '')

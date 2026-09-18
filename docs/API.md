@@ -20,6 +20,10 @@
 
 Tushare仅普通月份合约支持1m/5m；主力/连续仅日线与每日映射。SDK `DataClient`的catalog、instrument、history、export增加source参数；sync_catalog增加account_id；新增sources、tushare_accounts、save_tushare_account、test_tushare_account、calendar、contract_mappings。`xtdata`与实时WebSocket watch仍限QMT。
 
+`POST /downloads`可传`periods`非空数组，必须是数据集周期的子集；省略时保持原行为，使用数据集全部周期。来源、账号及端点仍取自数据集，不受顶部所选账号影响。例如`client.download(dataset_id, "2026-09-14", "2026-09-17", periods=["1d"])`可在分钟未授权时单独回补日线；不修改数据集定义和自动更新周期。
+
+下载任务每个分块的`result.rows`与行情、覆盖记录及检查点同事务保存；失败、取消或恢复均保留已入库数量，旧任务缺少统计时从覆盖记录计算。该数量表示已保存分块的累计行数，不是新增去重记录数，也不表示整个任务成功。Tushare目录进度为六市场各两类共12批，`result.rows`为已保存的Tushare目录总数。支持`L_F.DCE`等含下划线的月均价主力/连续代码，仍保留来源独立身份。
+
 历史返回顶层`source=postgresql`表示存储层，`provider`与每行`source`表示提供方。`normalization_version=tushare-futures-v1`使用合约报价单位、手、元；日线万元按十进制精确换算。既有QMT为qmt-raw-v1，保留原始数值和单位标记。CSV/Parquet口径说明携带上述元数据。
 
 日线按交易日查询；分钟未提供交易日时保留trading_day=null，按上海自然时间筛选并标记夜盘归属、分钟内完整性待核验。主力映射缺少某交易日时不会自行沿用前一合约。Tushare日历不可用时不借用QMT或其他交易所日历。
