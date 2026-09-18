@@ -388,7 +388,9 @@ class Worker:
             date_field = REPORTS[resource]['date']
             dates = sorted({row[date_field] for row in rows})
             gaps = [] if rows else [{'reason':'资料响应为空，未确认发布或覆盖情况'}]
-            if resource != 'calendar':
+            if resource=='weekly_detail':
+                gaps.append(issue('WEEKLY_COVERAGE_UNVERIFIED','pending_verification','周报按上游周日期保存；节假日与品种发布覆盖未核验','查看周编号与周日期，不以每日无记录判定缺失'))
+            elif resource != 'calendar':
                 market = source_market(target['code'],'tushare') if resource=='mapping' else TS_EXCHANGES[target['exchange']]
                 try:
                     calendar = [timestamp(value).date() for value in self.retry_network(identifier,lambda: self.calendar(market,day(part['start']).strftime('%Y%m%d'),day(part['end']).strftime('%Y%m%d'),adapter=adapter))]
@@ -440,10 +442,11 @@ class Worker:
                 market=source_market(part['code'],provider) if not resource or resource=='mapping' else TS_EXCHANGES[target['exchange']]
                 calendar=list(conn.execute('SELECT day,is_open FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s',(provider,market,day(part['start'])-timedelta(days=31),period_label(part['end'],part['period']))))
                 if resource:
-                    if resource in ('warehouse','holding'):
+                    if resource in ('warehouse','holding','settle','weekly_detail'):
                         exchange='SHFE' if resource=='holding' and target['exchange']=='INE' else target['exchange']
-                        normalize_report(resource,rows,exchange,target['symbol'],day(part['start']),day(part['end']))
-                        gaps=[issue('REPORT_PUBLICATION_UNVERIFIED','pending_verification','已读到本地资料，但逐品种适用与发布规则未核验','核对该品种资料规则；空日期不自动当缺失')]
+                        normalize_report(resource,rows,exchange,target['code'] if resource=='settle' else target['symbol'],day(part['start']),day(part['end']),stored=True)
+                        gaps=[issue('WEEKLY_COVERAGE_UNVERIFIED' if resource=='weekly_detail' else 'REPORT_PUBLICATION_UNVERIFIED','pending_verification',
+                                    '已读到本地资料，但发布与覆盖规则未核验' if rows else '本地没有对应资料，不能确认发布或覆盖情况','核对品种与资料发布日期；空日期不自动当缺失')]
                     elif resource=='calendar':
                         dates={row['day'] for row in rows}
                         gaps=[issue('CALENDAR_MISSING','missing','日历缺少自然日记录','同步对应交易所日历',True,day=(day(part['start'])+timedelta(days=i)).isoformat()) for i in range((day(part['end'])-day(part['start'])).days+1) if day(part['start'])+timedelta(days=i) not in dates]

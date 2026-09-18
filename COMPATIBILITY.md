@@ -1,5 +1,9 @@
 # 兼容矩阵
 
+## 结算参数与交易周报（schema8）
+
+新增fut_settle与fut_weekly_detail适配，资料resource分别为settle、weekly_detail；原holding接口、SHFE/INE口径及字段保持。沿用任务/账号/事件/核验/查询/导出，无新任务类型。新迁移仅增加两张资料表。结算量率原值保存；周报amount/cumamt精确换算亿元到元并增加原始金额字段及转换版本。按week_date查询、保留原week格式，不推算ISO周，不逐日判断周报缺口。旧资料返回形状不变，来源仍固定tushare。
+
 ## 核验到补数
 
 schema仍为7，不另建补数表。新增repair-preview、repair、links接口及SDK方法；补数复用download，payload.repair_of关联核验、repair_units保留选择、repair_preview_key校验确认范围。原retry仍保持原任务类型，不将只读核验重试偷偷转为采集。关联列表分页，原任务状态与证据不改写。补数不继承dataset_id或maintenance_id，避免新增自动范围；重新核验只保留verification_of，去除补数关联的旧字段。

@@ -61,6 +61,10 @@ def fake_request(self, api, params, fields=''):
         return [dict(trade_date='20260914',symbol=params['symbol'],exchange=params['exchange'],warehouse='测试仓库',wh_id='01',pre_vol=10,vol=12,vol_chg=2,unit='吨')]
     if api == 'fut_holding':
         return [dict(trade_date='20260914',symbol=params['symbol'],exchange=params['exchange'],broker='测试会员',vol=12,long_hld=None,short_hld=7)]
+    if api == 'fut_settle':
+        return [dict(ts_code=params['ts_code'],exchange=params['exchange'],trade_date='20260914',settle='80000.0000000000001',trading_fee_rate='0.050',long_margin_rate='0.07')]
+    if api == 'fut_weekly_detail':
+        return [dict(prd=params['prd'],exchange=params['exchange'],name='测试品种',week='202037',week_date='20200911',vol=12,amount='1234.000000000000001',cumamt='9000',amout_yoy='-5.7')]
     if api == 'ft_mins':
         return [dict(ts_code=code,trade_time='2026-09-14 21:01:00',open=1,high=2,low=1,close=2,vol=3,amount='12345.6789',oi=4)]
     if api == 'fut_mapping':
@@ -302,7 +306,7 @@ def test_upgrade_v3_preserves_original_values_and_identity(store):
     store.save_security('CU2610.SHF','沪铜2610','future',{},subtype='contract',metadata={'product':'CU','delivery_month':'202610'},source='tushare')
     ids=store.query('SELECT instrument_id FROM securities')
     assert ids[0]['instrument_id']==ids[1]['instrument_id']
-    assert store.health()['version']==7
+    assert store.health()['version']==8
 
 
 @pytest.mark.postgres

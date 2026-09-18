@@ -144,11 +144,12 @@ class TushareSource:
         if api == 'fut_weekly_monthly':
             params['freq'] = {'1w':'week','1mo':'month'}[period]
         fields = ''
-        if api in ('fut_wsr','fut_holding'):
+        if api in ('fut_wsr','fut_holding','fut_settle'):
             from .futures import REPORTS
-            fields = ','.join(key for key in REPORTS['warehouse' if api=='fut_wsr' else 'holding']['fields'] if key != 'source')
+            resource={'fut_wsr':'warehouse','fut_holding':'holding','fut_settle':'settle'}[api]
+            fields = ','.join(key for key in REPORTS[resource]['fields'] if key != 'source')
         rows = self.request(api, params, fields)
-        cap = {'ft_mins':8000,'fut_weekly_monthly':6000,'fut_wsr':1000}.get(api,2000)
+        cap = {'ft_mins':8000,'fut_weekly_monthly':6000,'fut_wsr':1000,'fut_settle':1600}.get(api,2000)
         if len(rows) < cap:
             return rows
         step = timedelta(seconds=1) if minute else timedelta(days=1)
@@ -211,11 +212,39 @@ class TushareSource:
         if resource == 'mapping':
             return [dict(source='tushare',code=row['ts_code'],trading_day=row['trade_date'],member_code=row['mapping_ts_code'])
                     for row in self.mapping(payload['code'],start,end)]
+        if resource=='settle':
+            records=self.bounded('fut_settle',payload['code'],datetime.combine(day(start),datetime.min.time()),datetime.combine(day(end),datetime.min.time()),extra={'exchange':payload['exchange']})
+            return normalize_report(resource,records,payload['exchange'],payload['code'],day(start),day(end))
+        if resource=='weekly_detail':
+            # Fetch padded whole week-years; week_date is authoritative, including old unpadded week IDs.
+            first_year=(day(start)-timedelta(days=7)).year
+            last_year=(day(end)+timedelta(days=7)).year
+            records=self.weekly_bounded(payload['exchange'],payload['symbol'],first_year*53,(last_year+1)*53-1)
+            selected=[]
+            for row in records:
+                if row.get('exchange')!=payload['exchange'] or str(row.get('prd','')).upper()!=payload['symbol']:
+                    raise SourceError('周报返回交易所或品种与请求不符','invalid_response')
+                if day(start)<=timestamp(row.get('week_date')).date()<=day(end):selected.append(row)
+            return normalize_report(resource,selected,payload['exchange'],payload['symbol'],day(start),day(end))
         exchange = 'SHFE' if resource == 'holding' and payload['exchange']=='INE' else payload['exchange']
         records = self.bounded('fut_wsr' if resource=='warehouse' else 'fut_holding',None,
                                datetime.combine(day(start),datetime.min.time()),datetime.combine(day(end),datetime.min.time()),
                                extra=dict(exchange=exchange,symbol=payload['symbol']))
         return normalize_report(resource,records,exchange,payload['symbol'],day(start),day(end))
+
+    def weekly_bounded(self, exchange, product, first, last):
+        from .futures import REPORTS
+        fields=','.join(key for key in REPORTS['weekly_detail']['fields'] if key not in ('source','original_amount','original_cumamt','normalization_version'))
+        # Upstream compares week strings: legacy 20199 sorts after 201953, not before it.
+        keys=sorted({key for value in range(first,last+1) for key in (f'{value//53:04d}{value%53+1:02d}',f'{value//53:04d}{value%53+1}')})
+        def read(selected):
+            params=dict(exchange=exchange,prd=product,start_week=selected[0],end_week=selected[-1])
+            rows=self.request('fut_weekly_detail',params,fields)
+            if len(rows)<4000:return rows
+            if len(selected)==1:raise SourceError('fut_weekly_detail: 单周仍达到4000行，不能确认完整性','incomplete')
+            middle=len(selected)//2
+            return read(selected[:middle])+read(selected[middle:])
+        return read(keys)
 
     def mapping(self, code, start, end):
         first = datetime.combine(day(start), datetime.min.time())
@@ -267,9 +296,11 @@ class TushareSource:
             'monthly': lambda: self.history(sample['code'],'1mo',today-timedelta(days=65),today),
             'warehouse': lambda: self.report(dict(resource='warehouse',exchange='SHFE',symbol='CU'),today-timedelta(days=7),today),
             'holding': lambda: self.report(dict(resource='holding',exchange='SHFE',symbol='CU'),today-timedelta(days=7),today),
+            'settle': lambda: self.report(dict(resource='settle',exchange='SHFE',code=sample['code']),today-timedelta(days=7),today),
+            'weekly_detail': lambda: self.report(dict(resource='weekly_detail',exchange='SHFE',symbol='CU'),today-timedelta(days=60),today),
         }.items():
             try:
-                if name in ('weekly','monthly') and not sample:
+                if name in ('weekly','monthly','settle') and not sample:
                     states[name] = {'state':'unverified','message':'没有有效合约样本'}
                     continue
                 rows = operation()

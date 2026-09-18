@@ -32,6 +32,8 @@ GET /status新增worker_issues数组，包含source、lane、scope_kind/scope_id
 
 ## 期货资料与新增周期
 
+schema8增加`resource=settle`（exchange+code具体月份合约）及`weekly_detail`（exchange+symbol品种）。仍使用原资料查询、批量同步、导出、维护与核验接口。结算费率保留原值；周报金额转元并保留原始亿元和周编号，按week_date查询，不当作逐日资料判断覆盖。详情见[结算与周报说明](SETTLEMENT_WEEKLY.md)。
+
 Tushare周期增加`1w`、`1mo`、`15m`、`30m`、`60m`；QMT仍只接受原`1d/1m/5m`。连续合约可下载日/周/月，分钟仅支持具体月份合约。周/月线按查询日期所在周/月的标签读取，`time`为上游周五/月末标签（可能晚于当前日期），`trading_day=null`，`as_of_date`为上游计算截至日；截至日不等于历史查询日期，不能作为历史时点快照。`source_fields`保留上游字段及原始万元金额，标准`amount`仍为元。较旧截至日不能覆盖较新结果。
 
 | 方法 | 路径（/api/v1前缀） | 参数与行为 |

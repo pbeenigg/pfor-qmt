@@ -5,6 +5,7 @@ from itertools import islice
 from .data import SHANGHAI, MINUTE_PERIODS, AGGREGATE_PERIODS, filter_values, timestamp
 from .identifiers import source_market, TS_EXCHANGES
 from .quality_checks import aggregate_issues
+from .futures import REPORTS
 
 
 def targets(conn):
@@ -75,11 +76,13 @@ def assess(conn, target, now, calendars):
         elif resource == 'mapping':
             record = conn.execute('SELECT max(trading_day) AS actual,max(updated_at) AS updated_at FROM contract_mappings WHERE source=%s AND code=%s',(source,code)).fetchone()
         else:
-            table = 'futures_warehouse_receipts' if resource=='warehouse' else 'futures_holdings'
+            definition=REPORTS[resource]
+            table,date_field=definition['table'],definition['date']
+            identity='ts_code' if resource=='settle' else 'prd' if resource=='weekly_detail' else 'symbol'
             exchange = 'SHFE' if resource=='holding' and target['exchange']=='INE' else target['exchange']
-            record = conn.execute('SELECT max(trade_date) AS actual,max(updated_at) AS updated_at FROM '+table+' WHERE source=%s AND exchange=%s AND symbol=%s',(source,exchange,target['symbol'])).fetchone()
+            record = conn.execute('SELECT max('+date_field+') AS actual,max(updated_at) AS updated_at FROM '+table+' WHERE source=%s AND exchange=%s AND '+identity+'=%s',(source,exchange,code if resource=='settle' else target['symbol'])).fetchone()
         result['actual_day'], result['last_write'] = record['actual'], record.get('updated_at')
-        if resource in ('warehouse','holding'):
+        if resource in ('warehouse','holding','settle','weekly_detail'):
             return finish('pending_verification','REPORT_PUBLICATION_UNVERIFIED','该品种资料适用范围和发布时间未核验，不能把空响应当缺失','核验该品种是否发布该资料及发布时间')
 
     try:

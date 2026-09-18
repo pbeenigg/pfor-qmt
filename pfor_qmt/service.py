@@ -16,7 +16,7 @@ from .settings import Settings
 from .storage import Store, job_summary
 from .tasks import Worker
 from .symbols import KINDS, MARKETS
-from .identifiers import provider_name, TS_EXCHANGES
+from .identifiers import provider_name, source_market, TS_EXCHANGES
 from .accounts import profile
 from .tushare import TushareSource
 
@@ -57,7 +57,7 @@ class Application:
         if path == '/sources' and method == 'GET':
             return {'sources':[{'id':'qmt','realtime':True,'kinds':list(KINDS)},
                                {'id':'tushare','realtime':False,'kinds':['future'],'periods':list(TUSHARE_PERIODS),'continuous_minutes':False,
-                                'reports':['calendar','mapping','warehouse','holding'],'tick':{'state':'unsupported','reason':'无API，单独CSV交付，不属于积分权限'}}],
+                                'reports':['calendar','mapping','warehouse','holding','settle','weekly_detail'],'tick':{'state':'unsupported','reason':'无API，单独CSV交付，不属于积分权限'}}],
                     'tushare':self.settings.public_accounts(),'capabilities':self.capabilities}
         if path == '/sources/tushare/accounts' and method == 'GET':
             return self.settings.public_accounts()
@@ -446,7 +446,9 @@ class Application:
         if resource == 'mapping':
             if payload['code'] not in catalog['continuous']:
                 raise ValueError('请先同步并选择主力或连续合约')
-        if resource in ('warehouse','holding'):
+        if resource=='settle' and (source_market(payload['code'],'tushare'),payload['code'].split('.')[0]) not in catalog['contracts']:
+            raise ValueError('结算参数请选择已同步的具体月份合约')
+        if resource in ('warehouse','holding','weekly_detail'):
             key = (TS_EXCHANGES[payload['exchange']],payload['symbol'])
             if key not in catalog['products'] and not (resource=='holding' and key in catalog['contracts']):
                 raise ValueError('请先同步并选择该交易所的产品或月份合约')

@@ -118,7 +118,7 @@ def test_events_pagination_redaction_retention_and_health(store,tmp_path):
     assert len(rows)==2 and next(row for row in rows if row['id']==first['rows'][0]['id'])['sample'] is None
     app=Application(Settings(config_path=tmp_path/'config.toml'),store)
     health=app.dispatch('GET','/health',{})
-    assert health['database']['version']==7 and health['database_free_space']['state']=='unverified'
+    assert health['database']['version']==8 and health['database_free_space']['state']=='unverified'
     assert health['runtime_disk']['free_bytes']>0
 
 

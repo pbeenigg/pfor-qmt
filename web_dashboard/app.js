@@ -6,7 +6,7 @@ let catalogTimer, catalogJob, catalogSectors = [], securityOffset = 0, securityN
 const names = { market: '行情', indices: '指数', boards:'行业概念', history: '历史库', futures:'期货资料', jobs: '下载任务', operations:'运行与日志', settings: '数据源设置' };
 const periodNames = {'1d':'日线','1w':'周线','1mo':'月线','1m':'1 分钟','5m':'5 分钟','15m':'15 分钟','30m':'30 分钟','60m':'60 分钟'};
 const minutePeriods = ['1m','5m','15m','30m','60m'];
-const reportNames = {calendar:'交易日历',mapping:'主力映射',warehouse:'仓单日报',holding:'成交持仓排名'};
+const reportNames = {calendar:'交易日历',mapping:'主力映射',warehouse:'仓单日报',holding:'成交持仓排名',settle:'结算参数',weekly_detail:'主要品种交易周报'};
 let boardRows = [], boardOffset = 0, boardNext = null;
 const statuses = { queued:'排队中', running:'运行中', retrying:'重试等待', succeeded:'已完成', completed:'已完成', partial:'部分完成', failed:'失败', blocked:'需处理', cancelled:'已取消' };
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -648,20 +648,20 @@ document.addEventListener('click',event=>{
   const d=button.dataset;
   if(d.accountEdit){const row=accounts.find(a=>a.id===d.accountEdit),form=$('#account-form');form.reset();for(const key of ['id','name','endpoint','timeout','requests_per_minute'])form.elements[key].value=row[key];form.elements.enabled.checked=row.enabled;form.elements.id.readOnly=true;form.scrollIntoView({block:'center'});}
   if(d.accountDelete){await api(`/sources/tushare/accounts/${d.accountDelete}/delete`,{});await loadAccounts();}
-  if(d.accountTest){button.disabled=true;$('#account-test-status').textContent='正在检测接口权限';try{const result=await api(`/sources/tushare/accounts/${d.accountTest}/test`,{});sourceCapabilities[d.accountTest]=result;const labels={catalog:'合约目录',calendar:'期货日历',daily:'日线',minutes:'历史分钟（独立权限）',mapping:'主力映射',weekly:'周线',monthly:'月线',warehouse:'仓单日报',holding:'成交持仓排名',tick:'Tick'};const states={available:'可用',empty:'空结果',permission:'权限不足',authentication:'认证失败',unverified:'未验证',network:'连接失败',rate_limit:'达到限额',incomplete:'覆盖不完整',unsupported:'无API'};$('#account-capabilities').innerHTML=Object.entries(result.capabilities).map(([key,item])=>`<tr><td>${escape(labels[key] || key)}</td><td>${escape(states[item.state] || item.state)}</td><td>${escape(item.message || (item.rows+' 条'))}</td></tr>`).join('');$('#account-test-status').textContent='检测完成 · '+d.accountTest;updateCapabilities();}catch(error){$('#account-test-status').textContent='检测失败';throw error;}finally{button.disabled=false;}}
+  if(d.accountTest){button.disabled=true;$('#account-test-status').textContent='正在检测接口权限';try{const result=await api(`/sources/tushare/accounts/${d.accountTest}/test`,{});sourceCapabilities[d.accountTest]=result;const labels={catalog:'合约目录',calendar:'期货日历',daily:'日线',minutes:'历史分钟（独立权限）',mapping:'主力映射',weekly:'周线',monthly:'月线',warehouse:'仓单日报',holding:'成交持仓排名',settle:'结算参数',weekly_detail:'主要品种交易周报',tick:'Tick'};const states={available:'可用',empty:'空结果',permission:'权限不足',authentication:'认证失败',unverified:'未验证',network:'连接失败',rate_limit:'达到限额',incomplete:'覆盖不完整',unsupported:'无API'};$('#account-capabilities').innerHTML=Object.entries(result.capabilities).map(([key,item])=>`<tr><td>${escape(labels[key] || key)}</td><td>${escape(states[item.state] || item.state)}</td><td>${escape(item.message || (item.rows+' 条'))}</td></tr>`).join('');$('#account-test-status').textContent='检测完成 · '+d.accountTest;updateCapabilities();}catch(error){$('#account-test-status').textContent='检测失败';throw error;}finally{button.disabled=false;}}
   })(event);
 });
 document.addEventListener('change',action(async event=>{const id=event.target.dataset.datasetAccount;if(id){await api('/datasets/'+id+'/account',{account_id:event.target.value});await loadDatasets();}}));
 
 const exchangeMarkets={CFFEX:'IF',SHFE:'SF',DCE:'DF',CZCE:'ZF',INE:'INE',GFEX:'GF'};
-const futuresFields = {source:'来源',market:'市场',day:'日期',is_open:'开市状态',pretrade_date:'前交易日',code:'主力 / 连续',trading_day:'交易日',member_code:'对应月份合约',exchange:'交易所',symbol:'产品 / 合约',trade_date:'交易日',fut_name:'产品名称',warehouse:'仓库',wh_id:'仓库编号',pre_vol:'昨日仓单',vol:'数量 / 成交量',vol_chg:'变化量',area:'地区',year:'年度',grade:'等级',brand:'品牌',place:'产地',pd:'升贴水',is_ct:'折算仓单',unit:'单位',broker:'期货公司会员',long_hld:'持买仓量',long_chg:'买仓变化',short_hld:'持卖仓量',short_chg:'卖仓变化'};
+const futuresFields = {ts_code:'合约代码',settle:'结算价',trading_fee_rate:'交易手续费率（原值）',trading_fee:'交易手续费（原值）',delivery_fee:'交割手续费（原值）',b_hedging_margin_rate:'买套保保证金率（原值）',s_hedging_margin_rate:'卖套保保证金率（原值）',long_margin_rate:'买投机保证金率（原值）',short_margin_rate:'卖投机保证金率（原值）',offset_today_fee:'平今仓手续率（原值）',prd:'品种代码',name:'品种名称',week:'原始周编号',week_date:'周日期',vol_yoy:'成交量同比（%）',amount:'成交金额（元）',amout_yoy:'成交额同比（%）',cumvol:'年累计成交量（手）',cumvol_yoy:'累计成交量同比（%）',cumamt:'年累计成交额（元）',cumamt_yoy:'累计成交额同比（%）',open_interest:'持仓量（手）',interest_wow:'持仓环比（%）',mc_close:'主力收盘价',close_wow:'收盘价环比（%）',original_amount:'原始成交额（亿元）',original_cumamt:'原始累计成交额（亿元）',normalization_version:'转换版本',source:'来源',market:'市场',day:'日期',is_open:'开市状态',pretrade_date:'前交易日',code:'主力 / 连续',trading_day:'交易日',member_code:'对应月份合约',exchange:'交易所',symbol:'产品 / 合约',trade_date:'交易日',fut_name:'产品名称',warehouse:'仓库',wh_id:'仓库编号',pre_vol:'昨日仓单',vol:'数量 / 成交量',vol_chg:'变化量',area:'地区',year:'年度',grade:'等级',brand:'品牌',place:'产地',pd:'升贴水',is_ct:'折算仓单',unit:'单位',broker:'期货公司会员',long_hld:'持买仓量',long_chg:'买仓变化',short_hld:'持卖仓量',short_chg:'卖仓变化'};
 $('#futures-form [name="start"]').value=today(-7);
 $('#futures-form [name="end"]').value=today(-1);
 
 function updateFuturesForm() {
   const form=$('#futures-form'), resources=selectedValues(form.elements.resource);
-  const contract=resources.includes('holding') && form.elements.scope.value==='contract';
-  $('#futures-product-field').hidden=!resources.includes('warehouse') && (!resources.includes('holding') || contract);
+  const contract=resources.includes('settle') || resources.includes('holding') && form.elements.scope.value==='contract';
+  $('#futures-product-field').hidden=!resources.includes('weekly_detail') && !resources.includes('warehouse') && (!resources.includes('holding') || form.elements.scope.value==='contract');
   $('#futures-mapping-field').hidden=!resources.includes('mapping');
   $('#futures-scope-field').hidden=!resources.includes('holding');
   $('#futures-contract-field').hidden=!contract;
@@ -703,12 +703,12 @@ function futuresQuery(onlyResource) {
       if(!exchanges.includes(market))throw new Error('主力合约与所选交易所不一致');
       items.push({resource,code});
     });
-    if(resource==='warehouse' || resource==='holding' && p.scope!=='contract'){
+    if(resource==='weekly_detail' || resource==='warehouse' || resource==='holding' && p.scope!=='contract'){
       selectedValues(form.elements.symbol).forEach(value=>{const [exchange,symbol]=value.split(':');if(exchanges.includes(exchange))items.push({resource,exchange,symbol});});
     }
-    if(resource==='holding' && p.scope==='contract'){
+    if(resource==='settle' || resource==='holding' && p.scope==='contract'){
       const markets={CFX:'CFFEX',SHF:'SHFE',DCE:'DCE',ZCE:'CZCE',INE:'INE',GFE:'GFEX'};
-      splitCodes(p.contract).forEach(code=>{const [symbol,market]=code.split('.'), exchange=markets[market];if(!exchanges.includes(exchange))throw new Error('月份合约与所选交易所不一致');items.push({resource,exchange,symbol});});
+      splitCodes(p.contract).forEach(code=>{const [symbol,market]=code.split('.'), exchange=markets[market];if(!exchanges.includes(exchange))throw new Error('月份合约与所选交易所不一致');items.push(resource==='settle'?{resource,exchange,code}:{resource,exchange,symbol});});
     }
     if(!items.length)throw new Error('请选择'+reportNames[resource]+'的产品或合约');
     selections.push(...items);
@@ -733,8 +733,8 @@ async function loadFutures(offset=0) {
   $('#futures-rows').removeAttribute('aria-busy');
   futuresOffset=offset; futuresNext=result.next_offset;
   $('#futures-units').textContent=result.units;
-  const columns={warehouse:['trade_date','exchange','symbol','fut_name','warehouse','vol','vol_chg','unit'],holding:['trade_date','exchange','symbol','broker','vol','long_hld','short_hld']}[result.resource] || result.fields;
-  const numeric=['pre_vol','vol','vol_chg','pd','long_hld','long_chg','short_hld','short_chg'];
+  const columns={warehouse:['trade_date','exchange','symbol','fut_name','warehouse','vol','vol_chg','unit'],holding:['trade_date','exchange','symbol','broker','vol','long_hld','short_hld'],settle:['trade_date','exchange','ts_code','settle','trading_fee_rate','trading_fee','long_margin_rate','short_margin_rate'],weekly_detail:['week_date','week','exchange','prd','name','vol','amount','open_interest']}[result.resource] || result.fields;
+  const numeric=['pre_vol','vol','vol_chg','pd','long_hld','long_chg','short_hld','short_chg','settle','trading_fee_rate','trading_fee','long_margin_rate','short_margin_rate','amount','open_interest'];
   recordSets.futures={title:reportNames[result.resource]+'详情',rows:result.rows,labels:futuresFields,note:result.units};
   $('#futures-head').innerHTML='<tr>'+columns.map(field=>`<th class="${numeric.includes(field)?'numeric':''}">${escape(futuresFields[field] || field)}</th>`).join('')+'<th>详情</th></tr>';
   $('#futures-rows').innerHTML=result.rows.map((row,index)=>'<tr>'+columns.map(field=>`<td class="${numeric.includes(field)?'numeric':''}">${field==='is_open'?`<span class="badge ${row[field]?'succeeded':''}">${row[field]?'开市':'休市'}</span>`:field==='member_code'?`<button type="button" class="text-link" data-mapped-history="${escape(row[field])}" title="查看月份合约历史" aria-label="查看 ${escape(row[field])} 历史">${escape(row[field])}${icon('arrow-up-right')}</button>`:escape(number(row[field]))}</td>`).join('')+`<td>${recordButton('futures',index)}</td></tr>`).join('');

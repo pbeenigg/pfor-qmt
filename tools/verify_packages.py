@@ -24,6 +24,9 @@ for path in artifacts:
     required.extend(['pfor_qmt/reliability.py','pfor_qmt/maintenance.py','pfor_qmt/migrations/006_reliability.sql','web_dashboard/operations.js'])
     required.append('pfor_qmt/freshness.py')
     required.extend(['pfor_qmt/quality_checks.py','pfor_qmt/migrations/007_verification.sql'])
+    required.append('pfor_qmt/migrations/008_settlement_weekly.sql')
+    if path.name.endswith('.tar.gz'):
+        required.append('docs/SETTLEMENT_WEEKLY.md')
     if path.name.endswith('.tar.gz'):
         required.append('docs/QUALITY_VERIFICATION.md')
         required.append('docs/MAINTENANCE.md')
