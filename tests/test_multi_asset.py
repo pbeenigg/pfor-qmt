@@ -100,7 +100,7 @@ def test_seven_types_discovery_and_board_snapshots(store, tmp_path):
     app = Application(Settings(tmp_path, config_path=tmp_path/'config.toml'), store, source)
     job = app.dispatch('POST', '/catalog/sync', {})
     app.worker.execute(store.job(job['id']))
-    assert store.job(job['id'])['state'] == 'completed'
+    assert store.job(job['id'])['state'] == 'succeeded'
     assert {row['kind'] for row in store.query('SELECT DISTINCT kind FROM securities')} == {'future','option','stock','index','fund','bond'}
     assert len(store.catalog_page(kind='fund')['rows']) == 2
     assert len(store.catalog_page(kind='etf')['rows']) == 1
@@ -150,7 +150,7 @@ def test_board_checkpoint_and_empty_members_remain_partial(store, tmp_path):
     assert store.job(job['id'])['state'] == 'queued'
     assert store.query('SELECT count(*) AS n FROM board_snapshots', one=True)['n'] == 1
     Worker(store, tmp_path, source=source).execute(store.job(job['id']))
-    assert store.job(job['id'])['state'] == 'completed'
+    assert store.job(job['id'])['state'] == 'succeeded'
     assert store.query('SELECT count(*) AS n FROM board_snapshots', one=True)['n'] == 2
     source.groups = dict(source.groups, 人工智能=[])
     second = store.create_catalog_job(['board'])
@@ -179,7 +179,7 @@ def test_night_storage_and_files_filter_by_terminal_trading_day(store, tmp_path)
         export = store.create_job('export', dict(members=['cu2610.SF'], period='1m', start='2026-09-14', end='2026-09-14', format=format))
         worker.execute(export)
         saved = store.job(export['id'])
-        assert saved['state'] == 'completed' and saved['result']['rows'] == 1
+        assert saved['state'] == 'succeeded' and saved['result']['rows'] == 1
         path = tmp_path/'exports'/saved['result']['file']
         if format == 'csv':
             with path.open(encoding='utf-8-sig', newline='') as stream:
@@ -221,13 +221,14 @@ def test_derivative_history_export_and_market_calendar(store, tmp_path):
     worker = Worker(store, tmp_path, source=source)
     job = store.create_job('download', payload)
     worker.execute(job)
-    assert store.job(job['id'])['state'] == 'completed'
+    assert store.job(job['id'])['state'] == 'partial'
+    assert store.units_page(job['id'])['rows'][0]['issues'][0]['code']=='OHLC_INCOMPLETE'
     assert store.query('SELECT market FROM trading_dates', one=True)['market'] == 'INE'
     for format in ('csv','parquet'):
         export = store.create_job('export', dict(members=payload['members'], period='1d', start=payload['start'], end=payload['end'], format=format))
         worker.execute(export)
         saved = store.job(export['id'])
-        assert saved['state'] == 'completed', saved['error']
+        assert saved['state'] == 'succeeded', saved['error']
         path = tmp_path/'exports'/saved['result']['file']
         if format == 'csv':
             with path.open(encoding='utf-8-sig', newline='') as stream:

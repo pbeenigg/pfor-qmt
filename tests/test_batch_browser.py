@@ -77,8 +77,8 @@ def test_batch_selection_dates_records_and_jobs(batch_app):
             assert response.value.status==200,response.value.text()
             jobs=response.value.json()['jobs'];assert len(jobs)==2
             for job in jobs:
-                expect(page.locator('#job-rows tr').filter(has_text=job['id'][:8])).to_contain_text('待核验' if '1w' in job['payload']['periods'] else '已完成',timeout=15000)
-            choose_many(page,'#job-filter [name=states]','completed')
+                expect(page.locator('#job-rows tr').filter(has_text=job['id'][:8])).to_contain_text('部分完成' if '1w' in job['payload']['periods'] else '已完成',timeout=15000)
+            choose_many(page,'#job-filter [name=states]','succeeded')
             page.locator('#job-filter button[type=submit]').click()
             expect(page.locator('#job-rows tr')).to_have_count(1)
             expect(page.locator('#job-page')).to_contain_text('共 1 个')

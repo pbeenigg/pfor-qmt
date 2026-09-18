@@ -65,7 +65,7 @@ def test_multi_report_sync_pagination_and_exports(batch_app,resource):
     assert result['selection_count']==2 and len(result['jobs'])==1
     job=result['jobs'][0];assert job['total_chunks']==2
     app.tushare_worker.execute(store.job(job['id']))
-    saved=store.job(job['id']);assert saved['state']=='completed' and saved['result']['rows']==2
+    saved=store.job(job['id']);assert saved['state']=='succeeded' and saved['result']['rows']==2
     rows=[];offset=0
     while True:
         page=app.dispatch('POST','/futures/records',dict(p,limit=1,offset=offset))
@@ -76,7 +76,7 @@ def test_multi_report_sync_pagination_and_exports(batch_app,resource):
     for fmt in ('csv','parquet'):
         exported=app.dispatch('POST','/futures/export',dict(p,format=fmt))['jobs'][0]
         app.worker.execute(store.job(exported['id']))
-        job=store.job(exported['id']);assert job['state']=='completed' and job['result']['rows']==2
+        job=store.job(exported['id']);assert job['state']=='succeeded' and job['result']['rows']==2
         path=app.worker.runtime/'exports'/job['result']['file']
         if fmt=='csv':
             with path.open(encoding='utf-8-sig',newline='') as stream: actual=list(csv.DictReader(stream))
@@ -118,11 +118,12 @@ def test_batched_report_failure_checkpoint_and_cancel(batch_app,monkeypatch):
     monkeypatch.setattr(TushareSource,'request',fail_second)
     job=app.dispatch('POST','/futures/sync',payload(targets('warehouse')))['jobs'][0]
     app.tushare_worker.execute(store.job(job['id']))
-    failed=store.job(job['id']);assert failed['state']=='failed' and failed['checkpoint']==1
+    failed=store.job(job['id']);assert failed['state']=='partial' and failed['checkpoint']==2
     assert failed['result']['rows']==1
     monkeypatch.setattr(TushareSource,'request',original)
-    app.tushare_worker.execute(failed)
-    assert store.job(job['id'])['checkpoint']==2
+    retried=store.retry_job(job['id']);app.tushare_worker.execute(retried)
+    assert store.job(retried['id'])['checkpoint']==1
+    assert store.job(retried['id'])['state']=='succeeded'
     again=app.dispatch('POST','/futures/sync',payload(targets('warehouse')))['jobs'][0]
     store.update_job(again['id'],cancel_requested=True)
     app.tushare_worker.execute(store.job(again['id']))
@@ -139,7 +140,7 @@ def test_download_batch_period_intersections_and_history_matrix(batch_app):
     jobs=app.dispatch('POST','/downloads/batch',p)['jobs']
     assert [job['payload']['periods'] for job in jobs]==[['1d'],['1d','1w']]
     for job in jobs: app.tushare_worker.execute(store.job(job['id']))
-    assert all(store.job(job['id'])['state'] in ('completed','partial') for job in jobs)
+    assert all(store.job(job['id'])['state'] in ('succeeded','partial') for job in jobs)
     query=dict(source='tushare',members=['CU2610.SHF','A2610.DCE'],periods=['1d','1w'],start=p['start'],end=p['end'],limit=1)
     rows=[];offset=0
     while True:
@@ -175,7 +176,7 @@ def test_job_filters_page_beyond_legacy_limit_and_preserve_states(batch_app):
     store=batch_app.store
     jobs=store.create_jobs('export',[dict(source='tushare',format='csv') for _ in range(205)])
     for job in jobs[:3]:store.update_job(job['id'],state='failed',error='permission sample')
-    result=batch_app.dispatch('POST','/jobs/query',dict(sources=['tushare'],states=['failed','completed'],search='permission',limit=2))
+    result=batch_app.dispatch('POST','/jobs/query',dict(sources=['tushare'],states=['failed','succeeded'],search='permission',limit=2))
     assert result['total']==3 and len(result['rows'])==2 and result['next_offset']==2
     assert len(batch_app.dispatch('POST','/jobs/query',dict(sources='tushare',states='failed',offset=2))['rows'])==1
     result=batch_app.dispatch('POST','/jobs/query',dict(kinds='export',offset=200))
@@ -195,7 +196,7 @@ def test_catalog_selected_exchanges_and_running_scope_guard(batch_app):
         app.dispatch('POST','/catalog/sync',dict(p,exchanges=['GFEX']))
     app.tushare_worker.execute(store.job(job['id']))
     saved=store.job(job['id'])
-    assert saved['state']=='completed' and saved['checkpoint']==4
+    assert saved['state']=='succeeded' and saved['checkpoint']==4
     assert {chunk['exchange'] for chunk in saved['payload']['chunks']}=={'SHFE','DCE'}
     assert not store.query("SELECT 1 FROM securities WHERE source='tushare' AND market='GF'")
 

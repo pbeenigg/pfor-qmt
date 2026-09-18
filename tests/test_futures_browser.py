@@ -90,7 +90,7 @@ def test_reports_and_extended_periods_browser(extension_app):
             expect(page.locator('#download-form input[value="1mo"]')).to_be_enabled()
             page.locator('#download-form [name=start]').fill('2026-09-14');page.locator('#download-form [name=end]').fill('2026-09-17')
             page.locator('#download-form button.primary').click()
-            expect(page.locator('#job-rows')).to_contain_text('待核验',timeout=15000)
+            expect(page.locator('#job-rows')).to_contain_text('部分完成',timeout=15000)
             page.locator('nav [data-view=history]').click()
             choose_many(page,'#history-form [name=period]','1w')
             page.locator('#history-form [name=start]').fill('2026-09-14');page.locator('#history-form [name=end]').fill('2026-09-17')

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from .symbols import normalize_code, derivative_kind
 from .identifiers import source_code
+from .reliability import DataRejected
 
 SHANGHAI = ZoneInfo('Asia/Shanghai')
 FIELDS = ('open', 'high', 'low', 'close', 'volume', 'amount', 'open_interest', 'settlement', 'previous_settlement')
@@ -118,13 +119,21 @@ def normalize_bars(frame, code, period, start, end, source='qmt'):
         values = {field: number(record.get(field, record.get(aliases.get(field)))) for field in FIELDS}
         if values['settlement'] is None and 'settle' in record:
             values['settlement'] = number(record['settle'])
+        sample = dict(code=code, period=period, time=when, **values)
         if all(values[key] is None for key in ('open','high','low','close')):
-            raise ValueError('行情缺少全部 OHLC 字段')
+            raise DataRejected('行情缺少全部 OHLC 字段', 'OHLC_EMPTY', sample)
         if values['high'] is not None and values['low'] is not None and values['high'] < values['low']:
-            raise ValueError('行情最高价低于最低价')
-        if any(values[key] is not None and values[key] < 0 for key in ('volume','amount')):
-            raise ValueError('成交量或成交额为负')
-        result[when] = dict(code=code, period=period, time=when, trading_day=trading_day, **values)
+            raise DataRejected('行情最高价低于最低价', 'OHLC_RANGE', sample)
+        for field in ('open', 'close'):
+            value = values[field]
+            if value is not None and (values['high'] is not None and value > values['high'] or values['low'] is not None and value < values['low']):
+                raise DataRejected('开盘价或收盘价超出最高/最低价区间', 'OHLC_RANGE', sample)
+        if any(values[key] is not None and values[key] < 0 for key in ('volume','amount','open_interest')):
+            raise DataRejected('成交量、成交额或持仓量为负', 'NEGATIVE_QUANTITY', sample)
+        row = dict(code=code, period=period, time=when, trading_day=trading_day, **values)
+        if when in result and result[when] != row:
+            raise DataRejected('同一行情时间存在冲突记录，未按返回顺序覆盖', 'DUPLICATE_CONFLICT', {'first':result[when], 'second':row})
+        result[when] = row
     return [result[key] for key in sorted(result)]
 
 

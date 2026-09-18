@@ -151,7 +151,7 @@ def test_failed_minutes_keep_daily_rows_and_allow_daily_only_retry(store,tmp_pat
             page.locator('#login-form button').click()
             expect(page.locator('#login-dialog')).not_to_be_visible()
             failed_row=page.locator('#job-rows tr').filter(has_text=str(failed['id'])[:8])
-            expect(failed_row).to_contain_text('失败')
+            expect(failed_row).to_contain_text('部分完成')
             expect(failed_row).to_contain_text('已入库 1 行')
             expect(failed_row).to_contain_text('只选日线')
             page.locator('#data-source').select_option('tushare')

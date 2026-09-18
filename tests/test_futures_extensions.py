@@ -106,7 +106,7 @@ def test_week_month_latest_calculation_date_units_and_exports(extension_app,tmp_
     for fmt in ('csv','parquet'):
         job=app.dispatch('POST','/exports',dict(source='tushare',members=['CU2610.SHF'],period=period,start='2026-09-14',end='2026-09-17',format=fmt))
         app.worker.execute(job)
-        saved=store.job(job['id']);assert saved['state']=='completed'
+        saved=store.job(job['id']);assert saved['state']=='succeeded'
         path=app.worker.runtime/'exports'/saved['result']['file']
         if fmt=='csv':
             with path.open(encoding='utf-8-sig',newline='') as f: records=list(csv.DictReader(f))
@@ -127,7 +127,7 @@ def test_report_calendar_closed_days_and_backward_compatible_query(extension_app
     monkeypatch.setattr(TushareSource,'request',request)
     job=app.dispatch('POST','/futures/sync',dict(source='tushare',resource='calendar',exchange='SHFE',start='2026-09-12',end='2026-09-14'))
     app.tushare_worker.execute(app.store.job(job['id']))
-    assert app.store.job(job['id'])['state']=='completed'
+    assert app.store.job(job['id'])['state']=='succeeded'
     assert app.dispatch('GET','/calendar',dict(source='tushare',market='SF',start='2026-09-12',end='2026-09-14'))==[{'day':day('2026-09-14')}]
     rows=app.dispatch('GET','/futures/records',dict(source='tushare',resource='calendar',exchange='SHFE',start='2026-09-12',end='2026-09-14'))['rows']
     assert len(rows)==3 and [r['is_open'] for r in rows]==[False,False,True]
@@ -144,13 +144,13 @@ def test_reports_shared_queue_idempotence_query_export(extension_app,resource):
         job=app.dispatch('POST','/futures/sync',p)
         assert job['kind']=='download' and job['payload']['account_id']=='main'
         app.tushare_worker.execute(store.job(job['id']))
-        assert store.job(job['id'])['state']=='completed'
+        assert store.job(job['id'])['state']=='succeeded'
     result=app.dispatch('GET','/futures/records',p)
     assert len(result['rows'])==1
     if resource=='holding': assert result['rows'][0]['long_hld'] is None
     for fmt in ('csv','parquet'):
         job=app.dispatch('POST','/futures/export',dict(p,format=fmt));app.worker.execute(store.job(job['id']))
-        saved=store.job(job['id']);assert saved['state']=='completed'
+        saved=store.job(job['id']);assert saved['state']=='succeeded'
         path=app.worker.runtime/'exports'/saved['result']['file']
         if fmt=='csv':
             with path.open(encoding='utf-8-sig',newline='') as f: records=list(csv.DictReader(f))
@@ -181,10 +181,10 @@ def test_report_cancel_failure_empty_and_checkpoint_resume(extension_app,monkeyp
     monkeypatch.setattr(TushareSource,'request',request)
     job=app.dispatch('POST','/futures/sync',p);app.tushare_worker.execute(store.job(job['id']))
     failed=store.job(job['id'])
-    assert failed['state']=='failed' and failed['checkpoint']==1 and failed['result']['rows']==1
-    app.tushare_worker.execute(failed)
+    assert failed['state']=='partial' and failed['checkpoint']==2 and failed['result']['rows']==1
+    retried=store.retry_job(job['id']);app.tushare_worker.execute(retried)
     assert calls.count('20260801')==1
-    assert store.job(job['id'])['state']=='partial'
+    assert store.job(retried['id'])['state']=='partial'
     cancelled=app.dispatch('POST','/futures/sync',dict(p,start='2026-09-14'))
     def cancel(self,api,params,fields=''):
         store.update_job(cancelled['id'],cancel_requested=True)

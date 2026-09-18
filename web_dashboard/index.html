@@ -11,6 +11,7 @@
   <script src="/controls.js" defer></script>
   <script src="/picker.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/operations.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -22,6 +23,7 @@
       <button data-view="history"><i data-lucide="database"></i><span>历史库</span></button>
       <button data-view="futures" hidden><i data-lucide="table-properties"></i><span>期货资料</span></button>
       <button data-view="jobs"><i data-lucide="download"></i><span>下载任务</span></button>
+      <button data-view="operations"><i data-lucide="list-checks"></i><span>运行与日志</span></button>
       <button data-view="settings"><i data-lucide="settings-2"></i><span>数据源设置</span></button>
     </nav>
     <div class="sidebar-foot"><span class="label">本地运行 / v0.1.0</span><p>基于 cfquant 派生</p><p>MIT · 非上游官方产品</p></div>
@@ -102,6 +104,18 @@
       <div class="table-wrap"><table><thead><tr><th>任务 / 创建时间</th><th>类型</th><th>状态</th><th>检查点</th><th>结果</th><th>操作</th></tr></thead><tbody id="job-rows"><tr><td colspan="6" class="empty">暂无下载或导出任务</td></tr></tbody></table></div>
       <div class="pagination"><span id="job-page"></span><button type="button" id="job-prev" class="icon" title="上一页任务" aria-label="上一页任务"><i data-lucide="chevron-left"></i></button><button type="button" id="job-next" class="icon" title="下一页任务" aria-label="下一页任务"><i data-lucide="chevron-right"></i></button></div>
     </section>
+    <section id="operations" class="view" hidden>
+      <div class="section-heading"><h2>运行概览</h2><button type="button" id="operations-refresh" class="icon" title="刷新运行概览" aria-label="刷新运行概览"><i data-lucide="refresh-cw"></i></button></div>
+      <dl id="operations-summary" class="detail-grid"></dl>
+      <div class="section-heading"><h2>待处理事项</h2><span id="attention-count" class="source"></span></div>
+      <div class="table-wrap"><table><thead><tr><th>任务</th><th>执行状态</th><th>原因</th><th>下一步</th><th>操作</th></tr></thead><tbody id="attention-rows"></tbody></table></div>
+      <div class="section-heading"><h2>自动维护范围</h2></div>
+      <div class="table-wrap"><table><thead><tr><th>名称 / 来源</th><th>每日时间</th><th>回读交易日</th><th>最近排队日期</th><th>状态 / 原因</th><th>操作</th></tr></thead><tbody id="maintenance-rows"></tbody></table></div>
+      <div class="section-heading"><h2>任务事件</h2></div>
+      <form id="event-filter" class="toolbar"><label class="grow">任务 ID<input name="job_id" type="search"></label><label>级别<select name="levels"><option value="">全部</option><option value="info">信息</option><option value="warning">警告</option><option value="error">错误</option></select></label><label>来源<select name="sources"><option value="">全部</option><option value="qmt">QMT</option><option value="tushare">Tushare</option></select></label><label>事件代码<input name="code" type="search"></label><label>开始日期<input name="start" type="date"></label><label>结束日期<input name="end" type="date"></label><button type="submit"><i data-lucide="search"></i>查询日志</button><button type="reset" class="icon" title="重置日志筛选" aria-label="重置日志筛选"><i data-lucide="filter-x"></i></button></form>
+      <div class="table-wrap"><table><thead><tr><th>时间 / 来源</th><th>任务 / 分块</th><th>级别</th><th>事件代码</th><th>事件</th><th>详情</th></tr></thead><tbody id="event-rows"></tbody></table></div>
+      <div class="pagination"><button type="button" id="event-first" class="icon" title="最新日志" aria-label="最新日志"><i data-lucide="chevrons-left"></i></button><button type="button" id="event-next" class="icon" title="更早日志" aria-label="更早日志"><i data-lucide="chevron-right"></i></button></div>
+    </section>
     <section id="settings" class="view" hidden>
       <div class="section-heading"><h2>Tushare 账号</h2><button type="button" id="account-new"><i data-lucide="plus"></i>新增账号</button></div>
       <div class="table-wrap"><table><thead><tr><th>账号</th><th>API 端点</th><th>Token / 状态</th><th>操作</th></tr></thead><tbody id="account-rows"></tbody></table></div>
@@ -127,6 +141,15 @@
     </section>
     <footer><span>数据口径：不复权 / 空值保留 / QMT 原始成交单位</span><span id="clock"></span></footer>
   </main>
+  <dialog id="maintenance-dialog" aria-labelledby="maintenance-title">
+    <div class="picker-heading"><h2 id="maintenance-title">保存自动维护范围</h2><button type="button" class="icon" data-close-dialog title="关闭维护设置" aria-label="关闭维护设置"><i data-lucide="x"></i></button></div>
+    <form id="maintenance-form" class="settings-form"><input name="job_id" type="hidden"><label>名称<input name="name" maxlength="100" required></label><label>每日时间（上海）<input name="schedule_time" type="time" required></label><label>回读交易日数<input name="lookback_days" type="number" min="1" max="365" value="5" required></label><button type="submit" class="primary"><i data-lucide="save"></i>保存并启用</button></form>
+  </dialog>
+  <dialog id="unit-dialog" aria-labelledby="unit-title">
+    <div class="picker-heading"><h2 id="unit-title">分块质量与处理</h2><button type="button" class="icon" data-close-dialog title="关闭分块详情" aria-label="关闭分块详情"><i data-lucide="x"></i></button></div>
+    <div class="table-wrap"><table><thead><tr><th>分块 / 范围</th><th>执行</th><th>质量</th><th>行数</th><th>原因 / 下一步</th><th>操作</th></tr></thead><tbody id="unit-rows"></tbody></table></div>
+    <div class="pagination"><span id="unit-position"></span><button type="button" id="unit-prev" class="icon" title="上一页分块" aria-label="上一页分块"><i data-lucide="chevron-left"></i></button><button type="button" id="unit-next" class="icon" title="下一页分块" aria-label="下一页分块"><i data-lucide="chevron-right"></i></button></div>
+  </dialog>
   <dialog id="security-picker" aria-labelledby="picker-title">
     <div class="picker-heading"><h2 id="picker-title">选择证券</h2><button type="button" id="picker-close" class="icon" title="关闭选择" aria-label="关闭选择"><i data-lucide="x"></i></button></div>
     <form id="picker-search-form" class="toolbar"><label class="grow">代码或名称<input id="picker-search" type="search" autocomplete="off" autofocus></label><label>类别<select id="picker-kind" data-kind-filter></select></label><label>交易所<select id="picker-market" data-market-filter></select></label><button type="submit" class="icon" title="搜索证券" aria-label="搜索证券"><i data-lucide="search"></i></button></form>

@@ -1,5 +1,20 @@
 # 统一配置
 
+## 运维与追溯
+
+```toml
+[operations]
+event_retention_days = 90
+sample_retention_days = 30
+repair_attempts = 3
+```
+
+对应环境变量为`PFOR_QMT_EVENT_RETENTION_DAYS`、`PFOR_QMT_SAMPLE_RETENTION_DAYS`、`PFOR_QMT_REPAIR_ATTEMPTS`；沿用CLI、环境、TOML、默认值顺序，修改后重启服务。样本保留期不得超过事件保留期，自动补数上限为3。
+
+清理仅处理事件与样本，不删除行情、任务、分块缺口、检查点或导出文件。数据库无法写入时，后台错误落入`runtime/worker-qmt.jsonl`、`runtime/worker-tushare.jsonl`，按2MiB轮转、保留5份备份，内容脱敏。应用只能监测运行目录所在磁盘；远端或Docker数据库卷的剩余空间须单独监控，不以宿主机读数替代。
+
+工作台“下载任务 → 任务详情 → 设为自动维护”保存固定范围；“运行与日志”查看并停用。保存维护范围不会自动重跑之前的大范围失败任务；原数据集已启用自动更新时拒绝创建重复维护范围。停用不自动取消已有任务。启用范围引用的Tushare账号不允许删除，范围中的账号与端点不受默认账号切换影响。
+
 ## Tushare 多账号
 
 数据源设置页管理账号，仍写回同一个config.toml。账号ID不可改名，名称可修改；Token只写入、不回传，输入留空保持原值，勾选清除才删除。不保存Tushare网站密码。

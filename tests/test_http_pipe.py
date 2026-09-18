@@ -94,7 +94,7 @@ def test_acceptance_tool_download_query_repeat_and_exports(app_server,tmp_path):
 
 
 @pytest.mark.postgres
-@pytest.mark.parametrize('period,expected_state', [('1d', 'passed'), ('1m', 'partial'), ('5m', 'partial')])
+@pytest.mark.parametrize('period,expected_state', [('1d', 'partial'), ('1m', 'partial'), ('5m', 'partial')])
 def test_acceptance_selected_derivatives_and_night_exports(app_server, tmp_path, period, expected_state):
     from tools.live_acceptance import run
     app, server, client = app_server
@@ -113,6 +113,8 @@ def test_acceptance_selected_derivatives_and_night_exports(app_server, tmp_path,
     try:
         run(client, app.store, tmp_path, '2026-09-14', '2026-09-14', report, selected, period)
         assert report['state'] == expected_state
+        units = app.store.query('SELECT issues FROM job_units')
+        assert any(gap['code']=='OHLC_INCOMPLETE' for unit in units for gap in unit['issues'])
         assert report['samples'] == selected and report['period'] == period
         assert report['rows'] == 2 and report['exports'] == {'csv': 'passed', 'parquet': 'passed'}
         assert report['database_sdk'] == report['duplicate_upsert'] == 'passed'
@@ -192,8 +194,8 @@ def test_websocket_ticket_and_job_event(app_server):
                 if app.listeners:
                     break
                 time.sleep(.02)
-            app.publish({'event':'job','data':{'state':'completed'}})
-            assert json.loads(socket.recv(timeout=3))['data']['state'] == 'completed'
+            app.publish({'event':'job','data':{'state':'succeeded'}})
+            assert json.loads(socket.recv(timeout=3))['data']['state'] == 'succeeded'
         with connect(address) as socket:
             with pytest.raises(ConnectionClosed):
                 socket.recv(timeout=3)
@@ -238,8 +240,8 @@ def test_websocket_watch_switch_stop_and_recovery(app_server,monkeypatch):
             socket.send(json.dumps({'action':'unwatch'}))
             assert receive(socket,'watch')['codes'] == []
             callbacks[2]({'510300.SH':{'lastPrice':999}})
-            app.publish({'event':'job','data':{'state':'completed'}})
-            assert json.loads(socket.recv(timeout=3)) == {'event':'job','data':{'state':'completed'}}
+            app.publish({'event':'job','data':{'state':'succeeded'}})
+            assert json.loads(socket.recv(timeout=3)) == {'event':'job','data':{'state':'succeeded'}}
             with pytest.raises(TimeoutError):
                 socket.recv(timeout=.4)
             now[0] = 200

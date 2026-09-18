@@ -40,7 +40,7 @@ def wait_job(client, identifier, timeout=300):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         job = client.job(identifier)
-        if job['state'] not in ('queued', 'running'):
+        if job['state'] not in ('queued', 'running', 'retrying'):
             return job
         time.sleep(1)
     raise TimeoutError('Job still pending; inspect /jobs before retrying: ' + identifier)
@@ -68,7 +68,7 @@ def run(client, store, folder, start, end, report, samples=None, period='1d'):
     validate_range(start, end, period)
     report.update(samples=samples, period=period)
     report['stage'] = 'check_active_jobs'
-    if any(job['state'] in ('queued', 'running') for job in client.request('/jobs')):
+    if any(job['state'] in ('queued', 'running', 'retrying') for job in client.request('/jobs')):
         raise ValueError('Existing jobs are active; no additional download was created')
     report['stage'] = 'create_dataset'
     name = '验收小样本 ' + period + ' ' + datetime.now(SHANGHAI).strftime('%Y%m%d-%H%M%S')
@@ -82,7 +82,7 @@ def run(client, store, folder, start, end, report, samples=None, period='1d'):
         report['jobs'].append({'id': job['id'], 'state': job['state']})
         job = wait_job(client, job['id'])
         report['jobs'][-1].update(state=job['state'], rows=job['result'].get('rows'))
-        if job['state'] not in ('completed', 'partial'):
+        if job['state'] not in ('succeeded', 'partial'):
             raise ValueError('Download did not complete; inspect job ' + job['id'])
         rows = []
         for code in samples:
@@ -105,7 +105,7 @@ def run(client, store, folder, start, end, report, samples=None, period='1d'):
         report['jobs'].append({'id': job['id'], 'state': job['state']})
         job = wait_job(client, job['id'])
         report['jobs'][-1].update(state=job['state'], rows=job['result'].get('rows'))
-        if job['state'] != 'completed':
+        if job['state'] != 'succeeded':
             raise ValueError('Export failed; inspect job ' + job['id'])
         target = folder / (('daily' if period == '1d' else period) + '.' + format)
         client.save_export(job['id'], target)
@@ -124,7 +124,7 @@ def run(client, store, folder, start, end, report, samples=None, period='1d'):
         if canonical(exported) != previous:
             raise ValueError(format + ' differs from SDK/DB')
         report['exports'][format] = 'passed'
-    report['state'] = 'passed' if all(job['state'] == 'completed' for job in report['jobs']) else 'partial'
+    report['state'] = 'passed' if all(job['state'] == 'succeeded' for job in report['jobs']) else 'partial'
     report['stage'] = 'finished'
 
 

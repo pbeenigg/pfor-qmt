@@ -104,7 +104,7 @@ function initializeControls() {
   catalogLabel.append(catalogSelect);$('#catalog-form fieldset').after(catalogLabel);enableMulti(catalogSelect,'请选择',true);
   for(const selector of ['#security-form [name=kind]','#security-form [name=market]','#security-form [name=subtype]','#picker-kind','#picker-market','#job-filter [name=states]','#job-filter [name=kinds]','#job-filter [name=sources]']) enableMulti($(selector),'全部');
   for(const selector of ['#history-form [name=period]','#download-form [name=dataset_id]','#futures-form [name=resource]','#futures-form [name=exchange]','#futures-form [name=symbol]','#futures-form [name=code]']) enableMulti($(selector),'请选择',true);
-  for(const id of ['history-form','download-form','futures-form','job-filter']) {
+  for(const id of ['history-form','download-form','futures-form','job-filter','event-filter']) {
     const form=$('#'+id), start=form.elements.start, end=form.elements.end;
     const range=document.createElement('div');range.className='date-range';
     start.parentElement.before(range);

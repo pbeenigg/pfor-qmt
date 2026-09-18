@@ -122,8 +122,29 @@ class DataClient:
     def cancel(self, identifier):
         return self.request('/jobs/' + identifier + '/cancel', {})
 
-    def retry(self, identifier):
-        return self.request('/jobs/' + identifier + '/retry', {})
+    def retry(self, identifier, unit_indices=None):
+        return self.request('/jobs/' + identifier + '/retry', {} if unit_indices is None else {'unit_indices':unit_indices})
+
+    def job_units(self, identifier, limit=50, offset=0):
+        return self.request('/jobs/' + identifier + '/units', limit=limit, offset=offset)
+
+    def job_events(self, identifier, limit=50, before=None):
+        return self.request('/jobs/' + identifier + '/events', limit=limit, **({'before':before} if before is not None else {}))
+
+    def query_events(self, **filters):
+        return self.request('/events/query', filters)
+
+    def health(self):
+        return self.request('/health')
+
+    def maintenance_plans(self):
+        return self.request('/maintenance')
+
+    def create_maintenance(self, job_id, name, schedule_time=None, lookback_days=5):
+        return self.request('/maintenance', dict(job_id=job_id,name=name,schedule_time=schedule_time,lookback_days=lookback_days))
+
+    def set_maintenance(self, identifier, enabled):
+        return self.request('/maintenance/'+identifier, {'enabled':enabled})
 
     def export(self, members, period, start, end, format='csv', source='qmt'):
         return self.request('/exports', dict(members=members, period=period, start=start, end=end, format=format,source=source))

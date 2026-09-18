@@ -77,7 +77,7 @@ def test_migrate_idempotent_and_upsert_precision(store,tmp_path):
     first, second = make_job(store), make_job(store)
     worker.execute(first)
     worker.execute(second)
-    assert store.job(first['id'])['state'] == 'completed'
+    assert store.job(first['id'])['state'] == 'succeeded'
     rows = store.history('000300.SH')['rows']
     assert len(rows) == 1 and rows[0]['volume'] == Decimal('1152921504606847013')
     assert rows[0]['close'] == Decimal('124.1234567890123456789')
@@ -125,7 +125,7 @@ def test_empty_table_partial_and_missing_capability_not_retried(store,tmp_path):
     source.fail = NotImplementedError('Capability absent')
     job2 = make_job(store)
     worker.execute(job2)
-    assert store.job(job2['id'])['state'] == 'failed'
+    assert store.job(job2['id'])['state'] == 'blocked'
     assert len(source.downloads) == 2
 
 
@@ -151,7 +151,7 @@ def test_empty_history_and_calendar_stop_without_advancing_checkpoint(store,tmp_
     job = make_job(store,['000300.SH','000001.SZ'])
     worker.execute(job)
     result = store.job(job['id'])
-    assert result['state'] == 'failed' and result['checkpoint'] == 0
+    assert result['state'] == 'blocked' and result['checkpoint'] == 0
     assert '行情服务器' in result['error']
     assert len(source.downloads) == 1
     assert not store.query('SELECT * FROM bars')
@@ -160,7 +160,7 @@ def test_empty_history_and_calendar_stop_without_advancing_checkpoint(store,tmp_
     source.empty = False
     source.get_trading_dates = Source().get_trading_dates
     worker.execute(result)
-    assert store.job(job['id'])['state'] == 'completed'
+    assert store.job(job['id'])['state'] == 'succeeded'
     assert len(store.query('SELECT * FROM bars')) == 2
 
 
@@ -240,7 +240,7 @@ def test_csv_parquet_roundtrip_without_qmt(store,tmp_path):
         job = store.create_job('export',{'members':['000300.SH'],'period':'1d','start':'2026-09-14','end':'2026-09-14','format':format})
         worker.execute(job)
         result = store.job(job['id'])
-        assert result['state'] == 'completed', result
+        assert result['state'] == 'succeeded', result
         path = tmp_path / 'exports' / result['result']['file']
         if format == 'csv':
             assert path.read_bytes().startswith(b'\xef\xbb\xbf')
@@ -280,10 +280,10 @@ def test_exports_complete_while_qmt_is_blocked(store,tmp_path,blocked):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             jobs = [store.job(job['id']) for job in exports]
-            if all(job['state'] == 'completed' for job in jobs):
+            if all(job['state'] == 'succeeded' for job in jobs):
                 break
             time.sleep(.05)
-        assert [job['state'] for job in jobs] == ['completed','completed']
+        assert [job['state'] for job in jobs] == ['succeeded','succeeded']
         assert [job['result']['rows'] for job in jobs] == [1,1]
         assert store.job(pending['id'])['state'] == ('running' if blocked == 'download' else 'queued')
         assert store.history('000300.SH')['rows'][0]['close'] == Decimal('124.1234567890123456789')
@@ -307,7 +307,7 @@ def test_export_recovery_does_not_reset_downloads(store,tmp_path):
     worker.publish = lambda event: worker.stop.set()
     worker.run_queue('export')
     assert store.job(download['id'])['state'] == 'running'
-    assert store.job(export['id'])['state'] == 'completed'
+    assert store.job(export['id'])['state'] == 'succeeded'
     assert store.job(export['id'])['result']['rows'] == 0
     assert store.job(export['id'])['checkpoint'] == 0
     assert store.job(cancelled['id'])['state'] == 'cancelled'
@@ -334,7 +334,7 @@ def test_large_export_crosses_page_boundary_without_loss(store,tmp_path):
         export = store.create_job('export',{'members':['000300.SH'],'period':'1m','start':'2026-09-01','end':'2026-09-10','format':format})
         Worker(store,tmp_path).execute(export)
         result = store.job(export['id'])
-        assert result['state'] == 'completed',result
+        assert result['state'] == 'succeeded',result
         path = tmp_path / 'exports' / result['result']['file']
         if format == 'csv':
             with path.open(encoding='utf-8-sig',newline='') as stream:

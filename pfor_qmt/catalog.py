@@ -107,6 +107,7 @@ def discover(source, selected):
 
 
 def synchronize(worker, job):
+    from .reliability import issue
     store, identifier = worker.store, job['id']
     parts = job['payload'].get('chunks')
     if not parts:
@@ -141,6 +142,9 @@ def synchronize(worker, job):
                             saved += 1
                         else:
                             failures.append('board:' + part['name'])
+                        store.write_unit(identifier,offset,part,'succeeded' if members else 'failed',
+                                         [] if members else [issue('BOARD_EMPTY','pending_verification','板块成员为空，保留旧快照','确认终端目录后重试',True)],
+                                         1 if members else 0,conn=conn)
                         result = dict(rows=saved, missing=failures, total=len(parts), message='证券与板块目录已同步')
                         conn.execute('UPDATE jobs SET checkpoint=%s,result=%s,attempts=0,updated_at=now() WHERE id=%s', (offset + 1, document(result), identifier))
                     worker.publish({'event': 'job', 'data': job_summary(store.job(identifier))})
@@ -161,14 +165,16 @@ def synchronize(worker, job):
             details = worker.retry_network(identifier, read)
             worker.check(identifier)
             with store.connect() as conn:
-                for item, detail in zip(batch, details):
+                for position, (item, detail) in enumerate(zip(batch, details)):
                     name = detail.get('InstrumentName') or detail.get('StockName') if isinstance(detail, dict) else None
                     if not isinstance(name, str) or not name.strip():
                         failures.append(item['code'])
+                        store.write_unit(identifier,offset+position,item,'failed',[issue('CATALOG_EMPTY','pending_verification','证券名称不可用，保留旧资料','确认终端目录后重试',True)],conn=conn)
                         continue
                     store.save_security(item['code'], name.strip(), item['kind'], encode_value(detail),
                                         subtype=item.get('subtype', ''), metadata=instrument_metadata(detail), conn=conn)
                     saved += 1
+                    store.write_unit(identifier,offset+position,item,'succeeded',[],1,conn=conn)
                 result = dict(rows=saved, missing=failures, total=len(parts), message='证券目录已同步' if not failures else '部分证券名称不可用，保留旧资料')
                 conn.execute('UPDATE jobs SET checkpoint=%s,result=%s,attempts=0,updated_at=now() WHERE id=%s',
                              (offset + len(batch), document(result), identifier))

@@ -29,10 +29,14 @@ class Application:
         self.listeners = set()
         self.lock = threading.RLock()
         self.sessions, self.tickets = {}, {}
-        self.worker = Worker(self.store, self.settings.runtime, self.publish, self.source)
-        self.tushare_worker = Worker(self.store,self.settings.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier))
+        self.worker = Worker(self.store, self.settings.runtime, self.publish, self.source, options=self.operation_options)
+        self.tushare_worker = Worker(self.store,self.settings.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier), options=self.operation_options)
         self.capabilities = {}
         self.ws_port = self.settings.value('ws_port')
+
+    @property
+    def operation_options(self):
+        return {key:self.settings.value(key) for key in ('event_retention_days','sample_retention_days','repair_attempts')}
 
     def publish(self, event):
         with self.lock:
@@ -75,7 +79,7 @@ class Application:
                     updated['token'] = '' if p.get('clear_token') else p['token']
                 updated = profile(updated, effective=False)
                 if previous and (profile(previous)['endpoint'] != profile(updated)['endpoint'] or not updated['enabled']):
-                    active = store.query("SELECT 1 FROM jobs WHERE payload->>'source'='tushare' AND payload->>'account_id'=%s AND state IN ('queued','running') LIMIT 1", (identifier,), one=True)
+                    active = store.query("SELECT 1 FROM jobs WHERE payload->>'source'='tushare' AND payload->>'account_id'=%s AND state IN ('queued','running','retrying') LIMIT 1", (identifier,), one=True)
                     if active:
                         raise ValueError('请先取消该账号的排队或运行中任务，再修改端点或停用账号')
                 candidate.accounts = [updated if row['id']==identifier else row for row in candidate.accounts] if previous else candidate.accounts + [updated]
@@ -98,7 +102,7 @@ class Application:
                         self.capabilities[identifier] = result
                 return result
             with self.lock:
-                if store.query('SELECT 1 FROM datasets WHERE account_id=%s LIMIT 1',(identifier,),one=True) or store.query("SELECT 1 FROM jobs WHERE payload->>'account_id'=%s AND state IN ('queued','running') LIMIT 1",(identifier,),one=True):
+                if store.query('SELECT 1 FROM datasets WHERE account_id=%s LIMIT 1',(identifier,),one=True) or store.query("SELECT 1 FROM maintenance_plans WHERE payload->>'account_id'=%s LIMIT 1",(identifier,),one=True) or store.query("SELECT 1 FROM jobs WHERE payload->>'account_id'=%s AND state IN ('queued','running','retrying') LIMIT 1",(identifier,),one=True):
                     raise ValueError('账号被数据集或活动任务引用，请先解绑或取消任务')
                 candidate = copy.deepcopy(self.settings)
                 candidate.accounts = [row for row in candidate.accounts if row['id'] != identifier]
@@ -158,17 +162,17 @@ class Application:
                 candidate.save()
             except Exception:
                 if changing_database:
-                    self.worker = Worker(store, self.settings.runtime, self.publish, self.source)
+                    self.worker = Worker(store, self.settings.runtime, self.publish, self.source, options=self.operation_options)
                     self.worker.start()
-                    self.tushare_worker = Worker(store,self.settings.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier))
+                    self.tushare_worker = Worker(store,self.settings.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier), options=self.operation_options)
                     self.tushare_worker.start()
                 raise
             self.settings = candidate
             if changing_database:
                 store.dsn = candidate.dsn
-                self.worker = Worker(store, self.settings.runtime, self.publish, self.source)
+                self.worker = Worker(store, self.settings.runtime, self.publish, self.source, options=self.operation_options)
                 self.worker.start()
-                self.tushare_worker = Worker(store,candidate.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier))
+                self.tushare_worker = Worker(store,candidate.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier), options=self.operation_options)
                 self.tushare_worker.start()
             return self.settings.public()
         if method == 'POST' and path == '/database/migrate':
@@ -342,7 +346,27 @@ class Application:
             return store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND is_open AND day BETWEEN %s AND %s ORDER BY day',
                                (source,market,day(p.get('start','1990-01-01')),day(p.get('end','2100-01-01'))))
         if method == 'GET' and path == '/jobs':
-            return store.query("SELECT id,kind,state,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,CASE WHEN kind='download' THEN jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=jobs.id)) || (result-'coverage') ELSE result-'coverage' END AS result,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200")
+            return store.jobs_page({'limit':200})['rows']
+        if method == 'POST' and path == '/events/query':
+            return store.events_page(p)
+        if path == '/maintenance' and method == 'GET':
+            return store.query('SELECT * FROM maintenance_plans ORDER BY name,id')
+        if path == '/maintenance' and method == 'POST':
+            from .maintenance import save_plan
+            return save_plan(store,p)
+        if path.startswith('/maintenance/') and method == 'POST':
+            if type(p.get('enabled')) is not bool:
+                raise ValueError('enabled必须是布尔值')
+            row = store.query('UPDATE maintenance_plans SET enabled=%s,updated_at=now() WHERE id=%s RETURNING *',(p['enabled'],path.rsplit('/',1)[-1]),one=True)
+            if not row:
+                raise ValueError('维护计划不存在')
+            return row
+        if method == 'GET' and path == '/health':
+            import shutil
+            result = store.operations_health()
+            disk = shutil.disk_usage(self.settings.runtime)
+            result['runtime_disk'] = dict(total_bytes=disk.total,free_bytes=disk.free,low=disk.free < max(1024**3,disk.total//20))
+            return result
         if method == 'POST' and path == '/jobs/query':
             return store.jobs_page(p)
         if method == 'POST' and path == '/downloads':
@@ -365,12 +389,16 @@ class Application:
             job = store.job(parts[1])
             if method == 'GET' and len(parts) == 2:
                 return job
+            if method == 'GET' and len(parts) == 3 and parts[2] == 'units':
+                return store.units_page(job['id'],p.get('limit',50),p.get('offset',0))
+            if method == 'GET' and len(parts) == 3 and parts[2] == 'events':
+                return store.events_page(dict(p,job_id=str(job['id'])))
             if method == 'POST' and len(parts) == 3:
-                if parts[2] == 'cancel' and job['state'] in ('queued','running'):
+                if parts[2] == 'cancel' and job['state'] in ('queued','running','retrying'):
                     store.update_job(job['id'], cancel_requested=True, **({'state':'cancelled'} if job['state'] == 'queued' else {}))
-                elif parts[2] == 'retry' and job['state'] in ('failed','cancelled','partial'):
-                    checkpoint = 0 if job['state'] == 'partial' or job['kind'] == 'export' else job['checkpoint']
-                    store.update_job(job['id'], state='queued', cancel_requested=False, error=None, attempts=0, checkpoint=checkpoint)
+                    store.event(job['id'],'CANCEL_REQUESTED','用户取消后续处理')
+                elif parts[2] == 'retry':
+                    return store.retry_job(job['id'],p.get('unit_indices'))
                 else:
                     raise ValueError('任务状态不允许此操作')
                 return store.job(job['id'])

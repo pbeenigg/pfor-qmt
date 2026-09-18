@@ -122,7 +122,7 @@ def handler_for(app):
                     if len(parts) not in (2,3):
                         raise ValueError('无效文件路径')
                     job = app.store.job(parts[1])
-                    if job['kind'] != 'export' or job['state'] != 'completed':
+                    if job['kind'] != 'export' or job['state'] not in ('completed','succeeded'):
                         raise ValueError('导出尚未完成')
                     filename = job['result']['metadata' if len(parts) == 3 and parts[2] == 'metadata' else 'file']
                     target = app.settings.runtime / 'exports' / filename

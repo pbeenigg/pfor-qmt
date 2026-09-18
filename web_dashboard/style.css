@@ -68,6 +68,13 @@ fieldset label { flex-direction: row; align-items: center; white-space: nowrap; 
 .badge.failed { background: #faeaea; color: #a54545; }
 .badge.partial { background: #fff3d8; color: #8e691c; }
 .badge.completed { background: #e4f2e9; color: #28734a; }
+.badge.succeeded { background: #e4f2e9; color: #28734a; }
+.badge.blocked, .badge.warning, .badge.retrying { background: #fff0ce; color: #755400; }
+.badge.error { background: #fde5e5; color: #a52121; }
+#unit-dialog { width: min(1180px, calc(100% - 24px)); max-width: 1180px; }
+#operations-summary { margin-bottom: 24px; }
+#operations .section-heading { margin-top: 24px; }
+#operations td.wrap-text, #unit-dialog td.wrap-text { min-width: 180px; max-width: 440px; }
 progress { width: 90px; height: 5px; accent-color: var(--green); }
 .settings-form { max-width: 720px; display: grid; gap: 20px; }
 .inline-label { flex-direction: row; align-items: center; }

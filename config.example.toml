@@ -42,3 +42,8 @@ token = "" # Or PFOR_QMT_TUSHARE_MAIN_TOKEN; never returned by the API.
 enabled = true
 timeout = 30.0
 requests_per_minute = 60
+
+[operations]
+event_retention_days = 90
+sample_retention_days = 30
+repair_attempts = 3

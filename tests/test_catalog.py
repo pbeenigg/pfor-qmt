@@ -49,9 +49,11 @@ def test_catalog_sync_deduplication_search_and_partial_retry(store, tmp_path):
     assert result['result']['missing'] == ['920001.BJ']
     assert store.securities('920001.BJ') == []
     source.missing = False
-    app.dispatch('POST', f"/jobs/{job['id']}/retry", {})
-    app.worker.execute(store.job(job['id']))
-    assert store.job(job['id'])['state'] == 'completed'
+    retry = app.dispatch('POST', f"/jobs/{job['id']}/retry", {})
+    app.worker.execute(retry)
+    assert store.job(retry['id'])['state'] == 'succeeded'
+    assert store.job(job['id'])['state'] == 'partial'
+    assert len(retry['payload']['chunks']) == 1
     assert app.dispatch('GET', '/catalog/securities', {'search': '沪深300', 'kind': 'index'})['rows'][0]['code'] == '000300.SH'
     snapshot = app.dispatch('POST', '/indices/refresh', {'code': '000300.SH', 'sector': '沪深300'})
     assert snapshot['members'] == ['000001.SZ']

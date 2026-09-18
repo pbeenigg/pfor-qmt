@@ -1,5 +1,19 @@
 # 验证记录
 
+## 全链路执行与质量（2026-09-18）
+
+最终全量回归`279 passed in 259.03s`（含8个Chromium浏览器用例），0失败、0跳过；使用本机PostgreSQL 16的随机`pfor_qmt_test_*`隔离schema，未向业务表写入测试数据。命令：设置PFOR_QMT_TEST_DSN、PFOR_QMT_BROWSER_TEST=1后运行`.venv\Scripts\python -X utf8 -m pytest -q --tb=short`。包含账号缺失与端点变更应阻塞、不能误报坏行情的补充回归。
+
+新增故障注入覆盖OHLC区间/部分为空、同时间冲突、负数量但允许负价格、坏合约隔离、权限仅阻塞对应接口、上市区间、原子回滚、重复写统计、租约连接丢失、关联定向重试、部分修复仍保留其他异常、日志脱敏与游标/清理、目录和四类资料维护、次数限制和手动任务不自动重跑。浏览器走通详情→分块→定向重试、日志过滤/详情、保存/停用维护，检查1440×980与390×844截图和溢出；截图`output/playwright/reliability-*.png`。
+
+回归期间按新契约修改旧测试预期：completed→succeeded、部分已入库任务→partial、前置条件缺失→blocked、重试返回子任务；只返回close的测试样本保留NULL并要求OHLC_INCOMPLETE，不再声明整批校验通过。未移除精度、重复入库、取消、导出或隔离断言。
+
+升级前备份`runtime/backups/schema5-before-reliability-20260918-153824.dump`（20,514,020字节），pg_restore --list验证成功，未进行恢复演练。schema5→6前后15张原业务表记录数及原字段哈希一致：bars 141,045、securities 90,483、contract_mappings 72,807、futures_warehouse_receipts 321,708、futures_holdings 112,198、jobs 82；jobs比较排除有意改名的state，另断言63个completed转换为succeeded，10个failed和9个partial保持。对比结果保存在`runtime/backups/schema6-reliability-verification.json`。
+
+服务经pfor.ps1重启，8766 HTTP/WebSocket就绪，真实SDK读取health/jobs/events/maintenance通过。没有新建采集或自动维护任务，已有8个自动更新数据集保留；总任务仍82。QMT仍报告交易日历连接问题，不能视为恢复；真实分钟权限、夜盘连续性、逐品种发布时效和跨交易日维护长跑均未验收。旧任务没有补造事件，新增日志从升级后的任务开始。
+
+构建、依赖、JS语法及git diff检查通过；wheel/sdist含schema6、operations.js和许可证，不含本地配置或运行数据。已检查本次变更不含实际API Key、Token或DSN。stale按资料时效自动判定尚未实现，见RELIABILITY_PLAN.md的明确边界。
+
 ## 多选、快捷日期与详情（2026-09-18）
 
 完整回归：`253 passed in 197.81s`，无失败、无跳过。独立postgres:16-alpine容器55434、随机测试schema及Chromium；设置PFOR_QMT_TEST_DSN和PFOR_QMT_BROWSER_TEST=1后运行`.venv\Scripts\python -m pytest -q --tb=short`。测试容器已移除，未触碰用户PostgreSQL。

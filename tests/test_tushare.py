@@ -184,9 +184,9 @@ def test_same_instrument_two_sources_and_account_independent_upsert(store,tmp_pa
     monkeypatch.setattr(TushareSource,'request',fake_request)
     worker=Worker(store,tmp_path,provider='tushare',account_resolver=lambda _:account())
     first=download_job(store);worker.execute(first)
-    assert store.job(first['id'])['state']=='completed'
+    assert store.job(first['id'])['state']=='succeeded'
     second=download_job(store,account_id='secondary');worker.execute(second)
-    assert store.job(second['id'])['state']=='completed'
+    assert store.job(second['id'])['state']=='succeeded'
     assert len(store.history('CU2610.SHF',source='tushare')['rows'])==1
     qmt=store.create_job('download',{'members':['cu2610.SF']})
     row=dict(store.history('CU2610.SHF',source='tushare')['rows'][0],code='cu2610.SF',close=Decimal('2'))
@@ -206,7 +206,7 @@ def test_permissions_empty_response_and_cancel_do_not_report_success(store,tmp_p
         calls.append(1);raise SourceError('权限不足','permission')
     monkeypatch.setattr(TushareSource,'request',permission)
     worker.execute(job)
-    assert len(calls)==1 and store.job(job['id'])['checkpoint']==0 and store.job(job['id'])['state']=='failed'
+    assert len(calls)==1 and store.job(job['id'])['checkpoint']==1 and store.job(job['id'])['state']=='blocked'
     monkeypatch.setattr(TushareSource,'request',lambda self,api,p,fields='': [] if api=='fut_daily' else fake_request(self,api,p,fields))
     empty=download_job(store);worker.execute(empty)
     assert store.job(empty['id'])['state']=='partial' and not store.history('CU2610.SHF',source='tushare')['rows']
@@ -227,7 +227,7 @@ def test_catalog_mapping_export_and_source_default(store,tmp_path,monkeypatch):
     worker=Worker(store,tmp_path,provider='tushare',account_resolver=lambda _:account())
     catalog=store.create_catalog_job(['future'],'tushare','main','https://api.tushare.pro')
     worker.execute(catalog)
-    assert store.job(catalog['id'])['state']=='completed'
+    assert store.job(catalog['id'])['state']=='succeeded'
     assert store.catalog_page(source='tushare')['total']==12 and store.catalog_page()['total']==0
     job=download_job(store,members=['CU.SHF']);worker.execute(job)
     assert store.query('SELECT member_code FROM contract_mappings',one=True)['member_code']=='CU2610.SHF'
@@ -236,7 +236,7 @@ def test_catalog_mapping_export_and_source_default(store,tmp_path,monkeypatch):
         exported=store.create_job('export',dict(source='tushare',members=['CU2610.SHF'],period='1d',start='2026-09-14',end='2026-09-14',format=format))
         Worker(store,tmp_path).execute(exported)
         result=store.job(exported['id'])
-        assert result['state']=='completed'
+        assert result['state']=='succeeded'
         path=tmp_path/'exports'/result['result']['file']
         if format=='csv':
             with path.open(encoding='utf-8-sig',newline='') as file:
@@ -302,7 +302,7 @@ def test_upgrade_v3_preserves_original_values_and_identity(store):
     store.save_security('CU2610.SHF','沪铜2610','future',{},subtype='contract',metadata={'product':'CU','delivery_month':'202610'},source='tushare')
     ids=store.query('SELECT instrument_id FROM securities')
     assert ids[0]['instrument_id']==ids[1]['instrument_id']
-    assert store.health()['version']==5
+    assert store.health()['version']==6
 
 
 @pytest.mark.postgres
@@ -325,9 +325,9 @@ def test_independent_workers_do_not_wait_for_qmt(store,tmp_path,monkeypatch):
         assert entered.wait(5)
         job=download_job(store)
         until=time.monotonic()+5
-        while time.monotonic()<until and store.job(job['id'])['state'] not in ('completed','failed'):
+        while time.monotonic()<until and store.job(job['id'])['state'] not in ('succeeded','failed'):
             time.sleep(.05)
-        assert store.job(job['id'])['state']=='completed'
+        assert store.job(job['id'])['state']=='succeeded'
         assert store.job(old['id'])['state']=='running'
     finally:
         qmt.stop.set();ts.stop.set();release.set()
@@ -358,11 +358,11 @@ def test_checkpoint_resume_uses_fixed_account_and_no_duplicate_rows(store,tmp_pa
     worker=Worker(store,tmp_path,provider='tushare',account_resolver=lambda identifier:account() if identifier=='main' else (_ for _ in ()).throw(AssertionError()))
     job=download_job(store,periods=['1d','1m']);worker.execute(job)
     failed=store.job(job['id'])
-    assert failed['state']=='failed' and failed['checkpoint']==1
+    assert failed['state']=='partial' and failed['checkpoint']==2
     assert failed['result']['rows']==1
     assert store.query('SELECT result FROM jobs WHERE id=%s',(job['id'],),one=True)['result']['rows']==1
-    store.update_job(job['id'],state='queued');worker.execute(store.job(job['id']))
-    assert store.job(job['id'])['state']=='partial'
+    retried=store.retry_job(job['id']);worker.execute(retried)
+    assert store.job(retried['id'])['state']=='partial'
     assert calls.count(('fut_daily',None))==1
     assert store.query('SELECT count(*) AS n FROM bars',one=True)['n']==2
 
@@ -388,7 +388,7 @@ def test_daily_only_download_from_mixed_dataset_and_legacy_progress(store,tmp_pa
         return fake_request(self,api,p,fields)
     monkeypatch.setattr(TushareSource,'request',daily_only)
     app.tushare_worker.execute(store.job(job['id']))
-    assert store.job(job['id'])['state']=='completed' and 'fut_daily' in calls
+    assert store.job(job['id'])['state']=='succeeded' and 'fut_daily' in calls
     assert app.dispatch('GET','/datasets',{})[0]['periods']==['1d','1m','5m']
     # Old failed jobs have coverage but no result count. Reads must preserve their status.
     store.update_job(job['id'],state='failed',result={},error='ft_mins: 权限不足')
@@ -417,10 +417,11 @@ def test_catalog_progress_survives_failure_and_resume(store,tmp_path,monkeypatch
     job=store.create_catalog_job(['future'],'tushare','main','https://api.tushare.pro')
     worker.execute(job)
     failed=store.job(job['id'])
-    assert failed['state']=='failed' and failed['checkpoint']==5 and failed['result']['rows']==5
-    worker.execute(failed)
-    result=store.job(job['id'])
-    assert result['state']=='completed' and result['result']['rows']==12
+    assert failed['state']=='partial' and failed['checkpoint']==12 and failed['result']['rows']==11
+    retried=store.retry_job(job['id']);worker.execute(retried)
+    result=store.job(retried['id'])
+    assert result['state']=='succeeded' and result['result']['rows']==1
+    assert store.query("SELECT count(*) AS n FROM securities WHERE source='tushare'",one=True)['n']==12
     assert calls.count(('DCE','2'))==2 and calls.count(('CFFEX','1'))==1
 
 

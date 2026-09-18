@@ -134,7 +134,7 @@ def test_desktop_mobile_query_dataset_export_and_auth(store,tmp_path,monkeypatch
                  high=Decimal('3660')+index*10,low=Decimal('3570')+index*10,close=Decimal('3640')+index*10,
                  volume=Decimal('2000000'),amount=Decimal('7200000000')) for index in range(10)]
     store.write_chunk(seed['id'],{'code':'000300.SH','period':'1d','start':'2026-09-01','end':'2026-09-10'},rows,[],1)
-    store.update_job(seed['id'],state='completed',result={'rows':10})
+    store.update_job(seed['id'],state='succeeded',result={'rows':10})
     app.worker.source = None
     server = HTTPServer(('127.0.0.1',0),handler_for(app))
     thread = threading.Thread(target=server.serve_forever,daemon=True)

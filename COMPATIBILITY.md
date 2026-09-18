@@ -1,5 +1,15 @@
 # 兼容矩阵
 
+## 执行与数据质量（2026-09-18）
+
+schema6保留原行情、目录、资料与任务记录，新增job_units、job_events和maintenance_plans。迁移将旧成功状态completed转换为succeeded；/jobs/query仍接受completed筛选，但响应统一为succeeded。新增retrying、blocked；partial显示部分完成，不再表示统一的待核验。
+
+POST /jobs/{id}/retry改为返回新的关联任务，parent_id指向原任务，原状态不改写。可传unit_indices只重试指定分块；已成功范围和仅缺交易时段规则的分钟范围不重复采集。相同活动重试去重，不同范围明确拒绝；客户端需使用响应中的新id。旧覆盖记录保留，旧任务不会被伪造为已通过新校验。
+
+新增GET /jobs/{id}/units、/jobs/{id}/events，POST /events/query，GET /health及GET/POST /maintenance、POST /maintenance/{id}。SDK对应job_units、job_events、query_events、health、maintenance_plans、create_maintenance、set_maintenance。现有任务表和队列复用，来源/账号/端点不变，不升级QMT模型。
+
+数据质量以分块记录，不把任务完成、校验通过与全市场连续性等同。仓单/排名空日因缺少发布证据保持待核验；分钟时段与夜盘归属未确认时保持待核验。维护范围需要从原始采集任务显式保存，默认五交易日回读；权限问题不做网络或业务自动重试。
+
 ## 批量筛选与任务（2026-09-18）
 
 不新增迁移，保持schema5。目录GET筛选兼容单值并接受逗号多值，新增POST /catalog/select保证同一快照全选，超过10000项明确失败。Tushare目录同步新增可选exchanges，不传仍为六所。

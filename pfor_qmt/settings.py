@@ -26,6 +26,9 @@ FIELDS = {
     'maintenance_interval': ('hub', 'maintenance_interval', 2.0, 'PFOR_QMT_PIPE_HUB_MAINTENANCE_INTERVAL'),
     'api_key': ('security', 'api_key', '', 'PFOR_QMT_API_KEY'),
     'login_hash': ('security', 'login_hash', '', None),
+    'event_retention_days': ('operations', 'event_retention_days', 90, 'PFOR_QMT_EVENT_RETENTION_DAYS'),
+    'sample_retention_days': ('operations', 'sample_retention_days', 30, 'PFOR_QMT_SAMPLE_RETENTION_DAYS'),
+    'repair_attempts': ('operations', 'repair_attempts', 3, 'PFOR_QMT_REPAIR_ATTEMPTS'),
 }
 
 
@@ -109,6 +112,8 @@ class Settings:
             raise ValueError('HTTP/WebSocket 端口必须在 1..65535 且不能相同')
         if not self.value('runtime_dir'):
             raise ValueError('app.runtime_dir 不得为空')
+        if self.value('sample_retention_days') > self.value('event_retention_days') or self.value('repair_attempts') > 3:
+            raise ValueError('异常样本保留期不得超过事件保留期；自动补数最多3轮')
         if 'PFOR_QMT_API_KEY' in os.environ and not self.value('api_key'):
             raise ValueError('PFOR_QMT_API_KEY 不得为空')
         if not self.value('pipe_name').startswith('\\\\.\\pipe\\pfor_qmt') or not self.value('request_channel').startswith('pfor_qmt.'):

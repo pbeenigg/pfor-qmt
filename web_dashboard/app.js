@@ -3,12 +3,12 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const state = { view: 'market', indices: [], datasets: [], jobs: [], quotes: {}, socket: null, offset: 0, next: null, snapshot: null, authenticated: false, reconnect: null, connecting: false, watch: [] };
 let catalogTimer, catalogJob, catalogSectors = [], securityOffset = 0, securityNext = null;
-const names = { market: '行情', indices: '指数', boards:'行业概念', history: '历史库', futures:'期货资料', jobs: '下载任务', settings: '数据源设置' };
+const names = { market: '行情', indices: '指数', boards:'行业概念', history: '历史库', futures:'期货资料', jobs: '下载任务', operations:'运行与日志', settings: '数据源设置' };
 const periodNames = {'1d':'日线','1w':'周线','1mo':'月线','1m':'1 分钟','5m':'5 分钟','15m':'15 分钟','30m':'30 分钟','60m':'60 分钟'};
 const minutePeriods = ['1m','5m','15m','30m','60m'];
 const reportNames = {calendar:'交易日历',mapping:'主力映射',warehouse:'仓单日报',holding:'成交持仓排名'};
 let boardRows = [], boardOffset = 0, boardNext = null;
-const statuses = { queued: '排队中', running: '运行中', completed: '已完成', partial: '待核验', failed: '失败', cancelled: '已取消' };
+const statuses = { queued:'排队中', running:'运行中', retrying:'重试等待', succeeded:'已完成', completed:'已完成', partial:'部分完成', failed:'失败', blocked:'需处理', cancelled:'已取消' };
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const icon = (name) => `<i data-lucide="${name}"></i>`;
 const icons = () => window.lucide?.createIcons();
@@ -62,7 +62,7 @@ function action(callback) {
     const button = event?.submitter || (event?.currentTarget?.tagName === 'BUTTON' ? event.currentTarget : null);
     if (button) button.disabled = true;
     try { await callback(event); } catch (error) { notice(error.message); }
-    finally { if (button) button.disabled = button.matches('#catalog-form button[type="submit"]') && ['queued','running'].includes(catalogJob?.state); requestAnimationFrame(icons); }
+    finally { if (button) button.disabled = button.matches('#catalog-form button[type="submit"]') && ['queued','running','retrying'].includes(catalogJob?.state); requestAnimationFrame(icons); }
   };
 }
 
@@ -93,6 +93,7 @@ async function switchView(view) {
     if (view === 'boards') await loadBoards();
     if (view === 'history') { await loadDatasets(); chart?.resize(); }
     if (view === 'jobs') { await loadDatasets(); await loadJobs(0); }
+    if (view === 'operations') { await loadOperations(); await loadEvents(); }
     if (view === 'settings') { await status(); await loadAccounts(); }
     if (view === 'futures') { await loadFuturesOptions(); updateFuturesForm(); }
     if (view === 'market') { await loadCatalog(); await loadSecurities(); }
@@ -124,9 +125,9 @@ async function loadCatalog() {
   filterSectors();
   const counts = [...result.counts.map((item) => `${kindNames[item.kind]} ${item.count} 个`), ...(result.boards || []).map((item) => `${item.category === 'industry' ? '行业' : '概念'} ${item.count} 个`)];
   $('#catalog-counts').textContent = counts.length ? counts.join(' · ') : '尚未同步目录';
-  const wasActive = catalogJob && ['queued','running'].includes(catalogJob.state);
+  const wasActive = catalogJob && ['queued','running','retrying'].includes(catalogJob.state);
   catalogJob = result.job;
-  const active = catalogJob && ['queued','running'].includes(catalogJob.state);
+  const active = catalogJob && ['queued','running','retrying'].includes(catalogJob.state);
   $('#catalog-form button[type="submit"]').disabled = !!active;
   $('#catalog-cancel').hidden = !active;
   $('#catalog-progress').hidden = !active;
@@ -363,7 +364,7 @@ async function loadJobs(offset=jobOffset) {
     const total = job.total_chunks;
     const unit = job.kind === 'catalog' ? job.payload.source === 'tushare' ? '批次' : '证券' : '分块';
     const kind = job.kind === 'download' ? reportNames[job.payload.resource] || '历史回补' : job.kind === 'catalog' ? '目录同步' : job.payload.format.toUpperCase();
-    return `<tr><td>${job.id.slice(0,8)}<span class="muted">${formatTime(job.created_at)}</span></td><td>${kind}<span class="muted">${escape(job.payload.source || 'qmt')}${job.payload.periods ? ' · ' + escape(job.payload.periods.join(' / ')) : ''}</span></td><td><span class="badge ${job.state}">${statuses[job.state] || escape(job.state)}</span></td><td>${total ? `<progress value="${job.checkpoint}" max="${total}"></progress><span class="muted">${job.checkpoint} / ${total} ${unit}</span>` : job.checkpoint + ' 行'}</td><td>${job.result.rows === undefined ? '—' : job.kind === 'download' ? '已入库 ' + job.result.rows + ' 行' : job.result.rows + ' 行'}${job.error ? `<span class="muted">${escape(job.error)}</span>` : ''}</td><td><div class="actions"><button data-job-detail="${job.id}" title="任务详情" aria-label="任务详情">${icon('list')}</button>${['queued','running'].includes(job.state) ? `<button data-job="cancel" data-id="${job.id}" title="取消后续处理" aria-label="取消后续处理">${icon('square')}</button>` : ''}${['failed','cancelled','partial'].includes(job.state) ? `<button data-job="retry" data-id="${job.id}" title="重试" aria-label="重试">${icon('rotate-cw')}</button>` : ''}${job.kind === 'export' && job.state === 'completed' ? `<a href="/api/v1/files/${job.id}" title="下载文件" aria-label="下载文件">${icon('download')}</a><a href="/api/v1/files/${job.id}/metadata" title="下载口径说明" aria-label="下载口径说明">${icon('file-text')}</a>` : ''}</div></td></tr>`;
+    return `<tr><td>${job.id.slice(0,8)}<span class="muted">${formatTime(job.created_at)}</span></td><td>${kind}<span class="muted">${escape(job.payload.source || 'qmt')}${job.payload.periods ? ' · ' + escape(job.payload.periods.join(' / ')) : ''}</span></td><td><span class="badge ${job.state}">${statuses[job.state] || escape(job.state)}</span></td><td>${total ? `<progress value="${job.checkpoint}" max="${total}"></progress><span class="muted">${job.checkpoint} / ${total} ${unit}</span>` : job.checkpoint + ' 行'}</td><td>${job.result.rows === undefined ? '—' : job.kind === 'download' ? '已入库 ' + job.result.rows + ' 行' : job.result.rows + ' 行'}${job.error ? `<span class="muted">${escape(job.error)}</span>` : ''}</td><td><div class="actions"><button data-job-detail="${job.id}" title="任务详情" aria-label="任务详情">${icon('list')}</button>${['queued','running','retrying'].includes(job.state) ? `<button data-job="cancel" data-id="${job.id}" title="取消后续处理" aria-label="取消后续处理">${icon('square')}</button>` : ''}${['failed','cancelled','partial','blocked'].includes(job.state) ? `<button data-job="retry" data-id="${job.id}" title="重试" aria-label="重试">${icon('rotate-cw')}</button>` : ''}${job.kind === 'export' && job.state === 'succeeded' ? `<a href="/api/v1/files/${job.id}" title="下载文件" aria-label="下载文件">${icon('download')}</a><a href="/api/v1/files/${job.id}/metadata" title="下载口径说明" aria-label="下载口径说明">${icon('file-text')}</a>` : ''}</div></td></tr>`;
   }).join('');
   icons();
 }
@@ -717,7 +718,7 @@ async function loadFutures(offset=0) {
   const numeric=['pre_vol','vol','vol_chg','pd','long_hld','long_chg','short_hld','short_chg'];
   recordSets.futures={title:reportNames[result.resource]+'详情',rows:result.rows,labels:futuresFields,note:result.units};
   $('#futures-head').innerHTML='<tr>'+columns.map(field=>`<th class="${numeric.includes(field)?'numeric':''}">${escape(futuresFields[field] || field)}</th>`).join('')+'<th>详情</th></tr>';
-  $('#futures-rows').innerHTML=result.rows.map((row,index)=>'<tr>'+columns.map(field=>`<td class="${numeric.includes(field)?'numeric':''}">${field==='is_open'?`<span class="badge ${row[field]?'completed':''}">${row[field]?'开市':'休市'}</span>`:field==='member_code'?`<button type="button" class="text-link" data-mapped-history="${escape(row[field])}" title="查看月份合约历史" aria-label="查看 ${escape(row[field])} 历史">${escape(row[field])}${icon('arrow-up-right')}</button>`:escape(number(row[field]))}</td>`).join('')+`<td>${recordButton('futures',index)}</td></tr>`).join('');
+  $('#futures-rows').innerHTML=result.rows.map((row,index)=>'<tr>'+columns.map(field=>`<td class="${numeric.includes(field)?'numeric':''}">${field==='is_open'?`<span class="badge ${row[field]?'succeeded':''}">${row[field]?'开市':'休市'}</span>`:field==='member_code'?`<button type="button" class="text-link" data-mapped-history="${escape(row[field])}" title="查看月份合约历史" aria-label="查看 ${escape(row[field])} 历史">${escape(row[field])}${icon('arrow-up-right')}</button>`:escape(number(row[field]))}</td>`).join('')+`<td>${recordButton('futures',index)}</td></tr>`).join('');
   if(!result.rows.length)empty('#futures-rows',columns.length+1,'所选范围没有已入库资料');
   $('#futures-page').textContent=result.rows.length?`${offset+1}–${offset+result.rows.length} 条`:'0 条';
   $('#futures-prev').disabled=!offset; $('#futures-next').disabled=futuresNext===null;
@@ -763,7 +764,8 @@ $('#chart-period').addEventListener('change',action(loadChart));
 function renderJobDetails(job) {
   const p=job.payload, coverage=job.result.coverage || [];
   const summary={来源:p.source || 'qmt',采集账号:p.account_id || '不适用',范围:`${p.start || '默认'} 至 ${p.end || '默认'}`,周期:(p.periods || (p.period?[p.period]:[])).map(value=>periodNames[value] || value).join('、') || reportNames[p.resource] || '目录',已入库行数:job.result.rows ?? 0,固定对象数:p.selections?.length || p.members?.length || 1};
-  return '<h3>处理范围</h3><dl class="detail-grid">'+detailFields(summary)+'</dl>'+(job.error?`<p class="error-note">${escape(job.error)}</p>`:'')+(coverage.length?'<h3>覆盖与缺口 · '+coverage.length+' 个分块</h3><div class="table-wrap coverage-table"><table><thead><tr><th>对象</th><th>周期</th><th>请求区间</th><th>行数</th><th>校验结果</th></tr></thead><tbody>'+coverage.map(row=>`<tr><td>${escape(row.code)}</td><td>${escape(periodNames[row.period] || reportNames[row.period] || row.period)}</td><td>${escape(row.requested_start)} 至 ${escape(row.requested_end)}</td><td class="numeric">${row.row_count}</td><td class="wrap-text">${row.gaps?.length?row.gaps.map(gap=>escape((gap.day?gap.day+' · ':'')+gap.reason)).join('<br>'):'已读回入库'}</td></tr>`).join('')+'</tbody></table></div>':'');
+  const qualitySummary=(job.result.quality_summary || []).map(item=>`${qualityNames[item.quality_state] || item.quality_state} ${item.count} 块`).join('、');
+  return `<div class="toolbar"><button type="button" data-units="${job.id}">${icon('list-checks')}分块质量</button><button type="button" data-events="${job.id}">${icon('scroll-text')}任务日志</button>${job.kind!=='export' && !p.retry_of?`<button type="button" data-maintain="${job.id}">${icon('calendar-clock')}设为自动维护</button>`:''}</div>`+'<h3>处理范围</h3><dl class="detail-grid">'+detailFields({...summary,数据质量:qualitySummary || '旧任务未记录分块质量',下一步:job.action || '查看分块质量与日志',原任务:job.parent_id || '无'})+'</dl>'+(job.error?`<p class="error-note">${escape(job.error)}</p>`:'')+(coverage.length?'<h3>覆盖与缺口 · '+coverage.length+' 个分块</h3><div class="table-wrap coverage-table"><table><thead><tr><th>对象</th><th>周期</th><th>请求区间</th><th>行数</th><th>校验结果</th></tr></thead><tbody>'+coverage.map(row=>`<tr><td>${escape(row.code)}</td><td>${escape(periodNames[row.period] || reportNames[row.period] || row.period)}</td><td>${escape(row.requested_start)} 至 ${escape(row.requested_end)}</td><td class="numeric">${row.row_count}</td><td class="wrap-text">${row.gaps?.length?row.gaps.map(gap=>escape((gap.day?gap.day+' · ':'')+gap.reason)).join('<br>'):'已读回入库'}</td></tr>`).join('')+'</tbody></table></div>':'');
 }
 
 initializeControls();
