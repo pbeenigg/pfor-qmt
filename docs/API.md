@@ -110,6 +110,37 @@ WebSocket默认 `ws://127.0.0.1:8767/?ticket=...`。不在URL传API Key。发送
 
 新增`xtdata.get_instrument_details(stock_list)`（最多100个）、`get_sector_tree()`及`get_option_detail_data(stock_code)`。旧桥无法提供新增能力时明确报错；单条普通证券资料可回退原接口。`/source/test`的catalog_version=2表示已加载扩展桥，不表示市场数据已可用。
 
+## 多选与批量接口（2026-09-18）
+
+旧单对象接口、默认source=qmt及返回形状保持。以下POST接口使用JSON数组；GET目录的kind、market、subtype和资料选项exchange接受逗号分隔多值。来源保持单选。
+
+| 方法 | 路径 | 参数 / 行为 |
+| --- | --- | --- |
+| POST | /catalog/select | 同目录筛选，可用数组；同一数据库快照返回全部匹配rows及total，超过10000项拒绝，绝不截断 |
+| POST | /catalog/sync | Tushare新增exchanges数组，省略仍六所；活动任务只接受相同或子集范围 |
+| POST | /history/query | members、periods、start、end、source、limit/offset；按code/period/time稳定分页，含逐行normalization_version、顶层normalization_versions及单位 |
+| POST | /downloads/batch | dataset_ids（1..1000）、periods、source、可选start/end；每个数据集取周期交集，无交集或任一校验失败整批拒绝；返回jobs |
+| POST | /exports/batch | members、periods、start/end、source、format；每个周期一个原export任务及文件，返回jobs |
+| POST | /futures/records | selections（同一种resource）、start/end、limit/offset；多目标合并分页，字段与单位不变 |
+| POST | /futures/sync、/futures/export | selections、start/end，采集另需account_id，导出另需format；按resource分组创建原任务，返回jobs、selection_count |
+| POST | /jobs/query | states、kinds、sources数组或逗号字符串；search匹配ID/错误，可选start/end按上海创建日期；limit=1..200、offset，返回rows/total/next_offset |
+
+资料selections元素为`{"resource":"calendar","exchange":"DCE"}`、`{"resource":"warehouse","exchange":"SHFE","symbol":"CU"}`、`{"resource":"holding","exchange":"DCE","symbol":"A2611"}`或`{"resource":"mapping","code":"A.DCE"}`。对象去重，日期只取顶层；查询禁止混合资料类型，同步和导出支持多类型。一次最多10000对象、1000任务和100000分块，HTTP另有请求体限制，超限明确报错。全部目标预校验通过后，在同一事务创建任务；已知权限不足不创建部分任务。
+
+SDK新增select_catalog、query_history、query_futures、download_batch、export_batch、sync_futures_batch、export_futures_batch、query_jobs；sync_catalog增加exchanges。
+
+```python
+rows = client.query_history(
+    ["A2611.DCE", "CU2610.SHF"], ["1d", "1w", "1mo"],
+    "2026-08-01", "2026-09-17", source="tushare", limit=300)
+reports = client.query_futures([
+    {"resource": "warehouse", "exchange": "DCE", "symbol": "A"},
+    {"resource": "warehouse", "exchange": "SHFE", "symbol": "CU"},
+], "2026-09-17", "2026-09-17")
+```
+
+网页快捷范围按上海日期计算并包含今天；近三天含今天及前两天，一周含前六天，月/年按日历回退并钳制月末，不代表相应交易日数量。周/月查询仍按周期标签和计算截至日口径。采集账号不可用不会阻止已入库数据查询与导出。
+
 ## 时间、数值与覆盖
 
 日期为 `YYYY-MM-DD`，查询包含结束日。行情时间以Asia/Shanghai解析；日线统一到交易日零点，分钟保留原始行情时间。QMT毫秒epoch与YYYYMMDD/YYYYMMDDHHMMSS格式显式解析。新增open_interest、settlement、previous_settlement和trading_day可空字段，原生settle映射结算价，openInterest映射持仓量。
