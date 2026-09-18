@@ -15,6 +15,16 @@ AGGREGATE_PERIODS = ('1w', '1mo')
 TUSHARE_PERIODS = ('1d', *AGGREGATE_PERIODS, *MINUTE_PERIODS)
 
 
+def filter_values(value, allowed, label='筛选条件'):
+    values = value.split(',') if isinstance(value, str) else value
+    if not isinstance(values, (list, tuple)) or any(not isinstance(item, str) for item in values):
+        raise ValueError(label + '需要数组或逗号分隔文本')
+    result = list(dict.fromkeys(item for item in values if item))
+    if set(result) - set(allowed):
+        raise ValueError('无效的' + label)
+    return result
+
+
 def codes(value, source='qmt'):
     if isinstance(value, str):
         pieces = re.split(r'[,，;\r\n]+', value.strip())

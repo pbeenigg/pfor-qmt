@@ -8,9 +8,9 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .data import codes, day, periods, json_default, FIELDS, MINUTE_PERIODS, AGGREGATE_PERIODS, period_label
-from .symbols import KINDS, market_of
-from .identifiers import provider_name, source_market, identity_key
+from .data import codes, day, periods, json_default, FIELDS, MINUTE_PERIODS, AGGREGATE_PERIODS, period_label, filter_values
+from .symbols import KINDS, MARKETS, market_of
+from .identifiers import provider_name, source_market, identity_key, TS_EXCHANGES
 
 
 def document(value):
@@ -71,34 +71,46 @@ class Store:
         return self.query("SELECT * FROM securities WHERE source=%s AND (code ILIKE %s OR name ILIKE %s) AND (%s='' OR kind=%s OR (%s='etf' AND subtype='etf')) ORDER BY code LIMIT 1000",
                           (provider_name(source), '%' + search + '%', '%' + search + '%', kind, kind, kind))
 
-    def catalog_page(self, search='', kind='', limit=50, offset=0, market='', subtype='', source='qmt', active=False):
+    def catalog_page(self, search='', kind='', limit=50, offset=0, market='', subtype='', source='qmt', active=False, select_all=False):
         limit, offset = int(limit), int(offset)
-        if kind not in ('', 'etf') + KINDS or not 1 <= limit <= 200 or offset < 0:
+        kinds = filter_values(kind, (*KINDS, 'etf'), '证券类别')
+        markets = filter_values(market, MARKETS, '交易所')
+        subtypes = filter_values(subtype, ('contract','continuous','combination','efp','etf'), '合约类型')
+        if not 1 <= limit <= 200 or offset < 0:
             raise ValueError('无效目录筛选或分页参数')
-        query = "FROM securities WHERE source=%s AND (code ILIKE %s OR name ILIKE %s OR metadata->>'product' ILIKE %s) AND (%s='' OR kind=%s OR (%s='etf' AND subtype='etf')) AND (%s='' OR market=%s) AND (%s='' OR subtype=%s) AND (NOT %s OR (coalesce(nullif(metadata->>'expiry',''),'99999999') >= to_char(CURRENT_DATE,'YYYYMMDD') AND coalesce(nullif(metadata->>'listed',''),'00000000') <= to_char(CURRENT_DATE,'YYYYMMDD')))"
-        args = (provider_name(source), '%' + search + '%', '%' + search + '%', '%' + search + '%', kind, kind, kind, market, market, subtype, subtype, active)
+        query = "FROM securities WHERE source=%s AND (code ILIKE %s OR name ILIKE %s OR metadata->>'product' ILIKE %s) AND (%s OR kind=ANY(%s) OR (%s AND subtype='etf')) AND (%s OR market=ANY(%s)) AND (%s OR subtype=ANY(%s)) AND (NOT %s OR (coalesce(nullif(metadata->>'expiry',''),'99999999') >= to_char(CURRENT_DATE,'YYYYMMDD') AND coalesce(nullif(metadata->>'listed',''),'00000000') <= to_char(CURRENT_DATE,'YYYYMMDD')))"
+        args = (provider_name(source), '%' + search + '%', '%' + search + '%', '%' + search + '%', not kinds, kinds, 'etf' in kinds, not markets, markets, not subtypes, subtypes, active)
         with self.connect() as conn:
             conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
             total = conn.execute('SELECT count(*) AS n ' + query, args).fetchone()['n']
+            if select_all:
+                if total > 10000:
+                    raise ValueError(f'筛选结果共{total}个，超过单次10000个上限，请缩小范围；未截断选择')
+                limit, offset = max(1, total), 0
             rows = conn.execute('SELECT code,name,kind,market,subtype,metadata,updated_at,source,instrument_id ' + query + ' ORDER BY code LIMIT %s OFFSET %s', args + (limit, offset)).fetchall()
         return dict(rows=rows, total=total, offset=offset, next_offset=offset + len(rows) if offset + len(rows) < total else None)
 
-    def create_catalog_job(self, kinds, source='qmt', account_id=None, endpoint=None):
+    def create_catalog_job(self, kinds, source='qmt', account_id=None, endpoint=None, exchanges=None):
         from .catalog import KINDS
         if not isinstance(kinds, list) or not kinds or any(kind not in KINDS for kind in kinds):
             raise ValueError('选择有效的证券或行业概念目录')
         provider_name(source)
         if source == 'tushare' and kinds != ['future']:
             raise ValueError('Tushare当前仅支持期货目录')
+        selected_exchanges = filter_values(list(TS_EXCHANGES) if exchanges is None else exchanges, TS_EXCHANGES, '期货交易所') if source=='tushare' else []
+        if source=='tushare' and not selected_exchanges:
+            raise ValueError('请选择至少一个期货交易所')
         with self.connect() as conn:
             conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (self.schema + '.catalog-create',))
             active = conn.execute("SELECT * FROM jobs WHERE kind='catalog' AND coalesce(payload->>'source','qmt')=%s AND state IN ('queued','running') ORDER BY created_at LIMIT 1", (source,)).fetchone()
             if active:
                 if not set(kinds).issubset(active['payload']['kinds']) or active['payload'].get('account_id') != account_id:
                     raise ValueError('已有目录同步正在进行，请等待完成后再同步其他类别')
+                if source=='tushare' and not set(selected_exchanges).issubset(active['payload'].get('exchanges', list(TS_EXCHANGES))):
+                    raise ValueError('已有目录同步正在进行，请等待完成后再同步其他交易所')
                 return active
             return conn.execute("INSERT INTO jobs(id,kind,payload) VALUES(%s,'catalog',%s) RETURNING *",
-                                (str(uuid.uuid4()), document({'kinds': list(dict.fromkeys(kinds)), 'source':source, 'account_id':account_id, 'endpoint':endpoint}))).fetchone()
+                                (str(uuid.uuid4()), document({'kinds': list(dict.fromkeys(kinds)), 'source':source, 'account_id':account_id, 'endpoint':endpoint, **({'exchanges':selected_exchanges} if source=='tushare' else {})}))).fetchone()
 
     def save_security(self, code, name, kind, detail, subtype='', metadata=None, conn=None, source='qmt'):
         if kind == 'etf':
@@ -201,6 +213,13 @@ class Store:
         return self.query('INSERT INTO jobs(id,kind,payload,schedule_key) VALUES(%s,%s,%s,%s) ON CONFLICT(schedule_key) DO UPDATE SET schedule_key=EXCLUDED.schedule_key RETURNING *',
                           (str(uuid.uuid4()), kind, document(payload), schedule_key), one=True)
 
+    def create_jobs(self, kind, payloads):
+        if not payloads or len(payloads) > 1000 or sum(len(p.get('chunks', [])) for p in payloads) > 100000:
+            raise ValueError('批量范围过大：最多1000个任务或100000个分块，请缩小范围')
+        with self.connect() as conn:
+            return [conn.execute('INSERT INTO jobs(id,kind,payload) VALUES(%s,%s,%s) RETURNING *',
+                                 (str(uuid.uuid4()), kind, document(payload))).fetchone() for payload in payloads]
+
     def job(self, identifier):
         row = self.query('SELECT * FROM jobs WHERE id=%s', (identifier,), one=True)
         if not row:
@@ -208,6 +227,24 @@ class Store:
         if row['kind'] == 'download' and 'rows' not in row['result']:
             row['result']['rows'] = self.query('SELECT coalesce(sum(row_count),0) AS n FROM coverage WHERE job_id=%s', (identifier,), one=True)['n']
         return row
+
+    def jobs_page(self, payload):
+        states = filter_values(payload.get('states', []), ('queued','running','completed','partial','failed','cancelled'), '任务状态')
+        kinds = filter_values(payload.get('kinds', []), ('download','export','catalog'), '任务类型')
+        sources = filter_values(payload.get('sources', []), ('qmt','tushare'), '任务来源')
+        limit, offset = int(payload.get('limit', 50)), int(payload.get('offset', 0))
+        start, end = day(payload.get('start') or '1990-01-01'), day(payload.get('end') or '2100-01-01')
+        if not 1 <= limit <= 200 or offset < 0 or start > end:
+            raise ValueError('无效任务查询日期或分页')
+        where = "FROM jobs WHERE (%s OR state=ANY(%s)) AND (%s OR kind=ANY(%s)) AND (%s OR coalesce(payload->>'source','qmt')=ANY(%s)) AND created_at::date BETWEEN %s AND %s AND (id::text ILIKE %s OR coalesce(error,'') ILIKE %s)"
+        search = '%'+str(payload.get('search',''))+'%'
+        args = (not states,states,not kinds,kinds,not sources,sources,start,end,search,search)
+        fields = "id,kind,state,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,CASE WHEN kind='download' THEN jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=jobs.id)) || (result-'coverage') ELSE result-'coverage' END AS result,error,created_at,updated_at"
+        with self.connect() as conn:
+            conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+            total = conn.execute('SELECT count(*) AS n '+where,args).fetchone()['n']
+            rows = conn.execute('SELECT '+fields+' '+where+' ORDER BY created_at DESC,id DESC LIMIT %s OFFSET %s',(*args,limit,offset)).fetchall()
+        return dict(rows=rows,total=total,offset=offset,next_offset=offset+len(rows) if offset+len(rows)<total else None)
 
     def update_job(self, identifier, **changes):
         allowed = {'state','checkpoint','attempts','cancel_requested','result','error','payload'}
@@ -252,3 +289,22 @@ class Store:
                 'source': 'postgresql', 'provider': source, 'normalization_version': 'tushare-futures-v2' if aggregate else 'tushare-futures-v1' if source == 'tushare' else 'qmt-raw-v1', 'adjustment': 'none', 'timezone': 'Asia/Shanghai',
                 'date_basis': '按日期所在周/月的周期标签查询；time为周五/月末标签，as_of_date为上游计算截至日期，不是历史时点快照；source_fields保留上游原始字段及万元金额' if aggregate else '日线按交易日；分钟按上海自然时间查询，未提供交易日时夜盘归属待核验' if source == 'tushare' else '优先使用终端 trading_day；未提供时按行情时间的上海自然日查询，夜盘归属待核验',
                 'units': {'price': '合约报价单位（见合约资料）', 'volume': '手', 'amount': '元', 'open_interest': '手'} if source == 'tushare' else {'price': 'QMT 原始报价', 'volume': 'QMT 原始成交量单位（未换算）', 'amount': 'QMT 原始成交额单位（未换算）', 'open_interest': 'QMT 原始持仓量单位（未换算）'}}
+
+    def history_many(self, payload):
+        source = provider_name(payload.get('source', 'qmt'))
+        members, selected = codes(payload['members'], source), periods(payload['periods'], source)
+        start, end = day(payload['start']), day(payload['end'])
+        limit, offset = int(payload.get('limit', 300)), int(payload.get('offset', 0))
+        if start > end or not 1 <= limit <= 5000 or offset < 0:
+            raise ValueError('无效历史查询范围或分页')
+        parts, args = [], [source, members]
+        for period in selected:
+            parts.append('(period=%s AND coalesce(trading_day,time::date) BETWEEN %s AND %s)')
+            args.extend([period, period_label(start, period), period_label(end, period)])
+        fields = ('code','period','time',*FIELDS,'trading_day','source','as_of_date','source_fields','normalization_version')
+        rows = self.query('SELECT '+','.join(fields)+' FROM bars WHERE source=%s AND code=ANY(%s) AND ('+' OR '.join(parts)+') ORDER BY code,period,time LIMIT %s OFFSET %s', (*args, limit+1, offset))
+        return dict(rows=rows[:limit], next_offset=offset+limit if len(rows)>limit else None, offset=offset,
+                    source='postgresql', provider=source, timezone='Asia/Shanghai', adjustment='none',
+                    normalization_versions={period: 'tushare-futures-v2' if period in AGGREGATE_PERIODS else 'tushare-futures-v1' if source=='tushare' else 'qmt-raw-v1' for period in selected},
+                    units={'price':'合约报价单位（见合约资料）','volume':'手','amount':'元','open_interest':'手'} if source=='tushare' else {'price':'QMT 原始报价','volume':'QMT 原始成交量单位（未换算）','amount':'QMT 原始成交额单位（未换算）','open_interest':'QMT 原始持仓量单位（未换算）'},
+                    date_basis='日线按交易日；分钟按上海自然时间；周/月按周期标签并保留计算截至日，不混合合约或周期')

@@ -26,8 +26,8 @@ class DataClient:
     def catalog(self, search='', kind='', limit=50, offset=0, market='', subtype='', source='qmt', active=False):
         return self.request('/catalog/securities', search=search, kind=kind, limit=limit, offset=offset, market=market, subtype=subtype,source=source,active=str(active).lower())
 
-    def sync_catalog(self, kinds=None, source='qmt', account_id=None):
-        return self.request('/catalog/sync', {'kinds': list(kinds or (('future',) if source=='tushare' else ('future', 'option', 'stock', 'index', 'fund', 'bond', 'board'))), 'source':source,'account_id':account_id})
+    def sync_catalog(self, kinds=None, source='qmt', account_id=None, exchanges=None):
+        return self.request('/catalog/sync', {'kinds': list(kinds or (('future',) if source=='tushare' else ('future', 'option', 'stock', 'index', 'fund', 'bond', 'board'))), 'source':source,'account_id':account_id, **({'exchanges':exchanges} if exchanges is not None else {})})
 
     def instrument(self, code, source='qmt'):
         return self.request('/catalog/detail', code=code, source=source)
@@ -55,6 +55,30 @@ class DataClient:
 
     def futures_records(self, resource, start, end, **options):
         return self.request('/futures/records',source='tushare',resource=resource,start=start,end=end,**options)
+
+    def select_catalog(self, **filters):
+        return self.request('/catalog/select', filters)
+
+    def query_history(self, members, periods, start, end, source='qmt', **paging):
+        return self.request('/history/query', dict(members=members,periods=periods,start=start,end=end,source=source,**paging))
+
+    def query_futures(self, selections, start, end, **paging):
+        return self.request('/futures/records', dict(source='tushare',selections=selections,start=start,end=end,**paging))
+
+    def sync_futures_batch(self, selections, start, end, account_id=None):
+        return self.request('/futures/sync', dict(source='tushare',selections=selections,start=start,end=end,account_id=account_id))
+
+    def download_batch(self, dataset_ids, periods, start=None, end=None, source='qmt'):
+        return self.request('/downloads/batch',dict(dataset_ids=dataset_ids,periods=periods,start=start,end=end,source=source))
+
+    def export_batch(self, members, periods, start, end, format='csv', source='qmt'):
+        return self.request('/exports/batch',dict(members=members,periods=periods,start=start,end=end,format=format,source=source))
+
+    def export_futures_batch(self, selections, start, end, format='csv'):
+        return self.request('/futures/export',dict(source='tushare',selections=selections,start=start,end=end,format=format))
+
+    def query_jobs(self, **filters):
+        return self.request('/jobs/query', filters)
 
     def sync_futures(self, resource, start, end, account_id=None, **options):
         return self.request('/futures/sync',dict(source='tushare',resource=resource,start=start,end=end,account_id=account_id,**options))

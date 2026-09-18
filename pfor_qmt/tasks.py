@@ -129,7 +129,7 @@ class Worker:
     def sync_tushare(self, job):
         identifier = job['id']
         adapter = self.tushare_source(job['payload'], lambda: self.check(identifier))
-        parts = [(exchange, kind) for exchange in TS_EXCHANGES for kind in ('1', '2')]
+        parts = [(exchange, kind) for exchange in job['payload'].get('exchanges',TS_EXCHANGES) for kind in ('1', '2')]
         payload = dict(job['payload'], chunks=[{'exchange': ex, 'contract_type': kind} for ex,kind in parts])
         self.store.update_job(identifier, payload=payload)
         for index, (exchange, kind) in enumerate(parts[job['checkpoint']:], job['checkpoint']):
@@ -267,13 +267,14 @@ class Worker:
         resource = payload['resource']
         adapter = self.tushare_source(payload, lambda: self.check(identifier))
         for index, part in enumerate(payload['chunks'][job['checkpoint']:], job['checkpoint']):
-            rows = self.retry_network(identifier, lambda: adapter.report(payload,part['start'],part['end']))
+            target = part.get('selection', payload)
+            rows = self.retry_network(identifier, lambda: adapter.report(target,part['start'],part['end']))
             self.check(identifier)
             date_field = REPORTS[resource]['date']
             dates = sorted({row[date_field] for row in rows})
             gaps = [] if rows else [{'reason':'资料响应为空，未确认发布或覆盖情况'}]
             if resource != 'calendar':
-                market = source_market(payload['code'],'tushare') if resource=='mapping' else TS_EXCHANGES[payload['exchange']]
+                market = source_market(target['code'],'tushare') if resource=='mapping' else TS_EXCHANGES[target['exchange']]
                 try:
                     calendar = self.retry_network(identifier,lambda: adapter.calendar(market,part['start'],part['end']))
                     gaps.extend({'day':date.isoformat(),'reason':'交易日无资料，待核验'} for date in calendar if date not in dates)

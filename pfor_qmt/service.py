@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from . import xtdata
 from .client import get_client
-from .data import codes, periods, chunks, day, SHANGHAI, json_default, MINUTE_PERIODS, TUSHARE_PERIODS
+from .data import codes, periods, chunks, day, SHANGHAI, json_default, MINUTE_PERIODS, TUSHARE_PERIODS, filter_values
 from .deploy import inspect_root, prepare, activate
 from .protocol import encode_value
 from .settings import Settings
@@ -186,43 +186,50 @@ class Application:
         if method == 'GET' and path == '/securities':
             return store.securities(p.get('search', ''), p.get('kind', ''),source)
         if path.startswith('/futures/'):
-            from .futures import selection, request_chunks, page, REPORTS
+            from .futures import selections, request_chunks, page
             if source != 'tushare':
                 raise ValueError('期货资料扩展当前仅支持Tushare来源')
             if method == 'GET' and path == '/futures/options':
-                exchange = p.get('exchange','DCE')
-                if exchange not in TS_EXCHANGES:
+                exchanges = filter_values(p.get('exchange','DCE'), TS_EXCHANGES, '期货交易所')
+                if not exchanges:
                     raise ValueError('请选择期货交易所')
-                products = store.query("SELECT upper(metadata->>'product') AS symbol,min(name) FILTER(WHERE subtype='continuous') AS name FROM securities WHERE source='tushare' AND market=%s AND coalesce(metadata->>'product','')<>'' GROUP BY upper(metadata->>'product') ORDER BY symbol",(TS_EXCHANGES[exchange],))
-                continuous = store.query("SELECT code,name FROM securities WHERE source='tushare' AND market=%s AND subtype='continuous' ORDER BY code",(TS_EXCHANGES[exchange],))
+                markets = [TS_EXCHANGES[ex] for ex in exchanges]
+                products = store.query("SELECT market,upper(metadata->>'product') AS symbol,min(name) FILTER(WHERE subtype='continuous') AS name FROM securities WHERE source='tushare' AND market=ANY(%s) AND coalesce(metadata->>'product','')<>'' GROUP BY market,upper(metadata->>'product') ORDER BY market,symbol",(markets,))
+                continuous = store.query("SELECT code,name,market FROM securities WHERE source='tushare' AND market=ANY(%s) AND subtype='continuous' ORDER BY code",(markets,))
+                for row in products + continuous:
+                    row['exchange'] = next(ex for ex, market in TS_EXCHANGES.items() if market == row['market'])
                 return {'products':products,'continuous':continuous,'exchanges':list(TS_EXCHANGES)}
-            if method == 'GET' and path == '/futures/records':
+            if method in ('GET','POST') and path == '/futures/records':
                 return page(store,p,p.get('limit',200),p.get('offset',0))
             if method == 'POST' and path in ('/futures/sync','/futures/export'):
-                payload = selection(p)
-                if path.endswith('/export'):
-                    payload['format'] = p.get('format')
-                    if payload['format'] not in ('csv','parquet'):
-                        raise ValueError('无效导出格式')
-                    return job_summary(store.create_job('export',payload))
-                resource = payload['resource']
-                if resource == 'mapping':
-                    found = store.query("SELECT 1 FROM securities WHERE source='tushare' AND code=%s AND subtype='continuous'",(payload['code'],),one=True)
-                    if not found:
-                        raise ValueError('请先同步并选择主力或连续合约')
-                if resource in ('warehouse','holding'):
-                    found = store.query("SELECT 1 FROM securities WHERE source='tushare' AND market=%s AND (upper(metadata->>'product')=%s OR (%s='holding' AND subtype='contract' AND split_part(code,'.',1)=%s)) LIMIT 1",(TS_EXCHANGES[payload['exchange']],payload['symbol'],resource,payload['symbol']),one=True)
-                    if not found:
-                        raise ValueError('请先同步并选择该交易所的产品或月份合约')
-                account = self.settings.account(p.get('account_id'))
-                capability = self.capabilities.get(account['id'],{}).get('capabilities',{}).get(resource,{})
-                if capability.get('state') in ('permission','authentication','unsupported'):
-                    raise ValueError(REPORTS[resource]['name']+'接口权限不可用，请更新账号后重新检测')
-                payload.update(account_id=account['id'],endpoint=account['endpoint'],chunks=request_chunks(payload))
-                return job_summary(store.create_job('download',payload))
+                exporting = path.endswith('/export')
+                catalog = None
+                account = None
+                if not exporting:
+                    account = self.settings.account(p.get('account_id'))
+                    rows = store.query("SELECT code,market,subtype,upper(metadata->>'product') AS product FROM securities WHERE source='tushare'")
+                    catalog = {'continuous':{row['code'] for row in rows if row['subtype']=='continuous'},
+                               'products':{(row['market'],row['product']) for row in rows if row['product']},
+                               'contracts':{(row['market'],row['code'].split('.')[0]) for row in rows if row['subtype']=='contract'}}
+                groups = {}
+                for target in selections(p):
+                    payload = self.prepare_report(target, p, exporting, catalog, account)
+                    groups.setdefault(target['resource'], []).append(payload)
+                payloads = []
+                for targets in groups.values():
+                    payload = dict(targets[0])
+                    if 'selections' in p:
+                        payload['selections'] = [{key:value for key,value in target.items() if key not in ('account_id','endpoint','chunks','format')} for target in targets]
+                    if not exporting:
+                        payload['chunks'] = request_chunks(payload)
+                    payloads.append(payload)
+                jobs = [job_summary(job) for job in store.create_jobs('export' if exporting else 'download', payloads)]
+                return {'jobs':jobs,'selection_count':sum(len(targets) for targets in groups.values())} if 'selections' in p else jobs[0]
             raise LookupError('接口不存在')
         if method == 'GET' and path == '/catalog/securities':
             return store.catalog_page(p.get('search', ''), p.get('kind', ''), p.get('limit', 50), p.get('offset', 0), p.get('market', ''), p.get('subtype', ''),source,str(p.get('active','false')).lower()=='true')
+        if method == 'POST' and path == '/catalog/select':
+            return store.catalog_page(p.get('search',''), p.get('kind',''), market=p.get('market',''), subtype=p.get('subtype',''), source=source, active=str(p.get('active','false')).lower()=='true', select_all=True)
         if method == 'POST' and path == '/catalog/resolve':
             return store.query('SELECT code,name,kind,market,subtype,metadata,source,instrument_id FROM securities WHERE source=%s AND code=ANY(%s) ORDER BY code', (source,codes(p['members'],source)))
         if method == 'GET' and path == '/catalog/detail':
@@ -238,7 +245,7 @@ class Application:
                     'job': job_summary(job) if job else None, 'error': (self.tushare_worker if source=='tushare' else self.worker).catalog_error}
         if method == 'POST' and path == '/catalog/sync':
             account = self.settings.account(p.get('account_id')) if source=='tushare' else {}
-            return job_summary(store.create_catalog_job(p.get('kinds', ['future'] if source=='tushare' else list(KINDS)+['board']),source,account.get('id'),account.get('endpoint')))
+            return job_summary(store.create_catalog_job(p.get('kinds', ['future'] if source=='tushare' else list(KINDS)+['board']),source,account.get('id'),account.get('endpoint'),p.get('exchanges')))
         if method == 'GET' and path == '/boards':
             return store.boards(p.get('search', ''), p.get('category', ''), p.get('limit', 50), p.get('offset', 0))
         if method == 'GET' and path == '/boards/members':
@@ -322,6 +329,8 @@ class Application:
                 return snapshot
         if method == 'GET' and path == '/history':
             return store.history(p['code'], p.get('period','1d'), p.get('start','1990-01-01'), p.get('end','2100-01-01'), p.get('limit',500), p.get('offset',0),source=source)
+        if method == 'POST' and path == '/history/query':
+            return store.history_many(p)
         if method == 'GET' and path == '/contract-mappings':
             return store.query('SELECT * FROM contract_mappings WHERE source=%s AND code=%s AND trading_day BETWEEN %s AND %s ORDER BY trading_day LIMIT 2000', (source,codes([p['code']],source)[0],day(p.get('start','1990-01-01')),day(p.get('end','2100-01-01'))))
         if method == 'GET' and path == '/factors':
@@ -334,28 +343,23 @@ class Application:
                                (source,market,day(p.get('start','1990-01-01')),day(p.get('end','2100-01-01'))))
         if method == 'GET' and path == '/jobs':
             return store.query("SELECT id,kind,state,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,CASE WHEN kind='download' THEN jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=jobs.id)) || (result-'coverage') ELSE result-'coverage' END AS result,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200")
+        if method == 'POST' and path == '/jobs/query':
+            return store.jobs_page(p)
         if method == 'POST' and path == '/downloads':
-            dataset = store.query('SELECT * FROM datasets WHERE id=%s', (p['dataset_id'],), one=True)
-            if not dataset:
-                raise ValueError('数据集不存在')
-            selected = p.get('periods', dataset['periods'])
-            if not isinstance(selected, (list, tuple)):
-                raise ValueError('回补周期需要非空数组')
-            selected = periods(selected,dataset['source'])
-            if set(selected) - set(dataset['periods']):
-                raise ValueError('回补周期必须属于所选数据集')
-            payload = {'dataset_id': str(dataset['id']), 'members': dataset['members'], 'periods': selected, 'start': p.get('start'), 'end': p.get('end')}
-            payload.update(source=dataset['source'],account_id=dataset['account_id'],endpoint=dataset['endpoint'])
-            if dataset['source'] == 'tushare':
-                self.settings.account(dataset['account_id'])
-                self.check_minutes(dataset['account_id'],selected)
-            payload['chunks'] = chunks(payload)
-            return job_summary(store.create_job('download', payload))
+            return job_summary(store.create_job('download', self.prepare_download(p)))
+        if method == 'POST' and path == '/downloads/batch':
+            identifiers = p.get('dataset_ids')
+            if not isinstance(identifiers, list) or not 1 <= len(identifiers) <= 1000 or any(not isinstance(value,str) for value in identifiers):
+                raise ValueError('请选择1至1000个数据集')
+            payloads = [self.prepare_download(dict(p,dataset_id=value), intersect=True) for value in dict.fromkeys(identifiers)]
+            if any(payload['source'] != source for payload in payloads):
+                raise ValueError('批量回补不能混合数据来源')
+            return {'jobs':[job_summary(job) for job in store.create_jobs('download',payloads)]}
         if method == 'POST' and path == '/exports':
-            payload = dict(members=codes(p['members'],source),source=source, period=periods([p['period']],source)[0], start=day(p['start']).isoformat(), end=day(p['end']).isoformat(), format=p['format'])
-            if payload['format'] not in ('csv','parquet') or day(payload['start']) > day(payload['end']):
-                raise ValueError('无效导出格式或日期范围')
-            return store.create_job('export', payload)
+            return store.create_job('export', self.prepare_export(p))
+        if method == 'POST' and path == '/exports/batch':
+            payloads = [self.prepare_export(dict(p,period=period)) for period in periods(p['periods'], source)]
+            return {'jobs':[job_summary(job) for job in store.create_jobs('export',payloads)]}
         if path.startswith('/jobs/'):
             parts = path.strip('/').split('/')
             job = store.job(parts[1])
@@ -377,6 +381,54 @@ class Application:
                 self.tickets[ticket] = time.time() + 30
             return {'ticket': ticket, 'port': self.ws_port}
         raise LookupError('接口不存在')
+
+    def prepare_report(self, target, params, exporting=False, catalog=None, account=None):
+        from .futures import REPORTS
+        payload = dict(target)
+        if exporting:
+            if params.get('format') not in ('csv','parquet'):
+                raise ValueError('无效导出格式')
+            return dict(payload,format=params['format'])
+        resource = payload['resource']
+        if resource == 'mapping':
+            if payload['code'] not in catalog['continuous']:
+                raise ValueError('请先同步并选择主力或连续合约')
+        if resource in ('warehouse','holding'):
+            key = (TS_EXCHANGES[payload['exchange']],payload['symbol'])
+            if key not in catalog['products'] and not (resource=='holding' and key in catalog['contracts']):
+                raise ValueError('请先同步并选择该交易所的产品或月份合约')
+        capability = self.capabilities.get(account['id'],{}).get('capabilities',{}).get(resource,{})
+        if capability.get('state') in ('permission','authentication','unsupported'):
+            raise ValueError(REPORTS[resource]['name']+'接口权限不可用，请更新账号后重新检测')
+        return dict(payload,account_id=account['id'],endpoint=account['endpoint'])
+
+    def prepare_download(self, p, intersect=False):
+        dataset = self.store.query('SELECT * FROM datasets WHERE id=%s', (p['dataset_id'],), one=True)
+        if not dataset:
+            raise ValueError('数据集不存在')
+        selected = periods(p.get('periods', dataset['periods']),dataset['source'])
+        if intersect:
+            selected = [period for period in selected if period in dataset['periods']]
+            if not selected:
+                raise ValueError('数据集'+dataset['name']+'与所选周期没有交集，未创建批量任务')
+        if set(selected) - set(dataset['periods']):
+            raise ValueError('回补周期必须属于所选数据集')
+        payload = dict(dataset_id=str(dataset['id']),members=dataset['members'],periods=selected,start=p.get('start'),end=p.get('end'),
+                       source=dataset['source'],account_id=dataset['account_id'],endpoint=dataset['endpoint'])
+        if dataset['source'] == 'tushare':
+            account = self.settings.account(dataset['account_id'])
+            if account['endpoint'] != dataset['endpoint']:
+                raise ValueError('数据集固定端点与账号当前端点不同，请重新绑定账号')
+            self.check_minutes(dataset['account_id'],selected)
+        payload['chunks'] = chunks(payload)
+        return payload
+
+    def prepare_export(self, p):
+        source = provider_name(p.get('source','qmt'))
+        payload = dict(members=codes(p['members'],source),source=source,period=periods([p['period']],source)[0],start=day(p['start']).isoformat(),end=day(p['end']).isoformat(),format=p['format'])
+        if payload['format'] not in ('csv','parquet') or day(payload['start']) > day(payload['end']):
+            raise ValueError('无效导出格式或日期范围')
+        return payload
 
     def check_minutes(self, account_id, selected):
         capability = self.capabilities.get(account_id,{}).get('capabilities',{}).get('minutes',{})

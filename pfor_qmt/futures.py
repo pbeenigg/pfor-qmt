@@ -47,6 +47,8 @@ def selection(payload):
 
 
 def request_chunks(payload):
+    if payload.get('selections'):
+        return [dict(part, selection=target) for target in selections(payload) for part in request_chunks(target)]
     first, end = day(payload['start']), day(payload['end'])
     if (end-first).days > 3660 or payload['resource'] != 'calendar' and end > datetime.now(SHANGHAI).date():
         raise ValueError('单个资料任务最多十年；非日历资料不得包含未来日期')
@@ -57,6 +59,19 @@ def request_chunks(payload):
         result.append(dict(code=payload['code'] or payload['exchange']+':'+payload['symbol'], period=payload['resource'], start=first.isoformat(), end=last.isoformat()))
         first = last + timedelta(days=1)
     return result
+
+
+def selections(payload):
+    values = payload.get('selections')
+    if values is None:
+        return [selection(payload)]
+    if not isinstance(values, list) or not 1 <= len(values) <= 10000 or any(not isinstance(item, dict) for item in values):
+        raise ValueError('一次选择1至10000个资料对象')
+    unique = {}
+    for item in values:
+        target = selection({**payload, **item, 'start':payload['start'], 'end':payload['end']})
+        unique[(target['resource'],target['exchange'],target['symbol'],target['code'])] = target
+    return list(unique.values())
 
 
 def normalize_report(resource, records, exchange, symbol, start, end):
@@ -89,7 +104,10 @@ def normalize_report(resource, records, exchange, symbol, start, end):
 
 
 def page(store, payload, limit=200, offset=0, conn=None):
-    p = selection(payload)
+    targets = selections(payload)
+    p = targets[0]
+    if any(item['resource'] != p['resource'] for item in targets):
+        raise ValueError('每次资料查询只展示同一种资料，不能混合字段与单位')
     resource, definition = p['resource'], REPORTS[p['resource']]
     limit, offset = int(limit), int(offset)
     if not 1 <= limit <= 5000 or offset < 0:
@@ -97,12 +115,17 @@ def page(store, payload, limit=200, offset=0, conn=None):
     columns = definition['fields']
     where, args = 'source=%s', ['tushare']
     if resource == 'calendar':
-        where += ' AND market=%s'; args.append(TS_EXCHANGES[p['exchange']])
+        where += ' AND market=ANY(%s)'; args.append(list({TS_EXCHANGES[item['exchange']] for item in targets}))
     elif resource == 'mapping':
-        where += ' AND code=%s'; args.append(p['code'])
+        where += ' AND code=ANY(%s)'; args.append(list({item['code'] for item in targets}))
     else:
-        where += ' AND exchange=%s AND symbol=%s'
-        args.extend(['SHFE' if resource == 'holding' and p['exchange'] == 'INE' else p['exchange'],p['symbol']])
+        markets = {}
+        for item in targets:
+            exchange = 'SHFE' if resource == 'holding' and item['exchange'] == 'INE' else item['exchange']
+            markets.setdefault(exchange, set()).add(item['symbol'])
+        where += ' AND ('+' OR '.join('(exchange=%s AND symbol=ANY(%s))' for _ in markets)+')'
+        for exchange, symbols in sorted(markets.items()):
+            args.extend([exchange, sorted(symbols)])
     statement = sql.SQL('SELECT {} FROM {} WHERE '+where+' AND {} BETWEEN %s AND %s ORDER BY {} LIMIT %s OFFSET %s').format(
         sql.SQL(',').join(map(sql.Identifier, columns)), sql.Identifier(definition['table']),
         sql.Identifier(definition['date']), sql.SQL(',').join(map(sql.Identifier,(definition['date'], *[k for k in columns if k not in ('source',definition['date'])]))))
