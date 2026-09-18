@@ -22,8 +22,9 @@ for path in artifacts:
     required.extend(['pfor_qmt/accounts.py','pfor_qmt/identifiers.py','pfor_qmt/tushare.py','pfor_qmt/migrations/004_sources.sql'])
     required.extend(['pfor_qmt/futures.py','pfor_qmt/migrations/005_futures_reports.sql','web_dashboard/controls.js'])
     required.extend(['pfor_qmt/reliability.py','pfor_qmt/maintenance.py','pfor_qmt/migrations/006_reliability.sql','web_dashboard/operations.js'])
+    required.append('pfor_qmt/freshness.py')
     if path.name.endswith('.tar.gz'):
-        required.extend(['tools/live_acceptance.py','docs/LIVE_ACCEPTANCE.md','docs/MULTI_ASSET_PLAN.md','pfor.ps1'])
+        required.extend(['tools/live_acceptance.py','tools/verify_backup.py','docs/FRESHNESS.md','docs/LIVE_ACCEPTANCE.md','docs/MULTI_ASSET_PLAN.md','pfor.ps1'])
     for suffix in required:
         assert any(name.endswith(suffix) for name in names), (path.name,suffix)
     for name in names:

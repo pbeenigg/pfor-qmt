@@ -152,6 +152,9 @@ td { padding-top: 10px; padding-bottom: 10px; }
 .wrap-text { white-space: normal; min-width: 220px; overflow-wrap: anywhere; line-height: 1.6; }
 .text-link { padding: 2px 0; border: 0; background: none; color: var(--green); min-height: 40px; justify-content: start; }
 .text-link:hover { text-decoration: underline; background: none; }
+.badge.current, .badge.not_applicable { color: #176542; background: #e8f5ec; }
+.badge.stale, .badge.missing { color: #9d3030; background: #fff0ed; }
+.badge.pending_verification, .badge.not_due { color: #725b16; background: #fcf5d9; }
 .chart-selection { margin: 12px 0; max-width: 720px; }
 .result-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 16px 0 12px; flex-wrap: wrap; }
 .result-tabs button { border: 0; border-radius: 0; background: none; color: #627269; border-bottom: 2px solid transparent; }

@@ -107,6 +107,10 @@
     <section id="operations" class="view" hidden>
       <div class="section-heading"><h2>运行概览</h2><button type="button" id="operations-refresh" class="icon" title="刷新运行概览" aria-label="刷新运行概览"><i data-lucide="refresh-cw"></i></button></div>
       <dl id="operations-summary" class="detail-grid"></dl>
+      <div class="section-heading"><h2>数据新鲜度</h2><span class="source">已启用的维护范围</span></div>
+      <form id="freshness-filter" class="toolbar"><label class="grow">维护名称 / 代码 / 周期<input name="search" type="search"></label><label>来源<select name="sources"><option value="">全部</option><option value="qmt">QMT</option><option value="tushare">Tushare</option></select></label><button type="submit"><i data-lucide="search"></i>查询</button><button type="reset" class="icon" title="重置新鲜度筛选" aria-label="重置新鲜度筛选"><i data-lucide="filter-x"></i></button></form>
+      <div class="table-wrap"><table><thead><tr><th>维护范围 / 来源</th><th>对象 / 周期</th><th>新鲜度</th><th>最新日期 / 目标日期</th><th>原因 / 下一步</th><th>详情</th></tr></thead><tbody id="freshness-rows"></tbody></table></div>
+      <div class="pagination"><span id="freshness-page"></span><button type="button" id="freshness-prev" class="icon" title="上一页新鲜度" aria-label="上一页新鲜度"><i data-lucide="chevron-left"></i></button><button type="button" id="freshness-next" class="icon" title="下一页新鲜度" aria-label="下一页新鲜度"><i data-lucide="chevron-right"></i></button></div>
       <div class="section-heading"><h2>待处理事项</h2><span id="attention-count" class="source"></span></div>
       <div class="table-wrap"><table><thead><tr><th>任务</th><th>执行状态</th><th>原因</th><th>下一步</th><th>操作</th></tr></thead><tbody id="attention-rows"></tbody></table></div>
       <div class="section-heading"><h2>自动维护范围</h2></div>

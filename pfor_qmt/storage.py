@@ -377,7 +377,8 @@ class Store:
             conn.execute("UPDATE job_events SET sample=NULL WHERE sample IS NOT NULL AND created_at < now() - %s * interval '1 day'", (sample_days,))
             conn.execute("DELETE FROM job_events WHERE created_at < now() - %s * interval '1 day'", (event_days,))
 
-    def operations_health(self):
+    def operations_health(self, now=None):
+        from .freshness import freshness_page
         latest = "WITH latest AS (SELECT DISTINCT ON (coalesce(j.payload->>'source','qmt'),u.request-'source') u.*,coalesce(j.payload->>'source','qmt') AS source FROM job_units u JOIN jobs j ON j.id=u.job_id ORDER BY coalesce(j.payload->>'source','qmt'),u.request-'source',u.updated_at DESC) "
         return dict(
             database=self.health(),
@@ -386,6 +387,7 @@ class Store:
             quality=self.query(latest+"SELECT source,quality_state,count(*) AS count FROM latest GROUP BY 1,2 ORDER BY 1,2"),
             attention=self.query(latest+"SELECT id,state,error_code,error,action,updated_at,payload->>'source' AS source FROM jobs j WHERE state IN ('blocked','failed','partial') AND (EXISTS(SELECT 1 FROM latest u WHERE u.job_id=j.id AND (u.state!='succeeded' OR u.quality_state NOT IN ('verified','not_applicable'))) OR NOT EXISTS(SELECT 1 FROM job_units u WHERE u.job_id=j.id)) ORDER BY updated_at DESC LIMIT 50"),
             freshness=self.query('SELECT source,period,max(time) AS last_bar,max(updated_at) AS last_write FROM bars GROUP BY source,period ORDER BY source,period'),
+            scheduled_freshness=freshness_page(self, {}, now),
             maintenance=self.query('SELECT id,name,source,enabled,last_date,last_error,updated_at FROM maintenance_plans ORDER BY name'),
             database_free_space={'state':'unverified','reason':'远端或容器数据库磁盘不可由应用本地磁盘推断'})
 

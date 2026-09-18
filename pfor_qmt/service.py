@@ -349,6 +349,9 @@ class Application:
             return store.jobs_page({'limit':200})['rows']
         if method == 'POST' and path == '/events/query':
             return store.events_page(p)
+        if method == 'POST' and path == '/freshness/query':
+            from .freshness import freshness_page
+            return freshness_page(store,p)
         if path == '/maintenance' and method == 'GET':
             return store.query('SELECT * FROM maintenance_plans ORDER BY name,id')
         if path == '/maintenance' and method == 'POST':

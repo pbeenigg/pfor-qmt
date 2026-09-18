@@ -1,5 +1,17 @@
 # 验证记录
 
+## 新鲜度与备份恢复（2026-09-18）
+
+完整回归`284 passed in 254.40s`，0失败、0跳过。使用本机PostgreSQL随机`pfor_qmt_test_*`隔离schema、模拟行情源、真实管道与Chromium；未向业务表写测试行情。新增调度截止、周末缺日、合约存续期、逐对象分页、来源隔离、显式维护、日历/映射/仓单/排名、SDK/健康同口径检查。浏览器覆盖51对象跨页、搜索重置、详情及1440×980/390×844视口，截图`output/playwright/reliability-*.png`。
+
+原schema5备份在无网络、无发布端口、临时内存数据卷的PostgreSQL16容器完整恢复；15张原表计数与备份清单相等，再升级schema6，原字段行数与哈希保持一致，63条completed按预期转succeeded。临时容器已移除，报告`output/backup-verification-20260918.json`；工具`tools/verify_backup.py`可重跑。未向业务库恢复备份。
+
+业务库只读新鲜度首屏读取50条、共2015维护对象，约0.03秒；此性能数字仅对应当前样本。业务PostgreSQL数据目录所在文件系统实测约848GiB可用；这是一时点检查，应用仍将远端/容器卷持续监控列为未验证。
+
+当前共享工作区另有监听地址配置改动。验证发现浏览器Origin含HTTP端口，不能与WebSocket端口直接相等比较；保留该配置并按HTTP端口修正来源检查，原推送测试现带真实浏览器Origin验证。分钟逐时段连续性、夜盘归属、资料官方发布时点与真实跨交易日长跑仍未验收；新鲜度达到维护目标不代表这些质量检查通过。本轮无schema迁移、不扩大维护范围、不自动重试旧任务。
+
+17:23重启本项目服务后，实际SDK新鲜度接口、Chromium搜索/详情、桌面/手机视口和WebSocket连接通过，浏览器脚本错误为0；前后任务均82个。截图`output/playwright/live-freshness-*.png`。构建、必需资源/许可证检查、pip依赖和全部自有JS语法检查通过；本次变更实际凭据匹配为0。测试进程补齐缺失Windows环境变量，仅对子进程生效，未修改系统配置。
+
 ## 全链路执行与质量（2026-09-18）
 
 最终全量回归`279 passed in 259.03s`（含8个Chromium浏览器用例），0失败、0跳过；使用本机PostgreSQL 16的随机`pfor_qmt_test_*`隔离schema，未向业务表写入测试数据。命令：设置PFOR_QMT_TEST_DSN、PFOR_QMT_BROWSER_TEST=1后运行`.venv\Scripts\python -X utf8 -m pytest -q --tb=short`。包含账号缺失与端点变更应阻塞、不能误报坏行情的补充回归。

@@ -1,5 +1,6 @@
 import os
 import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from playwright.sync_api import sync_playwright, expect
 from pfor_qmt.server import HTTPServer, handler_for, start_websocket
 from pfor_qmt.service import Application
 from pfor_qmt.settings import Settings
+from pfor_qmt.data import SHANGHAI
 from test_storage_tasks import Source, make_job
 
 
@@ -20,6 +22,11 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path):
     app=Application(Settings(config_path=tmp_path/'config.toml'),store,source)
     job=make_job(store);app.worker.execute(job)
     source.fail=None
+    members=['%06d.SH'%index for index in range(300,351)]
+    dataset=store.create_dataset(dict(name='新鲜度范围',members=members,periods=['1d'],scheduled=True,schedule_time='00:00'))
+    today=datetime.now(SHANGHAI).date()
+    store.query('UPDATE datasets SET schedule_from=%s WHERE id=%s',(today-timedelta(days=1),dataset['id']))
+    store.query("INSERT INTO trading_dates(source,market,day,is_open) VALUES('qmt','SH',%s,true)",(today,))
     server=HTTPServer(('127.0.0.1',0),handler_for(app));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     websocket=start_websocket(app,0,server.server_port);app.ws_port=websocket.socket.getsockname()[1]
     output=Path(__file__).resolve().parents[1]/'output'/'playwright';output.mkdir(parents=True,exist_ok=True)
@@ -30,6 +37,20 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path):
             page.goto(f'http://127.0.0.1:{server.server_port}/#operations')
             page.get_by_label('API Key 或网页登录密码').fill(app.settings.api_key);page.locator('#login-form button').click()
             expect(page.locator('#operations')).to_be_visible()
+            expect(page.locator('#freshness-rows tr')).to_have_count(50)
+            expect(page.locator('#freshness-rows')).to_contain_text('尚无数据')
+            page.locator('#freshness-next').click()
+            expect(page.locator('#freshness-rows tr')).to_have_count(1)
+            expect(page.locator('#freshness-rows')).to_contain_text('000350.SH')
+            page.locator('#freshness-rows [data-record]').click()
+            expect(page.locator('#record-fields')).to_contain_text('DATA_MISSING')
+            page.keyboard.press('Escape')
+            page.locator('#freshness-filter [name=search]').fill('000301')
+            page.locator('#freshness-filter button[type=submit]').click()
+            expect(page.locator('#freshness-rows')).to_contain_text('000301.SH')
+            expect(page.locator('#freshness-rows tr')).to_have_count(1)
+            page.locator('#freshness-filter button[type=reset]').click()
+            expect(page.locator('#freshness-rows tr')).to_have_count(50)
             expect(page.locator('#attention-rows')).to_contain_text('bad response')
             expect(page.locator('#event-rows')).to_contain_text('INVALID_DATA')
             page.locator('#attention-rows [data-job-detail]').click()

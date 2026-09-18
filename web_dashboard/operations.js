@@ -1,5 +1,8 @@
 'use strict';
 
+const freshnessNames={current:'已跟上维护目标',stale:'更新滞后',missing:'尚无数据',pending_verification:'待核验',not_applicable:'不适用',not_due:'未到维护时间'};
+let freshnessOffset=0, freshnessNext=null, freshnessRequest=0;
+
 const qualityNames={verified:'校验通过',pending_verification:'待核验',not_published:'等待发布',not_applicable:'不适用',missing:'缺失',rejected:'已拒绝',stale:'已过期'};
 const levelNames={info:'信息',warning:'警告',error:'错误'};
 let eventNext=null, eventRequest=0, operationsRequest=0, unitJob=null, unitOffset=0, unitNext=null;
@@ -7,6 +10,8 @@ let eventNext=null, eventRequest=0, operationsRequest=0, unitJob=null, unitOffse
 async function loadOperations() {
   const request=++operationsRequest;
   const health=await api('/health'), plans=await api('/maintenance');
+  if(request!==operationsRequest)return;
+  await loadFreshness(freshnessOffset);
   if(request!==operationsRequest)return;
   const gib=bytes=>(bytes/1024**3).toFixed(2)+' GB';
   $('#operations-summary').innerHTML=detailFields({数据库:health.database.connected?'已连接':'未连接',数据库大小:gib(health.database_bytes),运行目录可用空间:gib(health.runtime_disk.free_bytes),运行目录空间状态:health.runtime_disk.low?'空间不足，请处理':'充足',数据库卷空间:'未验证（可能位于远端或容器）',活动任务:health.queues.reduce((n,row)=>n+row.count,0),采集质量:health.quality.map(row=>`${row.source} / ${qualityNames[row.quality_state]} ${row.count} 块`).join('；') || '尚无分块记录'});
@@ -16,6 +21,24 @@ async function loadOperations() {
   recordSets.maintenance={title:'自动维护范围',rows:plans,labels:{name:'名称',source:'来源',schedule_time:'每日时间',lookback_days:'回读交易日',last_date:'最近排队日期',last_error:'调度错误'},extra:row=>'<dl class="detail-grid">'+detailFields(row.payload)+'</dl>'};
   icons();
 }
+
+async function loadFreshness(offset=0) {
+  const request=++freshnessRequest;
+  const page=await api('/freshness/query',{...values($('#freshness-filter')),offset,limit:50});
+  if(request!==freshnessRequest)return;
+  freshnessOffset=offset;freshnessNext=page.next_offset;
+  $('#freshness-page').textContent=page.total?`${offset+1} - ${offset+page.rows.length} / ${page.total} 项`:'暂无启用的维护范围';
+  $('#freshness-prev').disabled=!offset;$('#freshness-next').disabled=page.next_offset===null;
+  recordSets.freshness={title:'数据新鲜度',rows:page.rows,labels:{name:'维护范围',scope_kind:'范围类型',scope_id:'范围ID',source:'来源',code:'对象',period:'周期 / 资料',schedule_time:'每日维护时间',schedule_from:'维护起始日',cutoff:'调度截止日',expected_day:'维护目标日期',actual_day:'最新数据日期',last_write:'最近写入',freshness_state:'新鲜度状态',reason_code:'原因代码',reason:'原因',action:'建议动作',evaluated_at:'检查时间'}};
+  $('#freshness-rows').innerHTML=page.rows.map((row,index)=>`<tr><td class="wrap-text">${escape(row.name)}<span class="muted">${escape(row.source)} / ${row.scope_kind==='dataset'?'数据集':'维护计划'}</span></td><td>${escape(row.code||'目录')}<span class="muted">${escape(row.period)}</span></td><td><span class="badge ${row.freshness_state}">${freshnessNames[row.freshness_state]}</span></td><td>${escape(row.actual_day||'未提供')}<span class="muted">目标：${escape(row.expected_day||'未确认')}</span></td><td class="wrap-text">${escape(row.reason)}<span class="muted">${escape(row.action)}</span></td><td>${recordButton('freshness',index)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">没有匹配的维护对象</td></tr>';
+  icons();
+}
+
+$('#freshness-filter').addEventListener('submit',action(()=>loadFreshness()));
+$('#freshness-filter').addEventListener('reset',()=>setTimeout(()=>action(()=>loadFreshness())(),0));
+$('#freshness-prev').addEventListener('click',action(()=>loadFreshness(Math.max(0,freshnessOffset-50))));
+$('#freshness-next').addEventListener('click',action(()=>loadFreshness(freshnessNext)));
+enableMulti($('#freshness-filter [name=sources]'),'全部');
 
 async function loadEvents(before=null) {
   const request=++eventRequest;

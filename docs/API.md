@@ -11,6 +11,7 @@
 | POST | /events/query | job_id、levels、sources、code、start、end、limit、before；级别与来源支持多选 |
 | POST | /jobs/{id}/retry | 可选unit_indices（从0起）；返回新任务，parent_id保留关联。旧任务不改写，成功范围不重复采集 |
 | GET | /health | 队列、分块质量、待处理任务、数据库大小、运行目录磁盘空间、来源/周期最近行情与维护状态 |
+| POST | /freshness/query | sources多选、search、limit=1..200、offset；返回已启用范围逐对象的新鲜度、目标日、原因与建议动作，健康接口scheduled_freshness为同口径首页 |
 | GET/POST | /maintenance | GET列出范围；POST传job_id、name、schedule_time、lookback_days，从原始目录/采集任务保存范围 |
 | POST | /maintenance/{id} | enabled布尔值；停用只停止新调度，不撤销已排队任务 |
 
@@ -19,6 +20,8 @@
 任务重试只处理失败、被阻塞或明确可补的分块。未知分钟交易时段、夜盘归属、未知资料发布规则不通过重复下载消除。存在不一致OHLC或同时间冲突时整块不入库，独立分块继续；网络与数据库级错误停止本次来源处理。原始任务与关联重试共同提供追溯，未覆盖的缺口仍保留。
 
 维护默认QMT 17:00、Tushare 19:00及最近五交易日回读；目录每天执行，资料按对应交易所日历生成范围。停机后的缺失范围合并入下次任务。自动补数仅针对启用维护或数据集自动更新的任务，最多3轮，最早15分钟、1小时、24小时后；权限、认证、限额与参数错误不进入自动补数。网络单次操作另最多3次重试（共4次请求）。每次调度仍以实际能力为准，不自动使用其他账号或来源。
+
+新鲜度读取只依赖数据库，不请求行情源或自动建任务。SDK为`client.freshness(sources=['tushare'],search='CU',limit=50)`；状态依据维护目标，与原始任务质量分开。缺日历、未知分钟时段及未核验发布规则保留pending_verification，不能用自然日硬判。详见[FRESHNESS.md](FRESHNESS.md)。
 
 ## 期货资料与新增周期
 

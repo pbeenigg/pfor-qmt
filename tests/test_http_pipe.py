@@ -189,7 +189,7 @@ def test_websocket_ticket_and_job_event(app_server):
     try:
         ticket = client.request('/ws-ticket',{})
         address = 'ws://127.0.0.1:%s/?ticket=%s' % (app.ws_port,ticket['ticket'])
-        with connect(address) as socket:
+        with connect(address,origin=client.base_url) as socket:
             for _ in range(30):
                 if app.listeners:
                     break

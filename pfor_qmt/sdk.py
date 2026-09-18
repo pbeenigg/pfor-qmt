@@ -137,6 +137,9 @@ class DataClient:
     def health(self):
         return self.request('/health')
 
+    def freshness(self, **filters):
+        return self.request('/freshness/query', filters)
+
     def maintenance_plans(self):
         return self.request('/maintenance')
 

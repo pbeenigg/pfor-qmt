@@ -1,5 +1,9 @@
 # 兼容矩阵
 
+## 新鲜度与恢复验证（2026-09-18）
+
+新增POST /freshness/query和DataClient.freshness；GET /health增加scheduled_freshness分页对象。仅评估启用的数据集与维护计划，返回逐对象目标日期、实际日期、状态、原因及动作，不覆盖原任务状态或质量。无schema迁移、无数据源请求，旧历史与导出接口不变；分钟及未核验发布规则不冒充已验证。备份恢复工具仅创建无网络临时容器，校验后清理，不向业务数据库恢复。
+
 ## 执行与数据质量（2026-09-18）
 
 schema6保留原行情、目录、资料与任务记录，新增job_units、job_events和maintenance_plans。迁移将旧成功状态completed转换为succeeded；/jobs/query仍接受completed筛选，但响应统一为succeeded。新增retrying、blocked；partial显示部分完成，不再表示统一的待核验。
