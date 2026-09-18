@@ -103,18 +103,21 @@ def cursors(store, payload, field):
     return result
 
 
-def schedule_event(worker, scope, kind, market, message='', code='CALENDAR_NOT_READY'):
+def schedule_event(worker, scope, kind, market, message='', code='CALENDAR_NOT_READY', action='检查该范围的交易日历和数据源设置'):
     key=(kind,str(scope['id']),market)
     previous=worker.schedule_errors.get(key)
     signature=(code,message)
     context={'source':worker.provider,'scope_kind':kind,'scope_id':str(scope['id']),'name':scope['name'],'market':market,'error_code':code}
     if message:
+        worker.schedule_issues[key]=dict(source=worker.provider,lane='schedule',scope_kind=kind,scope_id=str(scope['id']),name=scope['name'],market=market,code=code,reason=message,action=action)
         if previous!=signature:
             worker.store.event(None,'SCHEDULE_BLOCKED',message,'warning',context=context)
         worker.schedule_errors[key]=signature
     elif previous:
         worker.store.event(None,'SCHEDULE_RECOVERED','该维护范围的交易日历已恢复',context=context)
         worker.schedule_errors.pop(key,None)
+    if not message:
+        worker.schedule_issues.pop(key,None)
 
 
 def enqueue(worker, scope, kind, payload, market, end):
@@ -174,7 +177,7 @@ def schedule_scope(worker, scope, kind, now):
         block_key=(payload.get('account_id'),market)
         fingerprint=(adapter.account['endpoint'],adapter.account['requests_per_minute'],hashlib.sha256(adapter.account['token'].encode()).hexdigest()) if adapter else None
         blocked=worker.calendar_blocks.get(block_key)
-        message,code='', 'CALENDAR_NOT_READY'
+        message,code,action='', 'CALENDAR_NOT_READY','补齐该范围的交易日历后继续更新'
         try:
             if blocked and blocked[0]==fingerprint: raise blocked[1]
             values=worker.calendar(representative,first.strftime('%Y%m%d'),cutoff.strftime('%Y%m%d'),adapter=adapter)
@@ -186,14 +189,15 @@ def schedule_scope(worker, scope, kind, now):
         except (InterruptedError,psycopg.Error): raise
         except Exception as error:
             detail=failure(error);code=detail['code']
-            message=market+' 交易日历请求失败，使用已保存日期；'+detail['action']
+            message='交易日历请求失败，尝试使用已保存日期'
+            action=detail['action']
             if adapter and getattr(error,'category',None) in ('permission','unsupported','authentication','rate_limit'):
                 worker.calendar_blocks[block_key]=(fingerprint,error)
             dates=[row['day'] for row in store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND is_open AND day BETWEEN %s AND %s ORDER BY day',(worker.provider,market,first,cutoff))]
         applicable=[date for date in dates if date>=earliest]
         if applicable and len(dates)<lookback:
             message=market+' 最近'+('五' if lookback==5 else str(lookback))+'个交易日尚未就绪，调度等待补齐'
-        schedule_event(worker,scope,kind,market,message,code)
+        schedule_event(worker,scope,kind,market,message,code,action)
         if message: errors.append(scope['name']+'：'+message)
         if not applicable or len(dates)<lookback: continue
         end=applicable[-1]

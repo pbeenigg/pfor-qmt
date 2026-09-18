@@ -12,7 +12,7 @@ from .storage import job_summary
 from .symbols import market_of, derivative_kind
 from .identifiers import source_market, TS_EXCHANGES
 from .tushare import TushareSource, SourceError
-from .reliability import SourceUnavailable, failure, issue, fallback_log
+from .reliability import SourceUnavailable, failure, issue, fallback_log, redact
 from .quality_checks import RULE_VERSION, aggregate_issues, minute_issues, stored_issues
 
 
@@ -47,9 +47,19 @@ class Worker:
         self.last_schedule = None
         self.last_cleanup = None
         self.schedule_errors = {}
+        self.schedule_issues = {}
         self.calendar_blocks = {}
         self.options = options or {}
         self.leases = threading.local()
+
+    def status_issues(self):
+        issues=[]
+        if self.last_error:
+            issues.extend(list(self.schedule_issues.copy().values()) or [dict(source=self.provider,lane='schedule',name='调度服务',market='',reason=redact(self.last_error),action='查看运行日志并检查数据源连接')])
+        for lane,message in (('catalog',self.catalog_error),('export',self.export_error)):
+            if message:
+                issues.append(dict(source=self.provider,lane=lane,name='目录同步' if lane=='catalog' else '文件导出',market='',reason=redact(message),action='查看运行日志，排除故障后重试'))
+        return issues
 
     def start(self):
         self.thread = threading.Thread(target=self.run, daemon=True, name='pfor-market-worker')
@@ -121,6 +131,8 @@ class Worker:
                     except OSError:
                         pass
                 setattr(self, error_field, message)
+                if kind=='download':
+                    self.schedule_issues = {}
                 self.stop.wait(3)
 
     def execute(self, job):
@@ -464,6 +476,7 @@ class Worker:
         now = now or datetime.now(SHANGHAI)
         from .maintenance import tick, schedule_scope
         self.last_error = ''
+        self.schedule_issues = {}
         tick(self,now)
         if self.provider=='qmt' and (self.last_cleanup is None or (now-self.last_cleanup).total_seconds() >= 86400):
             self.store.housekeeping(self.options.get('event_retention_days',90),self.options.get('sample_retention_days',30))

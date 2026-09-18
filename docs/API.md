@@ -2,6 +2,8 @@
 
 ## 执行、质量与运维
 
+GET /status新增worker_issues数组，包含source、lane、scope_kind/scope_id、name、market、code、reason和action（非范围故障不含scope字段）。原worker等文本字段仍保留兼容；工作台用结构化字段渲染折叠摘要与逐范围详情，不解析拼接文本。
+
 任务状态：queued、running、retrying、succeeded、partial、failed、blocked、cancelled。partial是部分完成；blocked是权限、能力或连接前置条件需要处理。`result.quality_summary`分别统计verified、pending_verification、not_published、not_applicable、missing、rejected等分块，不用执行状态替代质量结论。
 
 | 方法 | 路径（/api/v1前缀） | 参数与行为 |

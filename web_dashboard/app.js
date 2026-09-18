@@ -346,6 +346,22 @@ async function loadChart() {
   renderChart(result.rows,code,period);
 }
 
+function renderWorkerStatus(health) {
+  const fallback=[['worker','qmt','schedule'],['tushare_worker','tushare','schedule'],['catalog_worker','qmt','catalog'],['tushare_catalog_worker','tushare','catalog'],['export_worker','qmt','export']];
+  const issues=health.worker_issues || fallback.filter(([key])=>health[key]).map(([key,source,lane])=>({source,lane,name:'后台服务',reason:health[key],action:'查看运行日志'}));
+  const panel=$('#worker-status');panel.hidden=!issues.length;
+  if(!issues.length) { panel.open=false;$('#worker-alert-rows').replaceChildren();return; }
+  const laneNames={schedule:'自动更新',catalog:'目录同步',export:'文件导出'};
+  const sources=[...new Set(issues.map(row=>row.source==='tushare'?'Tushare':row.lane==='export'?'文件导出':'QMT'))];
+  const scopes=new Set(issues.filter(row=>row.scope_id).map(row=>row.source+':'+row.scope_kind+':'+row.scope_id));
+  $('#worker-alert-title').textContent=issues.every(row=>row.lane==='schedule')?'自动更新受阻':'后台任务需关注';
+  $('#worker-alert-count').textContent=sources.join('、')+' · '+(scopes.size?`${scopes.size} 个范围 · `:'')+`${issues.length} 项异常`;
+  $('#worker-alert-rows').innerHTML=[...issues].sort((a,b)=>(a.source+a.lane).localeCompare(b.source+b.lane)).map(row=>`<tr><td data-label="数据源 / 队列">${row.source==='tushare'?'Tushare':'QMT'}<span class="muted">${laneNames[row.lane] || escape(row.lane)}</span></td><td data-label="影响范围">${escape(row.name)}</td><td data-label="市场">${escape(marketNames[row.market] || (row.market==='account'?'账号配置':row.market) || '—')}</td><td data-label="原因">${escape(row.reason)}</td><td data-label="建议动作">${escape(row.action || '查看运行日志')}</td></tr>`).join('');
+  icons();
+}
+
+$('#worker-alert-logs').addEventListener('click',action(()=>switchView('operations')));
+
 async function loadJobs(offset=jobOffset) {
   if(typeof offset!=='number')offset=jobOffset;
   const request=++jobsRequest;
@@ -357,8 +373,7 @@ async function loadJobs(offset=jobOffset) {
   jobOffset=offset;jobNext=result.next_offset;
   $('#job-page').textContent=`共 ${result.total} 个${rows.length?` · ${offset+1}–${offset+rows.length}`:''}`;
   $('#job-prev').disabled=!offset;$('#job-next').disabled=jobNext===null;
-  $('#worker-status').textContent = [health.worker && `QMT调度：${health.worker}`, health.export_worker && `文件导出：${health.export_worker}`, health.catalog_worker && `QMT目录：${health.catalog_worker}`, health.tushare_worker && `Tushare调度：${health.tushare_worker}`, health.tushare_catalog_worker && `Tushare目录：${health.tushare_catalog_worker}`].filter(Boolean).join('；');
-  $('#worker-status').hidden = !$('#worker-status').textContent;
+  renderWorkerStatus(health);
   if (!state.jobs.length) return empty('#job-rows', 6, '暂无下载或导出任务');
   $('#job-rows').innerHTML = state.jobs.map((job) => {
     const total = job.total_chunks;

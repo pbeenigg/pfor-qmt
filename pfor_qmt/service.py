@@ -120,6 +120,7 @@ class Application:
             return {'settings': self.settings.public(), 'database': store.health(), 'source': 'qmt',
                     'worker': self.worker.last_error, 'export_worker': self.worker.export_error, 'catalog_worker': self.worker.catalog_error,
                     'tushare_worker':self.tushare_worker.last_error,'tushare_catalog_worker':self.tushare_worker.catalog_error,
+                    'worker_issues':self.worker.status_issues()+self.tushare_worker.status_issues(),
                     'version': '0.1.0', 'ws_port': self.ws_port}
         if method == 'POST' and path == '/source/test':
             return get_client().request('pfor.ping', timeout=4)
