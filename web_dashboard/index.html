@@ -19,6 +19,7 @@
       <button data-view="indices"><i data-lucide="list-tree"></i><span>指数</span></button>
       <button data-view="boards"><i data-lucide="network"></i><span>行业概念</span></button>
       <button data-view="history"><i data-lucide="database"></i><span>历史库</span></button>
+      <button data-view="futures" hidden><i data-lucide="table-properties"></i><span>期货资料</span></button>
       <button data-view="jobs"><i data-lucide="download"></i><span>下载任务</span></button>
       <button data-view="settings"><i data-lucide="settings-2"></i><span>数据源设置</span></button>
     </nav>
@@ -68,6 +69,25 @@
       <form id="dataset-form" class="toolbar"><label>名称<input name="name" placeholder="核心指数日线" required></label><div class="selection-field grow"><span id="dataset-label">数据集成员</span><input type="hidden" name="members"><button type="button" class="selection-button" data-picker="dataset" aria-labelledby="dataset-label dataset-selection"><span id="dataset-selection">选择证券</span><i data-lucide="chevron-down"></i></button></div><fieldset><legend>周期</legend><label><input type="checkbox" name="period" value="1d" checked>日线</label><label><input type="checkbox" name="period" value="1m">1 分钟</label><label><input type="checkbox" name="period" value="5m">5 分钟</label></fieldset><button type="submit"><i data-lucide="plus"></i>新建数据集</button></form>
       <label class="inline-label">新数据集更新时间<input id="dataset-schedule-time" type="time" value="17:00"></label>
       <div class="table-wrap"><table><thead><tr><th>名称 / 来源</th><th>成员数</th><th>周期</th><th>交易日自动更新</th><th>操作</th></tr></thead><tbody id="datasets"><tr><td colspan="5" class="empty">暂无数据集</td></tr></tbody></table></div>
+    </section>
+    <section id="futures" class="view" hidden>
+      <div class="section-heading"><h2>期货资料</h2><span class="source">PostgreSQL · Tushare</span></div>
+      <form id="futures-form" class="toolbar">
+        <label>资料类型<select name="resource"><option value="calendar">交易日历</option><option value="mapping">主力与连续映射</option><option value="warehouse">仓单日报</option><option value="holding">成交持仓排名</option></select></label>
+        <label>交易所<select name="exchange"><option value="DCE">大商所</option><option value="SHFE">上期所</option><option value="CFFEX">中金所</option><option value="CZCE">郑商所</option><option value="INE">能源中心</option><option value="GFEX">广期所</option></select></label>
+        <label id="futures-product-field" hidden>产品<select name="symbol"></select></label>
+        <label id="futures-mapping-field" class="grow" hidden>主力 / 连续合约<select name="code"></select></label>
+        <label id="futures-scope-field" hidden>排名范围<select name="scope"><option value="product">产品</option><option value="contract">月份合约</option></select></label>
+        <div id="futures-contract-field" class="selection-field grow" hidden><span id="report-label">月份合约</span><input type="hidden" name="contract"><button type="button" class="selection-button" data-picker="report" aria-labelledby="report-label report-selection"><span id="report-selection">选择证券</span><i data-lucide="chevron-down"></i></button></div>
+        <label>开始日期<input name="start" type="date" required></label><label>结束日期<input name="end" type="date" required></label>
+        <button type="submit" class="primary"><i data-lucide="search"></i>查询</button>
+        <button type="button" id="futures-sync"><i data-lucide="download"></i>同步资料</button>
+        <button type="button" id="futures-csv" class="icon" title="导出资料 CSV" aria-label="导出资料 CSV"><i data-lucide="file-spreadsheet"></i></button>
+        <button type="button" id="futures-parquet" class="icon" title="导出资料 Parquet" aria-label="导出资料 Parquet"><i data-lucide="file-archive"></i></button>
+      </form>
+      <p id="futures-capability" class="catalog-meta" role="status"></p><p id="futures-units" class="catalog-meta"></p>
+      <div class="table-wrap"><table><thead id="futures-head"></thead><tbody id="futures-rows"><tr><td class="empty">暂无查询结果</td></tr></tbody></table></div>
+      <div class="pagination"><span id="futures-page"></span><button type="button" id="futures-prev" class="icon" title="上一页资料" aria-label="上一页资料" disabled><i data-lucide="chevron-left"></i></button><button type="button" id="futures-next" class="icon" title="下一页资料" aria-label="下一页资料" disabled><i data-lucide="chevron-right"></i></button></div>
     </section>
     <section id="jobs" class="view" hidden>
       <div class="section-heading"><h2>下载与导出</h2><button class="icon" id="refresh-jobs" title="刷新任务" aria-label="刷新任务"><i data-lucide="refresh-cw"></i></button></div>

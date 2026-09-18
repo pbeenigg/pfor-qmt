@@ -6,6 +6,7 @@ const subtypeNames = { contract:'普通合约', continuous:'连续合约', combi
 const pickerTargets = {
   quotes: { input:'#quote-form [name="codes"]', label:'#quote-selection', title:'选择行情证券', multiple:true },
   history: { input:'#history-form [name="code"]', label:'#history-selection', title:'选择历史证券' },
+  report: { input:'#futures-form [name="contract"]', label:'#report-selection', title:'选择持仓排名月份合约', kind:'future', subtype:'contract' },
   index: { input:'#index-form [name="code"]', label:'#index-selection', title:'选择指数', kind:'index' },
   dataset: { input:'#dataset-form [name="members"]', label:'#dataset-selection', title:'选择数据集成员', multiple:true },
   diagnostics: { input:'#diagnostic-code', label:'#diagnostic-selection', title:'选择诊断证券或合约' },
@@ -25,7 +26,7 @@ function securityLabel(code) {
 }
 
 async function resolveSelections() {
-  const targets = provider==='tushare' ? [pickerTargets.history,pickerTargets.dataset] : Object.values(pickerTargets);
+  const targets = provider==='tushare' ? [pickerTargets.history,pickerTargets.dataset,pickerTargets.report] : Object.values(pickerTargets).filter(target=>target!==pickerTargets.report);
   const members = [...new Set(targets.flatMap((target) => splitCodes($(target.input).value)))];
   if (members.length) rememberSecurities(await api('/catalog/resolve', { members }));
   else rememberSecurities([]);
@@ -55,7 +56,7 @@ async function loadPicker(offset = 0) {
     if ($('#picker-selected-only').checked) {
       const rows = [...pickerSelection].map((code) => catalogNames.get(code) || {code,name:'目录未收录',kind:''}).filter((row) => (!kind || row.kind === kind) && (!market || row.market === market) && `${row.code} ${row.name}`.toLowerCase().includes(search.toLowerCase()));
       result = { rows:rows.slice(offset, offset + 50), total:rows.length, next_offset:offset + 50 < rows.length ? offset + 50 : null };
-    } else result = await api('/catalog/securities?' + new URLSearchParams({search, kind, market, active:$('#picker-active').checked, limit:50, offset}));
+    } else result = await api('/catalog/securities?' + new URLSearchParams({search, kind, market, subtype:pickerTargets[pickerTarget].subtype || '', active:$('#picker-active').checked, limit:50, offset}));
     if (request !== pickerRequest || !$('#security-picker').open) return;
     rememberSecurities(result.rows.filter((row) => row.kind));
     pickerRows = result.rows; pickerOffset = offset; pickerNext = result.next_offset;
@@ -124,6 +125,7 @@ function initializePickers() {
     if (pickerTarget === 'dataset') state.snapshot = null;
     rememberSecurities([]);
     if (pickerTarget === 'index') suggestSector();
+    if (pickerTarget === 'report') clearFuturesResults();
     $('#security-picker').close();
   });
   $('#picker-catalog').addEventListener('click', async () => {

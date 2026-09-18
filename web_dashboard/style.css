@@ -60,6 +60,8 @@ td.empty { text-align: center; color: #8c9991; height: 162px; }
 fieldset { display: flex; border: 0; padding: 0; margin: 0; min-width: 180px; align-self: center; gap: 10px; }
 fieldset legend { font-size: 12px; color: #55665c; padding: 0 0 7px; }
 fieldset label { flex-direction: row; align-items: center; white-space: nowrap; }
+#dataset-form fieldset, #download-form fieldset { flex-wrap: wrap; max-width: 330px; min-width: 180px; }
+#dataset-form fieldset label, #download-form fieldset label { flex: 0 0 auto; }
 .defaults { font-size: 11px; color: #75897c; margin: -8px 0 20px; }
 .badge { display: inline-block; padding: 4px 7px; border-radius: 3px; background: #f0f3f1; color: #5c7062; }
 .badge.running { background: #e8f1f9; color: #236490; }

@@ -1,5 +1,23 @@
 # 兼容矩阵
 
+## 期货资料与周期扩展（2026-09-18）
+
+schema5扩展现有bars和trading_dates，并在同一pfor_qmt schema增加仓单、会员持仓明细表；没有第二套行情库、账号或任务系统。迁移前后137,687条既有行情的原字段哈希一致，原下载任务及检查点未改写。完整回归239项通过，真实小样本和文件一致性见docs/VERIFICATION.md。
+
+| 接口或能力 | 处理 | 验证状态与差异 |
+| --- | --- | --- |
+| /futures/options、sync、records、export；DataClient同名资料方法 | 新增 | 独立日历、映射、仓单和成交持仓排名；同步复用download队列，导出复用export队列，账号及端点固定 |
+| fut_trade_cal | 扩展 | 保存开市、休市及前交易日；六所各7天实测通过；旧/calendar仍仅返回开市日，闭市日不参与调度 |
+| fut_weekly_monthly | 新增 | 1w/1mo，仅Tushare；金额万元转元，time为周五/月末标签，as_of_date为上游计算截至日，不是历史时点快照；8周、2月实测通过 |
+| ft_mins | 扩展 | 1/5/15/30/60分钟；模拟频率及8000行截断边界通过，真实账号仍权限拒绝；不拼接连续分钟 |
+| fut_wsr | 新增 | 保留产品名称、仓库、年度、等级等维度及原始单位；SHFE/CU的铜与铜(BC)分别保存，DCE/A与SHFE/CU实测21及42条 |
+| fut_holding | 新增 | 保留会员和可空数值，不伪造名次；DCE/A2611实测29条，INE按SHFE入口返回空，不能视为该市场已验收 |
+| fut_mapping | 扩展 | 单独同步、查询、导出及月份合约跳转；A.DCE实测4条，重复同日冲突明确失败 |
+| CSV / Parquet | 扩展 | 资料按自身字段和单位导出；仅周/月行情额外增加as_of_date、source_fields，旧日/分钟字段形状保持；真实全字段比对通过 |
+| Tick | 未接入 | 官方无API、独立CSV交付；只展示能力状态，不构造不存在的接口或未经样本确认的导入格式 |
+
+资料当前手动同步，K线数据集沿用可配置19:00调度。QMT仍仅1d/1m/5m，xtdata接口及终端模型不变；所有旧默认source=qmt语义保持。
+
 ## Tushare 扩展（已实现）
 
 旧API省略source仍选择qmt，xtdata保持QMT语义。新增tushare来源共用目录、任务、历史库及导出；多账号仅用于认证，不增加行情副本维度。历史API保留source=postgresql表示存储层，行source和新增provider表示提供方。旧QMT数据、配置与终端模型不自动改写。

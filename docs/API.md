@@ -1,5 +1,31 @@
 # API 与数据口径
 
+## 期货资料与新增周期
+
+Tushare周期增加`1w`、`1mo`、`15m`、`30m`、`60m`；QMT仍只接受原`1d/1m/5m`。连续合约可下载日/周/月，分钟仅支持具体月份合约。周/月线按查询日期所在周/月的标签读取，`time`为上游周五/月末标签（可能晚于当前日期），`trading_day=null`，`as_of_date`为上游计算截至日；截至日不等于历史查询日期，不能作为历史时点快照。`source_fields`保留上游字段及原始万元金额，标准`amount`仍为元。较旧截至日不能覆盖较新结果。
+
+| 方法 | 路径（/api/v1前缀） | 参数与行为 |
+| --- | --- | --- |
+| GET | /futures/options | source=tushare、exchange；返回目录中的产品和主力/连续合约选择项 |
+| POST | /futures/sync | source=tushare、resource、start/end、account_id；返回统一download任务，固定账号及端点 |
+| GET | /futures/records | 相同资料筛选，limit=1..5000、offset；返回rows、fields、units、next_offset，只查询数据库 |
+| POST | /futures/export | 相同资料筛选与format=csv/parquet；无需账号，复用后台export任务及文件下载接口 |
+
+`resource`为`calendar/mapping/warehouse/holding`。日历传`exchange=SHFE/DCE/CFFEX/CZCE/INE/GFEX`；映射传`code=CU.SHF`等目录已收录主力/连续代码；仓单传`exchange+symbol`产品代码，持仓传产品或具体月份合约主体（如`A2611`）。资料同步最长单任务十年；日历允许未来日期，其他资料不允许。所有来源显式为tushare，拒绝借QMT来源访问这些接口。
+
+日历记录保存休市日和`pretrade_date`；旧`/calendar`只返回开市日，保持兼容。仓单按上游产品名称、仓库编号/名称、年度、等级、品牌、产地、折算标志及单位区分（SHFE的CU可能同时返回“铜”和“铜(BC)”）；数量不跨单位或产品名称相加。仓单与会员资料仅替换实际完整读回的日快照，空响应不擦除旧数据。持仓保留NULL，不把会员记录合成未提供的名次；INE使用官方SHFE入口，返回交易所保留SHFE。资料量达到上限时按日期继续细分，最小日仍达到上限则失败，不确认截断结果。
+
+```python
+client.sync_futures("calendar", "2026-09-01", "2026-09-30", exchange="DCE")
+client.sync_futures("warehouse", "2026-09-17", "2026-09-17", exchange="DCE", symbol="A")
+client.sync_futures("holding", "2026-09-17", "2026-09-17", exchange="DCE", symbol="A2611")
+client.sync_futures("mapping", "2026-09-01", "2026-09-17", code="A.DCE")
+rows = client.futures_records("warehouse", "2026-09-17", "2026-09-17", exchange="DCE", symbol="A")
+client.export_futures("warehouse", "2026-09-17", "2026-09-17", exchange="DCE", symbol="A", format="parquet")
+```
+
+`/sources`公布来源周期、资料类型和Tick无API状态；账号检测新增weekly、monthly、warehouse、holding、tick状态。积分门槛不替代实测权限，分钟被拒绝不会阻止周/月线及其他资料。
+
 ## Tushare 与来源选择
 
 旧接口省略`source`仍为`qmt`。目录、历史、日历、导出支持`source=tushare`，返回相同字段结构，代码保留来源原码，例如`CU2610.SHF`；QMT代码`cu2610.SF`不被替换。合约资料返回稳定`instrument_id`，资料足够时同一月份合约可关联相同ID；连续序列按来源独立。
