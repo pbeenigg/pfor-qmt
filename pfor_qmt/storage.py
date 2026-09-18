@@ -324,7 +324,7 @@ class Store:
         start, end = day(payload.get('start') or '1990-01-01'), day(payload.get('end') or '2100-01-01')
         if start > end:
             raise ValueError('日志开始日期不得晚于结束日期')
-        rows = self.query("SELECT e.*,coalesce(j.payload->>'source','qmt') AS source FROM job_events e LEFT JOIN jobs j ON j.id=e.job_id WHERE e.id<%s AND (%s='' OR e.job_id::text=%s) AND (%s OR e.level=ANY(%s)) AND (%s OR coalesce(j.payload->>'source','qmt')=ANY(%s)) AND (%s='' OR e.code=%s) AND e.created_at::date BETWEEN %s AND %s ORDER BY e.id DESC LIMIT %s", (before,job_id,job_id,not levels,levels,not sources,sources,code,code,start,end,limit+1))
+        rows = self.query("SELECT e.*,coalesce(j.payload->>'source',e.context->>'source','qmt') AS source FROM job_events e LEFT JOIN jobs j ON j.id=e.job_id WHERE e.id<%s AND (%s='' OR e.job_id::text=%s) AND (%s OR e.level=ANY(%s)) AND (%s OR coalesce(j.payload->>'source',e.context->>'source','qmt')=ANY(%s)) AND (%s='' OR e.code=%s) AND e.created_at::date BETWEEN %s AND %s ORDER BY e.id DESC LIMIT %s", (before,job_id,job_id,not levels,levels,not sources,sources,code,code,start,end,limit+1))
         return dict(rows=rows[:limit],next_before=rows[limit-1]['id'] if len(rows)>limit else None)
 
     def create_verification(self, identifier):

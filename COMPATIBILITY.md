@@ -1,5 +1,9 @@
 # 兼容矩阵
 
+## 自动维护闭环
+
+不增加schema版本，继续使用schema7。POST /maintenance/{id}新增可选名称、时间、回读天数，原enabled开关仍兼容；SDK新增update_maintenance。重复启用不重置起始日，数据集与关联维护计划禁止双重启用。新调度按范围/交易所/结束日生成键，旧日期键根据原任务实际范围继承，不重写旧任务。全局事件根据context.source保留Tushare来源，权限阻塞与恢复可追踪；界面使用同一编辑表单，暂停状态不因编辑而改变。
+
 ## 数据核验（schema7）
 
 jobs新增verify类型，复用现有coverage/job_units/job_events。POST /jobs/{id}/verify与DataClient.verify创建独立只读核验；不改行情、不重写原任务、不改变采集账号绑定。GET /runtime/events不依赖数据库。新鲜度的周/月及目录状态使用实际日历与分块证据，允许not_published/rejected。自动补数基于整个原任务链计算剩余范围和总尝试次数；采集与核验使用coverage-v2规则。详细依据与未验证项见docs/QUALITY_VERIFICATION.md。

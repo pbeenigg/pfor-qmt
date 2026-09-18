@@ -103,6 +103,7 @@ class Application:
                 with self.lock:
                     if self.settings.account(identifier) == account:
                         self.capabilities[identifier] = result
+                        self.tushare_worker.calendar_blocks.clear()
                 return result
             with self.lock:
                 if store.query('SELECT 1 FROM datasets WHERE account_id=%s LIMIT 1',(identifier,),one=True) or store.query("SELECT 1 FROM maintenance_plans WHERE payload->>'account_id'=%s LIMIT 1",(identifier,),one=True) or store.query("SELECT 1 FROM jobs WHERE payload->>'account_id'=%s AND state IN ('queued','running','retrying') LIMIT 1",(identifier,),one=True):
@@ -309,10 +310,11 @@ class Application:
             if not dataset:
                 raise ValueError('数据集不存在')
             if method == 'POST' and len(parts) == 3 and parts[2] == 'schedule':
-                if not isinstance(p.get('enabled'), bool):
-                    raise ValueError('enabled 必须为布尔值')
-                store.query('UPDATE datasets SET scheduled=%s,schedule_from=%s WHERE id=%s', (bool(p['enabled']), datetime.now(SHANGHAI).date(), parts[1]))
-                return {'scheduled': bool(p['enabled'])}
+                from .maintenance import set_dataset_schedule
+                result=set_dataset_schedule(store,parts[1],p.get('enabled'))
+                if p.get('enabled') and not dataset['scheduled']:
+                    self.tushare_worker.calendar_blocks.clear()
+                return result
             if method == 'POST' and len(parts) == 3 and parts[2] == 'account':
                 if dataset['source'] != 'tushare':
                     raise ValueError('仅Tushare数据集支持账号切换')
@@ -361,11 +363,10 @@ class Application:
             from .maintenance import save_plan
             return save_plan(store,p)
         if path.startswith('/maintenance/') and method == 'POST':
-            if type(p.get('enabled')) is not bool:
-                raise ValueError('enabled必须是布尔值')
-            row = store.query('UPDATE maintenance_plans SET enabled=%s,updated_at=now() WHERE id=%s RETURNING *',(p['enabled'],path.rsplit('/',1)[-1]),one=True)
-            if not row:
-                raise ValueError('维护计划不存在')
+            from .maintenance import update_plan
+            row=update_plan(store,path.rsplit('/',1)[-1],p)
+            if p.get('enabled'):
+                self.tushare_worker.calendar_blocks.clear()
             return row
         if method == 'GET' and path == '/health':
             import shutil

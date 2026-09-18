@@ -29,7 +29,7 @@ async function loadOperations() {
   $('#operations-summary').innerHTML=detailFields({数据库:health.database.connected?'已连接':'未连接',数据库大小:gib(health.database_bytes),运行目录可用空间:gib(health.runtime_disk.free_bytes),运行目录空间状态:health.runtime_disk.low?'空间不足，请处理':'充足',数据库卷空间:'未验证（可能位于远端或容器）',活动任务:health.queues.reduce((n,row)=>n+row.count,0),采集质量:health.quality.map(row=>`${row.source} / ${qualityNames[row.quality_state]} ${row.count} 块`).join('；') || '尚无分块记录'});
   $('#attention-count').textContent='最近 '+health.attention.length+' 项';
   $('#attention-rows').innerHTML=health.attention.map(row=>`<tr><td>${escape(row.id.slice(0,8))}<span class="muted">${escape(row.source || 'qmt')}</span></td><td><span class="badge ${row.state}">${statuses[row.state]}</span></td><td class="wrap-text">${escape(row.error_code || '')}<span class="muted">${escape(row.error || '存在待核验或未完成分块')}</span></td><td class="wrap-text">${escape(row.action || '查看分块质量')}</td><td><button type="button" data-job-detail="${row.id}" title="任务详情" aria-label="任务详情">${icon('list')}</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">暂无待处理任务</td></tr>';
-  $('#maintenance-rows').innerHTML=plans.map(row=>`<tr><td>${escape(row.name)}<span class="muted">${escape(row.source)}</span></td><td>${escape(row.schedule_time)}</td><td class="numeric">${row.lookback_days}</td><td>${escape(row.last_date || '尚未排队')}</td><td class="wrap-text">${row.enabled?'已启用':'已停用'}<span class="muted">${escape(row.last_error || '')}</span></td><td><button type="button" data-maintenance-id="${row.id}" data-enabled="${!row.enabled}" title="${row.enabled?'停用维护':'启用维护'}" aria-label="${row.enabled?'停用维护':'启用维护'}">${icon(row.enabled?'pause':'play')}</button>${recordButton('maintenance',plans.indexOf(row))}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">暂无自动维护范围</td></tr>';
+  $('#maintenance-rows').innerHTML=plans.map(row=>`<tr><td>${escape(row.name)}<span class="muted">${escape(row.source)}</span></td><td>${escape(row.schedule_time)}</td><td class="numeric">${row.lookback_days}</td><td>${escape(row.last_date || '尚未排队')}</td><td class="wrap-text">${row.enabled?'已启用':'已停用'}<span class="muted">${escape(row.last_error || '')}</span></td><td><div class="actions"><button type="button" data-maintenance-edit="${row.id}" title="编辑维护计划" aria-label="编辑维护计划">${icon('pencil')}</button><button type="button" data-maintenance-id="${row.id}" data-enabled="${!row.enabled}" title="${row.enabled?'停用维护':'启用维护'}" aria-label="${row.enabled?'停用维护':'启用维护'}">${icon(row.enabled?'pause':'play')}</button>${recordButton('maintenance',plans.indexOf(row))}</div></td></tr>`).join('') || '<tr><td colspan="6" class="empty">暂无自动维护范围</td></tr>';
   recordSets.maintenance={title:'自动维护范围',rows:plans,labels:{name:'名称',source:'来源',schedule_time:'每日时间',lookback_days:'回读交易日',last_date:'最近排队日期',last_error:'调度错误'},extra:row=>'<dl class="detail-grid">'+detailFields(row.payload)+'</dl>'};
   icons();
 }
@@ -84,20 +84,32 @@ $('#unit-prev').addEventListener('click',action(()=>loadUnits(unitJob,Math.max(0
 $('#unit-next').addEventListener('click',action(()=>loadUnits(unitJob,unitNext)));
 $('#maintenance-form').addEventListener('submit',action(async()=>{
   const payload=values($('#maintenance-form'));payload.lookback_days=Number(payload.lookback_days);
-  await api('/maintenance',payload);$('#maintenance-dialog').close();await switchView('operations');notice('维护范围已保存并启用');
+  const edit=$('#maintenance-form').dataset.editId;
+  if(edit)delete payload.job_id;
+  await api(edit?'/maintenance/'+edit:'/maintenance',payload);$('#maintenance-dialog').close();await switchView('operations');notice(edit?'维护设置已保存':'维护范围已保存并启用');
 }));
 document.addEventListener('click',async event=>{
   const button=event.target.closest('button');if(!button)return;
   const d=button.dataset;
-  if(!['units','events','maintain','maintenanceId','retryUnit','verify'].some(key=>key in d))return;
+  if(!['units','events','maintain','maintenanceId','maintenanceEdit','retryUnit','verify'].some(key=>key in d))return;
   await action(async()=>{
     if(d.verify) { const job=await api('/jobs/'+d.verify+'/verify',{});$('#record-dialog').close();notice('只读核验已排队：'+job.id.slice(0,8));await switchView('jobs'); }
     if(d.units) { $('#record-dialog').close();await loadUnits(d.units); }
     if(d.events) { $('#record-dialog').close();$('#event-filter').reset();$('#event-filter [name=job_id]').value=d.events;await switchView('operations'); }
     if(d.maintain) {
       const job=await api('/jobs/'+d.maintain);$('#record-dialog').close();
+      $('#maintenance-form').reset();delete $('#maintenance-form').dataset.editId;
+      $('#maintenance-title').textContent='保存自动维护范围';$('#maintenance-form button[type=submit]').innerHTML=icon('save')+'保存并启用';
       $('#maintenance-form [name=job_id]').value=d.maintain;$('#maintenance-form [name=name]').value=(reportNames[job.payload.resource] || (job.kind==='catalog'?'目录':'行情'))+'维护 '+d.maintain.slice(0,8);
       $('#maintenance-form [name=schedule_time]').value=job.payload.source==='tushare'?'19:00':'17:00';$('#maintenance-dialog').showModal();
+    }
+    if(d.maintenanceEdit) {
+      const plan=recordSets.maintenance.rows.find(row=>row.id===d.maintenanceEdit);
+      $('#maintenance-form').reset();$('#maintenance-form').dataset.editId=plan.id;
+      for(const key of ['name','lookback_days'])$('#maintenance-form [name='+key+']').value=plan[key];
+      $('#maintenance-form [name=schedule_time]').value=plan.schedule_time.slice(0,5);
+      $('#maintenance-title').textContent='编辑维护计划';$('#maintenance-form button[type=submit]').innerHTML=icon('save')+'保存设置';
+      $('#maintenance-dialog').showModal();icons();
     }
     if(d.maintenanceId) { await api('/maintenance/'+d.maintenanceId,{enabled:d.enabled==='true'});await loadOperations(); }
     if(d.retryUnit!==undefined) {

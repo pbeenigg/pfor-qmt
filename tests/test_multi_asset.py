@@ -212,7 +212,8 @@ def test_derivative_history_export_and_market_calendar(store, tmp_path):
     dates = ['20260908','20260909','20260910','20260911','20260914']
     def calendar(code, start='', end='', count=-1):
         calls.append(code)
-        return dates if count == 5 else ['20260914']
+        selected=[value for value in dates if (not start or value>=start) and (not end or value<=end)]
+        return selected[-count:] if count>0 else selected
     source = SimpleNamespace(download_history_data2=lambda *args: True,
                              get_local_data=lambda **params: {params['stock_list'][0]: frame}, get_trading_dates=calendar,
                              get_divid_factors=lambda code: pytest.fail('Derivatives must not request equity adjustment factors'))

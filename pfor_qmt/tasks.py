@@ -46,6 +46,8 @@ class Worker:
         self.catalog_error = ''
         self.last_schedule = None
         self.last_cleanup = None
+        self.schedule_errors = {}
+        self.calendar_blocks = {}
         self.options = options or {}
         self.leases = threading.local()
 
@@ -109,6 +111,8 @@ class Worker:
                             continue
                         self.execute(job)
             except Exception as error:
+                if isinstance(error,InterruptedError) and self.stop.is_set():
+                    break
                 detail = failure(error)
                 message = detail['code'] + '：' + detail['message']
                 if getattr(self,error_field) != message:
@@ -458,64 +462,14 @@ class Worker:
 
     def schedule(self, now=None):
         now = now or datetime.now(SHANGHAI)
-        from .maintenance import tick
+        from .maintenance import tick, schedule_scope
+        self.last_error = ''
         tick(self,now)
         if self.provider=='qmt' and (self.last_cleanup is None or (now-self.last_cleanup).total_seconds() >= 86400):
             self.store.housekeeping(self.options.get('event_retention_days',90),self.options.get('sample_retention_days',30))
             self.last_cleanup = now
-        datasets = self.store.query('SELECT * FROM datasets WHERE scheduled=true AND source=%s', (self.provider,))
-        self.last_error = ''
-        for dataset in datasets:
-            cutoff = now.date() if now.time() >= dataset['schedule_time'] else now.date() - timedelta(days=1)
-            if dataset['schedule_from'] > cutoff:
-                continue
-            try:
-                adapter = self.tushare_source(dataset, lambda: (_ for _ in ()).throw(InterruptedError()) if self.stop.is_set() else None) if self.provider == 'tushare' else None
-            except ValueError as error:
-                self.last_error = str(error)
-                continue
-            representatives = {source_market(code,self.provider): code for code in dataset['members']}
-            calendars = {}
-            for market, representative in representatives.items():
-                try:
-                    calendar = self.calendar(representative, dataset['schedule_from'].strftime('%Y%m%d'), cutoff.strftime('%Y%m%d'),adapter=adapter)
-                    dates = sorted({timestamp(value).date() for value in calendar if dataset['schedule_from'] <= timestamp(value).date() <= cutoff})
-                    if not dates:
-                        self.last_error = market + ' 交易日历为空，无法确认到期交易日，调度等待重试'
-                    with self.store.connect() as conn:
-                        with conn.cursor() as cursor:
-                            cursor.executemany('INSERT INTO trading_dates(market,day,source) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING', [(market, item,self.provider) for item in dates])
-                except Exception:
-                    self.last_error = market + ' 交易日历请求失败，调度仅使用已保存日期并等待重试'
-                    dates = [row['day'] for row in self.store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND is_open AND day BETWEEN %s AND %s ORDER BY day', (self.provider,market, dataset['schedule_from'], cutoff))]
-                calendars[market] = dates
-            if any(not values for values in calendars.values()):
-                continue
-            dates = sorted(set(value for values in calendars.values() for value in values))
-            last = self.store.query("SELECT max((payload->>'end')::date) AS day FROM jobs WHERE payload->>'dataset_id'=%s AND schedule_key IS NOT NULL",(str(dataset['id']),),one=True)['day']
-            if last:
-                dates = [date for date in dates if date > last]
-            # Collapse downtime into a single range instead of overlapping daily jobs.
-            missing_dates = [date for date in dates if not self.store.query('SELECT id FROM jobs WHERE schedule_key=%s',(str(dataset['id'])+':'+date.isoformat(),),one=True)]
-            for date in missing_dates[-1:]:
-                key = str(dataset['id']) + ':' + date.isoformat()
-                if self.store.query('SELECT id FROM jobs WHERE schedule_key=%s', (key,), one=True):
-                    continue
-                try:
-                    active = [market for market, values in calendars.items() if date in values]
-                    previous = [self.calendar(representatives[market], '', date.strftime('%Y%m%d'), 5,adapter) for market in active]
-                    lookbacks = [sorted({timestamp(value).date() for value in values if timestamp(value).date() <= date}) for values in previous]
-                    if any(len(days) < 5 for days in lookbacks):
-                        self.last_error = '最近五个交易日尚未就绪，调度等待重试'
-                        continue
-                    payload = {'dataset_id': str(dataset['id']), 'members': [code for code in dataset['members'] if source_market(code,self.provider) in active], 'periods': dataset['periods'],
-                               'start': min(min(days[-5] for days in lookbacks),missing_dates[0]).isoformat(), 'end': date.isoformat()}
-                    payload.update(source=self.provider,account_id=dataset['account_id'],endpoint=dataset['endpoint'])
-                    payload['members'] = [code for code in dataset['members'] if source_market(code,self.provider) in active]
-                    payload['chunks'] = chunks(payload)
-                    self.store.create_job('download', payload, key)
-                except Exception:
-                    self.last_error = '交易日历未就绪，调度等待重试'
+        for dataset in self.store.query('SELECT * FROM datasets WHERE scheduled=true AND source=%s', (self.provider,)):
+            schedule_scope(self,dataset,'dataset',now)
 
     def export(self, job):
         import pyarrow as pa

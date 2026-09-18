@@ -155,6 +155,9 @@ class DataClient:
     def set_maintenance(self, identifier, enabled):
         return self.request('/maintenance/'+identifier, {'enabled':enabled})
 
+    def update_maintenance(self, identifier, **changes):
+        return self.request('/maintenance/'+identifier, changes)
+
     def export(self, members, period, start, end, format='csv', source='qmt'):
         return self.request('/exports', dict(members=members, period=period, start=start, end=end, format=format,source=source))
 

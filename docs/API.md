@@ -15,7 +15,7 @@
 | GET | /health | 队列、分块质量、待处理任务、数据库大小、运行目录磁盘空间、来源/周期最近行情与维护状态 |
 | POST | /freshness/query | sources多选、search、limit=1..200、offset；返回已启用范围逐对象的新鲜度、目标日、原因与建议动作，健康接口scheduled_freshness为同口径首页 |
 | GET/POST | /maintenance | GET列出范围；POST传job_id、name、schedule_time、lookback_days，从原始目录/采集任务保存范围 |
-| POST | /maintenance/{id} | enabled布尔值；停用只停止新调度，不撤销已排队任务 |
+| POST | /maintenance/{id} | 可选enabled布尔值、name、schedule_time(HH:MM)、lookback_days(1..365)；保留固定范围与旧任务，启用检查重复路径 |
 
 事件字段不含Token/DSN。`stats.read`是本次读回记录数，inserted/updated是实际写入数，unchanged_or_older为未变化或旧截至日未覆盖数；仓单与排名仍按正向读回的日期快照更新，不伪报逐条变更统计。旧任务没有新日志及分块记录，原coverage仍可查看，不能据此声称通过新校验。
 

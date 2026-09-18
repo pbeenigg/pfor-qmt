@@ -87,6 +87,17 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path,monkeypatc
             expect(page.locator('#maintenance-rows')).to_contain_text('日线自动维护')
             page.locator('[data-maintenance-id]').click()
             expect(page.locator('#maintenance-rows')).to_contain_text('已停用')
+            page.locator('[data-maintenance-edit]').click()
+            page.locator('#maintenance-form [name=name]').fill('收盘后核对')
+            page.locator('#maintenance-form [name=schedule_time]').fill('18:30')
+            page.locator('#maintenance-form [name=lookback_days]').fill('3')
+            page.locator('#maintenance-form button[type=submit]').click()
+            expect(page.locator('#maintenance-rows')).to_contain_text('收盘后核对')
+            expect(page.locator('#maintenance-rows')).to_contain_text('18:30')
+            expect(page.locator('#maintenance-rows')).to_contain_text('已停用')
+            plan=store.query('SELECT * FROM maintenance_plans',one=True)
+            assert not plan['enabled'] and plan['lookback_days']==3
+            assert store.events_page({'code':'MAINTENANCE_UPDATED'})['rows']
             page.locator('#event-filter [name=job_id]').fill(str(job['id']))
             page.locator('#event-filter button[type=submit]').click()
             expect(page.locator('#event-rows')).to_contain_text('INVALID_DATA')
