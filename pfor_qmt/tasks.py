@@ -6,7 +6,7 @@ from pathlib import Path
 
 from . import xtdata
 from .client import CfquantError, CfquantTimeout
-from .data import SHANGHAI, FIELDS, chunks, day, timestamp, normalize_bars, json_default
+from .data import SHANGHAI, FIELDS, chunks, day, timestamp, normalize_bars, json_default, MINUTE_PERIODS, AGGREGATE_PERIODS, period_label
 from .protocol import encode_value
 from .storage import job_summary
 from .symbols import market_of, derivative_kind
@@ -171,6 +171,8 @@ class Worker:
                     raise InterruptedError()
 
     def download(self, job):
+        if job['payload'].get('resource'):
+            return self.download_report(job)
         payload, identifier = job['payload'], job['id']
         parts = payload['chunks']
         adapter = self.tushare_source(payload, lambda: self.check(identifier)) if self.provider == 'tushare' else None
@@ -181,7 +183,7 @@ class Worker:
             derivative = 'future' if self.provider == 'tushare' else derivative_kind(code)
             security = self.store.query('SELECT kind,subtype FROM securities WHERE source=%s AND code=%s', (self.provider,code), one=True)
             # Include the preceding session; only explicit terminal trading days assign night bars.
-            read_start = start - timedelta(days=7) if derivative and period != '1d' else start
+            read_start = start - timedelta(days=7) if derivative and period in MINUTE_PERIODS else start
             def read():
                 result = self.source.download_history_data2([code], period, read_start.strftime('%Y%m%d'), end.strftime('%Y%m%d'))
                 def rejected(value):
@@ -204,7 +206,7 @@ class Worker:
             try:
                 rows = self.retry_network(identifier, lambda: adapter.history(code,period,start,end,security['subtype'] if security else 'contract')) if adapter else self.retry_network(identifier, read)
             except SourceError as error:
-                if adapter and period != '1d' and error.category == 'permission':
+                if adapter and period in MINUTE_PERIODS and error.category == 'permission':
                     raise SourceError(str(error) + '；已入库数据保留，可只选日线回补；分钟授权后重试原任务', error.category) from None
                 raise
             self.check(identifier)
@@ -223,14 +225,17 @@ class Worker:
                 with conn.cursor() as cursor:
                     cursor.executemany('INSERT INTO trading_dates(market,day,source) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING', [(source_market(code,self.provider), item,self.provider) for item in trading_days])
             actual = {row['trading_day'] or row['time'].date() for row in rows}
-            gaps = [{'day': value.isoformat(), 'reason': '无行情，停牌或缺失待确认'} for value in trading_days if value not in actual]
+            expected = {period_label(value,period) for value in trading_days}
+            gaps = [{'day': value.isoformat(), 'reason': '无行情，停牌或缺失待确认'} for value in sorted(expected) if value not in actual]
+            if period in AGGREGATE_PERIODS and any(row['time'].date() > row['as_of_date'] for row in rows):
+                gaps.append({'reason':'周/月周期尚未结束，保存上游当前计算值，后续更新需复核'})
             if calendar_error:
                 gaps.append({'reason':calendar_error})
             if not rows:
                 gaps.append({'range': [part['start'], part['end']], 'reason': '空表未确认为成功'})
             if not calendar:
                 gaps.append({'reason': '交易日历为空，覆盖情况未确认'})
-            if period != '1d':
+            if period in MINUTE_PERIODS:
                 gaps.append({'reason': '分钟内完整性需按终端交易时段复核，未伪造缺失分钟'})
                 if derivative and any(row['trading_day'] is None for row in rows):
                     gaps.append({'reason': '终端未提供交易日字段，夜盘交易日归属待核验；时间按原值保存'})
@@ -249,16 +254,46 @@ class Worker:
                 with self.store.connect() as conn:
                     for mapping in mappings:
                         conn.execute('INSERT INTO contract_mappings(source,code,trading_day,member_code) VALUES(%s,%s,%s,%s) ON CONFLICT(source,code,trading_day) DO UPDATE SET member_code=EXCLUDED.member_code,updated_at=now()', (self.provider,code,mapping['trade_date'],mapping['mapping_ts_code']))
-                missing = actual - {r['trade_date'] for r in mappings}
+                missing = set(trading_days) - {r['trade_date'] for r in mappings}
                 if missing:
                     gaps.append({'reason':'主力映射缺失，连续序列对应合约待核验','days':sorted(date.isoformat() for date in missing)})
             self.store.write_chunk(identifier, part, rows, gaps, index + 1, factor)
             self.publish({'event': 'job', 'data': job_summary(self.store.job(identifier))})
+        return self.download_result(identifier)
+
+    def download_report(self, job):
+        from .futures import REPORTS, write_records
+        payload, identifier = job['payload'], job['id']
+        resource = payload['resource']
+        adapter = self.tushare_source(payload, lambda: self.check(identifier))
+        for index, part in enumerate(payload['chunks'][job['checkpoint']:], job['checkpoint']):
+            rows = self.retry_network(identifier, lambda: adapter.report(payload,part['start'],part['end']))
+            self.check(identifier)
+            date_field = REPORTS[resource]['date']
+            dates = sorted({row[date_field] for row in rows})
+            gaps = [] if rows else [{'reason':'资料响应为空，未确认发布或覆盖情况'}]
+            if resource != 'calendar':
+                market = source_market(payload['code'],'tushare') if resource=='mapping' else TS_EXCHANGES[payload['exchange']]
+                try:
+                    calendar = self.retry_network(identifier,lambda: adapter.calendar(market,part['start'],part['end']))
+                    gaps.extend({'day':date.isoformat(),'reason':'交易日无资料，待核验'} for date in calendar if date not in dates)
+                except SourceError as error:
+                    gaps.append({'reason':str(error)})
+            self.check(identifier)
+            with self.store.connect() as conn:
+                write_records(conn,resource,rows)
+                self.check(identifier)
+                self.store.write_coverage(conn,identifier,part,len(rows),gaps,index+1,
+                                          timestamp(dates[0]) if dates else None,timestamp(dates[-1]) if dates else None)
+            self.publish({'event':'job','data':job_summary(self.store.job(identifier))})
+        return self.download_result(identifier, report=True)
+
+    def download_result(self, identifier, report=False):
         coverage = self.store.query('SELECT * FROM coverage WHERE job_id=%s ORDER BY code,period,requested_start', (identifier,))
         total = sum(item['row_count'] for item in coverage)
         uncertain = any(item['gaps'] for item in coverage)
         return {'state': 'partial' if uncertain else 'completed', 'rows': total, 'coverage': coverage,
-                'message': '未读到行情，未写入 K 线' if not total else '已入库，存在未确认缺口' if uncertain else '实际读回并完成入库'}
+                'message': ('未读到资料，未写入记录' if report else '未读到行情，未写入 K 线') if not total else '已入库，存在未确认缺口' if uncertain else '实际读回并完成入库'}
 
     def schedule(self, now=None):
         now = now or datetime.now(SHANGHAI)
@@ -286,7 +321,7 @@ class Worker:
                             cursor.executemany('INSERT INTO trading_dates(market,day,source) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING', [(market, item,self.provider) for item in dates])
                 except Exception:
                     self.last_error = market + ' 交易日历请求失败，调度仅使用已保存日期并等待重试'
-                    dates = [row['day'] for row in self.store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s ORDER BY day', (self.provider,market, dataset['schedule_from'], cutoff))]
+                    dates = [row['day'] for row in self.store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND is_open AND day BETWEEN %s AND %s ORDER BY day', (self.provider,market, dataset['schedule_from'], cutoff))]
                 calendars[market] = dates
             if any(not values for values in calendars.values()):
                 continue
@@ -320,6 +355,11 @@ class Worker:
         target = folder / (str(identifier) + '.' + payload['format'])
         temp = target.with_suffix(target.suffix + '.partial')
         fields = ['code', 'period', 'time', *FIELDS, 'trading_day', 'source']
+        if payload.get('period') in AGGREGATE_PERIODS:
+            fields.extend(['as_of_date','source_fields'])
+        if payload.get('resource'):
+            from .futures import REPORTS, page as report_page
+            fields = list(REPORTS[payload['resource']]['fields'])
         total = 0
         parquet = None
         metadata = None
@@ -331,20 +371,23 @@ class Worker:
                 writer = csv.DictWriter(stream, fieldnames=fields) if payload['format'] == 'csv' else None
                 if writer:
                     writer.writeheader()
-                for code in payload['members']:
+                for code in payload.get('members', ['']):
                     offset = 0
                     while True:
                         self.check(identifier)
-                        page = self.store.history(code, payload['period'], payload['start'], payload['end'], 5000, offset, conn, source=payload.get('source','qmt'))
+                        page = report_page(self.store,payload,5000,offset,conn) if payload.get('resource') else self.store.history(code, payload['period'], payload['start'], payload['end'], 5000, offset, conn, source=payload.get('source','qmt'))
                         rows = page.pop('rows')
                         metadata = page
                         if not rows:
                             break
+                        for row in rows:
+                            if 'source_fields' in row:
+                                row['source_fields'] = json.dumps(row['source_fields'],ensure_ascii=False,default=json_default)
                         if writer:
                             writer.writerows(rows)
                         else:
                             # Decimal text preserves arbitrary PostgreSQL NUMERIC without rounding.
-                            clean = [{key: json_default(value) if value is not None and key in (*FIELDS, 'time', 'trading_day') else value for key, value in row.items()} for row in rows]
+                            clean = [{key: value.isoformat() if hasattr(value,'isoformat') else str(value) if value is not None else None for key,value in row.items()} for row in rows]
                             schema = pa.schema([(key, pa.string()) for key in fields])
                             table = pa.Table.from_pylist(clean, schema=schema)
                             if parquet is None:

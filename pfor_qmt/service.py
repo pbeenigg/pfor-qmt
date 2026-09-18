@@ -9,14 +9,14 @@ from datetime import datetime, timedelta
 
 from . import xtdata
 from .client import get_client
-from .data import codes, periods, chunks, day, SHANGHAI, json_default
+from .data import codes, periods, chunks, day, SHANGHAI, json_default, MINUTE_PERIODS, TUSHARE_PERIODS
 from .deploy import inspect_root, prepare, activate
 from .protocol import encode_value
 from .settings import Settings
 from .storage import Store, job_summary
 from .tasks import Worker
 from .symbols import KINDS, MARKETS
-from .identifiers import provider_name
+from .identifiers import provider_name, TS_EXCHANGES
 from .accounts import profile
 from .tushare import TushareSource
 
@@ -49,7 +49,8 @@ class Application:
             raise ValueError('Tushare本期不支持该接口，请选择期货目录或历史行情')
         if path == '/sources' and method == 'GET':
             return {'sources':[{'id':'qmt','realtime':True,'kinds':list(KINDS)},
-                               {'id':'tushare','realtime':False,'kinds':['future'],'periods':['1d','1m','5m'],'continuous_minutes':False}],
+                               {'id':'tushare','realtime':False,'kinds':['future'],'periods':list(TUSHARE_PERIODS),'continuous_minutes':False,
+                                'reports':['calendar','mapping','warehouse','holding'],'tick':{'state':'unsupported','reason':'无API，单独CSV交付，不属于积分权限'}}],
                     'tushare':self.settings.public_accounts(),'capabilities':self.capabilities}
         if path == '/sources/tushare/accounts' and method == 'GET':
             return self.settings.public_accounts()
@@ -184,6 +185,42 @@ class Application:
                 return activate(root, p.get('account', ''))
         if method == 'GET' and path == '/securities':
             return store.securities(p.get('search', ''), p.get('kind', ''),source)
+        if path.startswith('/futures/'):
+            from .futures import selection, request_chunks, page, REPORTS
+            if source != 'tushare':
+                raise ValueError('期货资料扩展当前仅支持Tushare来源')
+            if method == 'GET' and path == '/futures/options':
+                exchange = p.get('exchange','DCE')
+                if exchange not in TS_EXCHANGES:
+                    raise ValueError('请选择期货交易所')
+                products = store.query("SELECT upper(metadata->>'product') AS symbol,min(name) FILTER(WHERE subtype='continuous') AS name FROM securities WHERE source='tushare' AND market=%s AND coalesce(metadata->>'product','')<>'' GROUP BY upper(metadata->>'product') ORDER BY symbol",(TS_EXCHANGES[exchange],))
+                continuous = store.query("SELECT code,name FROM securities WHERE source='tushare' AND market=%s AND subtype='continuous' ORDER BY code",(TS_EXCHANGES[exchange],))
+                return {'products':products,'continuous':continuous,'exchanges':list(TS_EXCHANGES)}
+            if method == 'GET' and path == '/futures/records':
+                return page(store,p,p.get('limit',200),p.get('offset',0))
+            if method == 'POST' and path in ('/futures/sync','/futures/export'):
+                payload = selection(p)
+                if path.endswith('/export'):
+                    payload['format'] = p.get('format')
+                    if payload['format'] not in ('csv','parquet'):
+                        raise ValueError('无效导出格式')
+                    return job_summary(store.create_job('export',payload))
+                resource = payload['resource']
+                if resource == 'mapping':
+                    found = store.query("SELECT 1 FROM securities WHERE source='tushare' AND code=%s AND subtype='continuous'",(payload['code'],),one=True)
+                    if not found:
+                        raise ValueError('请先同步并选择主力或连续合约')
+                if resource in ('warehouse','holding'):
+                    found = store.query("SELECT 1 FROM securities WHERE source='tushare' AND market=%s AND (upper(metadata->>'product')=%s OR (%s='holding' AND subtype='contract' AND split_part(code,'.',1)=%s)) LIMIT 1",(TS_EXCHANGES[payload['exchange']],payload['symbol'],resource,payload['symbol']),one=True)
+                    if not found:
+                        raise ValueError('请先同步并选择该交易所的产品或月份合约')
+                account = self.settings.account(p.get('account_id'))
+                capability = self.capabilities.get(account['id'],{}).get('capabilities',{}).get(resource,{})
+                if capability.get('state') in ('permission','authentication','unsupported'):
+                    raise ValueError(REPORTS[resource]['name']+'接口权限不可用，请更新账号后重新检测')
+                payload.update(account_id=account['id'],endpoint=account['endpoint'],chunks=request_chunks(payload))
+                return job_summary(store.create_job('download',payload))
+            raise LookupError('接口不存在')
         if method == 'GET' and path == '/catalog/securities':
             return store.catalog_page(p.get('search', ''), p.get('kind', ''), p.get('limit', 50), p.get('offset', 0), p.get('market', ''), p.get('subtype', ''),source,str(p.get('active','false')).lower()=='true')
         if method == 'POST' and path == '/catalog/resolve':
@@ -293,7 +330,7 @@ class Application:
             market = p.get('market','SH')
             if market not in MARKETS:
                 raise ValueError('不支持的交易所代码')
-            return store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s ORDER BY day',
+            return store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND is_open AND day BETWEEN %s AND %s ORDER BY day',
                                (source,market,day(p.get('start','1990-01-01')),day(p.get('end','2100-01-01'))))
         if method == 'GET' and path == '/jobs':
             return store.query("SELECT id,kind,state,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,CASE WHEN kind='download' THEN jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=jobs.id)) || (result-'coverage') ELSE result-'coverage' END AS result,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200")
@@ -304,7 +341,7 @@ class Application:
             selected = p.get('periods', dataset['periods'])
             if not isinstance(selected, (list, tuple)):
                 raise ValueError('回补周期需要非空数组')
-            selected = periods(selected)
+            selected = periods(selected,dataset['source'])
             if set(selected) - set(dataset['periods']):
                 raise ValueError('回补周期必须属于所选数据集')
             payload = {'dataset_id': str(dataset['id']), 'members': dataset['members'], 'periods': selected, 'start': p.get('start'), 'end': p.get('end')}
@@ -315,7 +352,7 @@ class Application:
             payload['chunks'] = chunks(payload)
             return job_summary(store.create_job('download', payload))
         if method == 'POST' and path == '/exports':
-            payload = dict(members=codes(p['members'],source),source=source, period=periods([p['period']])[0], start=day(p['start']).isoformat(), end=day(p['end']).isoformat(), format=p['format'])
+            payload = dict(members=codes(p['members'],source),source=source, period=periods([p['period']],source)[0], start=day(p['start']).isoformat(), end=day(p['end']).isoformat(), format=p['format'])
             if payload['format'] not in ('csv','parquet') or day(payload['start']) > day(payload['end']):
                 raise ValueError('无效导出格式或日期范围')
             return store.create_job('export', payload)
@@ -343,5 +380,9 @@ class Application:
 
     def check_minutes(self, account_id, selected):
         capability = self.capabilities.get(account_id,{}).get('capabilities',{}).get('minutes',{})
-        if set(selected) - {'1d'} and capability.get('state') in ('permission','authentication','unsupported'):
+        if set(selected) & set(MINUTE_PERIODS) and capability.get('state') in ('permission','authentication','unsupported'):
             raise ValueError('该账号分钟接口权限不可用，请选择日线或更新账号后重新检测')
+        for period, name in [('1w','weekly'),('1mo','monthly')]:
+            capability = self.capabilities.get(account_id,{}).get('capabilities',{}).get(name,{})
+            if period in selected and capability.get('state') in ('permission','authentication','unsupported'):
+                raise ValueError('该账号周/月线接口权限不可用，请更新账号后重新检测')

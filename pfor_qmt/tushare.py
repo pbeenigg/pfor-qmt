@@ -9,7 +9,7 @@ from decimal import Decimal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
-from .data import SHANGHAI, number, normalize_bars, day
+from .data import SHANGHAI, number, normalize_bars, day, timestamp, period_label, MINUTE_PERIODS, AGGREGATE_PERIODS
 from .identifiers import TS_EXCHANGES, source_code, source_market
 
 
@@ -115,64 +115,118 @@ class TushareSource:
 
     def calendar(self, market, start, end):
         exchange = next(key for key, value in TS_EXCHANGES.items() if value == market)
-        rows = self.request('fut_trade_cal', {'exchange': exchange, 'start_date': day(start).strftime('%Y%m%d'), 'end_date': day(end).strftime('%Y%m%d')}, 'exchange,cal_date,is_open')
+        return [row['day'] for row in self.calendar_records(exchange,start,end) if row['is_open']]
+
+    def calendar_records(self, exchange, start, end):
+        rows = self.request('fut_trade_cal', {'exchange': exchange, 'start_date': day(start).strftime('%Y%m%d'), 'end_date': day(end).strftime('%Y%m%d')}, 'exchange,cal_date,is_open,pretrade_date')
         if not rows or any(row.get('exchange') != exchange for row in rows):
             raise SourceError(exchange + ' 期货日历为空或市场不匹配', 'incomplete')
-        values = {datetime.strptime(str(row['cal_date']), '%Y%m%d').date(): row['is_open'] for row in rows}
+        values = {datetime.strptime(str(row['cal_date']), '%Y%m%d').date(): row for row in rows}
+        if len(values) != len(rows):
+            raise SourceError(exchange + ' 期货日历包含重复日期', 'invalid_response')
         current = day(start)
         while current <= day(end):
-            if current not in values or values[current] not in (0, 1):
+            if current not in values or values[current]['is_open'] not in (0, 1):
                 raise SourceError(exchange + ' 期货日历覆盖不完整', 'incomplete')
             current += timedelta(days=1)
-        return sorted(date for date, opened in values.items() if opened == 1 and day(start) <= date <= day(end))
+        return [dict(source='tushare',market=TS_EXCHANGES[exchange],day=date,is_open=bool(row['is_open']),
+                     pretrade_date=timestamp(row['pretrade_date']).date() if row.get('pretrade_date') else None)
+                for date,row in sorted(values.items()) if day(start) <= date <= day(end)]
 
-    def bounded(self, api, code, start, end, period=None):
+    def bounded(self, api, code, start, end, period=None, extra=None):
         minute = api == 'ft_mins'
-        params = {'ts_code': code, 'start_date': start.strftime('%Y-%m-%d %H:%M:%S' if minute else '%Y%m%d'),
+        params = {**(extra or {}), 'start_date': start.strftime('%Y-%m-%d %H:%M:%S' if minute else '%Y%m%d'),
                   'end_date': end.strftime('%Y-%m-%d %H:%M:%S' if minute else '%Y%m%d')}
+        if code:
+            params['ts_code'] = code
         if minute:
-            params['freq'] = {'1m': '1min', '5m': '5min'}[period]
-        rows = self.request(api, params)
-        cap = 8000 if minute else 2000
+            params['freq'] = period[:-1] + 'min'
+        if api == 'fut_weekly_monthly':
+            params['freq'] = {'1w':'week','1mo':'month'}[period]
+        fields = ''
+        if api in ('fut_wsr','fut_holding'):
+            from .futures import REPORTS
+            fields = ','.join(key for key in REPORTS['warehouse' if api=='fut_wsr' else 'holding']['fields'] if key != 'source')
+        rows = self.request(api, params, fields)
+        cap = {'ft_mins':8000,'fut_weekly_monthly':6000,'fut_wsr':1000}.get(api,2000)
         if len(rows) < cap:
             return rows
         step = timedelta(seconds=1) if minute else timedelta(days=1)
         if end - start < step:
             raise SourceError(api + ': 最小区间仍达到返回上限', 'incomplete')
         middle = start + ((end - start) // step // 2) * step
-        return self.bounded(api, code, start, middle, period) + self.bounded(api, code, middle + step, end, period)
+        return self.bounded(api, code, start, middle, period, extra) + self.bounded(api, code, middle + step, end, period, extra)
 
     def history(self, code, period, start, end, subtype='contract'):
-        if period != '1d' and subtype != 'contract':
+        if period in MINUTE_PERIODS and subtype != 'contract':
             raise SourceError('连续合约分钟线尚未接入，请选择具体月份合约', 'unsupported')
-        first = datetime.combine(day(start), datetime.min.time(), SHANGHAI)
-        last = datetime.combine(day(end), datetime.max.time().replace(microsecond=0), SHANGHAI)
-        rows = self.bounded('fut_daily' if period == '1d' else 'ft_mins', code, first, last, period)
+        aggregate = period in AGGREGATE_PERIODS
+        start, end = period_label(start,period), period_label(end,period)
+        first = datetime.combine(start, datetime.min.time(), SHANGHAI)
+        last = datetime.combine(end, datetime.max.time().replace(microsecond=0), SHANGHAI)
+        api = 'fut_weekly_monthly' if aggregate else 'fut_daily' if period == '1d' else 'ft_mins'
+        rows = self.bounded(api, code, first, last, period)
         records = []
+        summaries = {}
         for row in rows:
             if row.get('ts_code') != code:
                 raise SourceError('历史行情合约代码与请求不一致', 'invalid_response')
             amount = number(row.get('amount'))
-            if amount is not None and period == '1d':
+            if amount is not None and period not in MINUTE_PERIODS:
                 sign, digits, exponent = amount.as_tuple()
                 amount = Decimal((sign, digits, exponent + 4))
-            records.append(dict(time=row.get('trade_date') if period == '1d' else row.get('trade_time'),
+            if aggregate:
+                if row.get('freq') != {'1w':'week','1mo':'month'}[period] or not row.get('end_date'):
+                    raise SourceError('周/月线缺少正确周期或计算截至日期', 'invalid_response')
+                label = timestamp(row['trade_date'])
+                as_of = timestamp(row['end_date']).date()
+                if as_of > datetime.now(SHANGHAI).date():
+                    raise SourceError('周/月线计算截至日期位于未来', 'invalid_response')
+                previous = summaries.get(label)
+                if previous and previous['as_of_date'] >= as_of:
+                    continue
+                summaries[label] = dict(as_of_date=as_of,source_fields=row)
+            records.append(dict(time=row.get('trade_date') if period not in MINUTE_PERIODS else row.get('trade_time'),
                                 trading_day=row.get('trade_date') if period == '1d' else None,
                                 **{key: row.get(key) for key in ('open', 'high', 'low', 'close')},
                                 volume=row.get('vol'), amount=amount,
                                 open_interest=row.get('oi'), settlement=row.get('settle'), previous_settlement=row.get('pre_settle')))
-        return normalize_bars(records, code, period, day(start), day(end), 'tushare')
+        normalized = normalize_bars(records, code, period, start, end, 'tushare')
+        if aggregate:
+            for row in normalized:
+                row.update(summaries[row['time']])
+        return normalized
+
+    def report(self, payload, start, end):
+        from .futures import normalize_report
+        resource = payload['resource']
+        if resource == 'calendar':
+            return self.calendar_records(payload['exchange'],start,end)
+        if resource == 'mapping':
+            return [dict(source='tushare',code=row['ts_code'],trading_day=row['trade_date'],member_code=row['mapping_ts_code'])
+                    for row in self.mapping(payload['code'],start,end)]
+        exchange = 'SHFE' if resource == 'holding' and payload['exchange']=='INE' else payload['exchange']
+        records = self.bounded('fut_wsr' if resource=='warehouse' else 'fut_holding',None,
+                               datetime.combine(day(start),datetime.min.time()),datetime.combine(day(end),datetime.min.time()),
+                               extra=dict(exchange=exchange,symbol=payload['symbol']))
+        return normalize_report(resource,records,exchange,payload['symbol'],day(start),day(end))
 
     def mapping(self, code, start, end):
         first = datetime.combine(day(start), datetime.min.time())
         last = datetime.combine(day(end), datetime.min.time())
         rows = self.bounded('fut_mapping', code, first, last)
+        unique = {}
         for row in rows:
             if row.get('ts_code') != code:
                 raise SourceError('主力映射合约与请求不一致', 'invalid_response')
             row['mapping_ts_code'] = source_code(row['mapping_ts_code'], 'tushare')
             row['trade_date'] = datetime.strptime(str(row['trade_date']), '%Y%m%d').date()
-        return rows
+            if source_market(row['mapping_ts_code'],'tushare') != source_market(code,'tushare') or not day(start) <= row['trade_date'] <= day(end):
+                raise SourceError('主力映射返回跨市场或范围外记录','invalid_response')
+            if row['trade_date'] in unique and unique[row['trade_date']]['mapping_ts_code'] != row['mapping_ts_code']:
+                raise SourceError('同一交易日出现冲突的主力映射','invalid_response')
+            unique[row['trade_date']] = row
+        return [unique[date] for date in sorted(unique)]
 
     def probe(self):
         today = datetime.now(SHANGHAI).date()
@@ -202,5 +256,20 @@ class TushareSource:
                 states[name] = {'state': 'available' if rows else 'empty', 'rows': len(rows)}
             except (SourceError, ConnectionError) as error:
                 states[name] = {'state': getattr(error, 'category', 'network'), 'message': str(error)}
+        for name, operation in {
+            'weekly': lambda: self.history(sample['code'],'1w',today-timedelta(days=35),today),
+            'monthly': lambda: self.history(sample['code'],'1mo',today-timedelta(days=65),today),
+            'warehouse': lambda: self.report(dict(resource='warehouse',exchange='SHFE',symbol='CU'),today-timedelta(days=7),today),
+            'holding': lambda: self.report(dict(resource='holding',exchange='SHFE',symbol='CU'),today-timedelta(days=7),today),
+        }.items():
+            try:
+                if name in ('weekly','monthly') and not sample:
+                    states[name] = {'state':'unverified','message':'没有有效合约样本'}
+                    continue
+                rows = operation()
+                states[name] = {'state':'available' if rows else 'empty','rows':len(rows)}
+            except (ValueError,ConnectionError) as error:
+                states[name] = {'state':getattr(error,'category','network' if isinstance(error,ConnectionError) else 'invalid_response'),'message':str(error)}
+        states['tick'] = {'state':'unsupported','message':'官方无API，需单独获取CSV文件；不属于积分接口'}
         return {'provider': 'tushare', 'account_id': self.account['id'], 'capabilities': states,
                 'realtime': False, 'continuous_minutes': False}

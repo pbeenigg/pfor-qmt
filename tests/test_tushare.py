@@ -55,6 +55,12 @@ def fake_request(self, api, params, fields=''):
         return rows
     if api == 'fut_daily':
         return [daily(code)]
+    if api == 'fut_weekly_monthly':
+        return [dict(daily(code),trade_date=params['end_date'],end_date='20260917',freq=params['freq'],pre_close='80000',oi_chg='1',exchange='SHFE',change1='3',change2='2')]
+    if api == 'fut_wsr':
+        return [dict(trade_date='20260914',symbol=params['symbol'],exchange=params['exchange'],warehouse='测试仓库',wh_id='01',pre_vol=10,vol=12,vol_chg=2,unit='吨')]
+    if api == 'fut_holding':
+        return [dict(trade_date='20260914',symbol=params['symbol'],exchange=params['exchange'],broker='测试会员',vol=12,long_hld=None,short_hld=7)]
     if api == 'ft_mins':
         return [dict(ts_code=code,trade_time='2026-09-14 21:01:00',open=1,high=2,low=1,close=2,vol=3,amount='12345.6789',oi=4)]
     if api == 'fut_mapping':
@@ -296,7 +302,7 @@ def test_upgrade_v3_preserves_original_values_and_identity(store):
     store.save_security('CU2610.SHF','沪铜2610','future',{},subtype='contract',metadata={'product':'CU','delivery_month':'202610'},source='tushare')
     ids=store.query('SELECT instrument_id FROM securities')
     assert ids[0]['instrument_id']==ids[1]['instrument_id']
-    assert store.health()['version']==4
+    assert store.health()['version']==5
 
 
 @pytest.mark.postgres

@@ -20,6 +20,7 @@ for path in artifacts:
                 'web_dashboard/vendor/ECHARTS-LICENSE.txt','web_dashboard/vendor/ECHARTS-NOTICE.txt',
                 'web_dashboard/vendor/LUCIDE-LICENSE.txt','THIRD_PARTY_NOTICES.md','LICENSE']
     required.extend(['pfor_qmt/accounts.py','pfor_qmt/identifiers.py','pfor_qmt/tushare.py','pfor_qmt/migrations/004_sources.sql'])
+    required.extend(['pfor_qmt/futures.py','pfor_qmt/migrations/005_futures_reports.sql'])
     if path.name.endswith('.tar.gz'):
         required.extend(['tools/live_acceptance.py','docs/LIVE_ACCEPTANCE.md','docs/MULTI_ASSET_PLAN.md','pfor.ps1'])
     for suffix in required:

@@ -1,4 +1,5 @@
 import math
+import calendar
 import re
 from datetime import date, datetime, timedelta, time
 from decimal import Decimal, InvalidOperation
@@ -9,6 +10,9 @@ from .identifiers import source_code
 
 SHANGHAI = ZoneInfo('Asia/Shanghai')
 FIELDS = ('open', 'high', 'low', 'close', 'volume', 'amount', 'open_interest', 'settlement', 'previous_settlement')
+MINUTE_PERIODS = ('1m', '5m', '15m', '30m', '60m')
+AGGREGATE_PERIODS = ('1w', '1mo')
+TUSHARE_PERIODS = ('1d', *AGGREGATE_PERIODS, *MINUTE_PERIODS)
 
 
 def codes(value, source='qmt'):
@@ -28,11 +32,23 @@ def codes(value, source='qmt'):
     return result
 
 
-def periods(value):
+def periods(value, source='qmt'):
+    if not isinstance(value, (list, tuple)) or any(not isinstance(item,str) for item in value):
+        raise ValueError('周期需要非空数组')
     result = list(dict.fromkeys(value))
-    if not result or set(result) - {'1d', '1m', '5m'}:
-        raise ValueError('周期仅支持 1d、1m、5m')
+    allowed = TUSHARE_PERIODS if source == 'tushare' else ('1d', '1m', '5m')
+    if not result or set(result) - set(allowed):
+        raise ValueError('该来源支持周期：' + '、'.join(allowed))
     return result
+
+
+def period_label(value, period):
+    value = day(value)
+    if period == '1w':
+        return value + timedelta(days=4 - value.weekday())
+    if period == '1mo':
+        return value.replace(day=calendar.monthrange(value.year, value.month)[1])
+    return value
 
 
 def day(value):
@@ -107,12 +123,13 @@ def chunks(payload):
     end = day(payload.get('end') or today)
     result = []
     for code in codes(payload['members'], payload.get('source', 'qmt')):
-        for period in periods(payload.get('periods', ['1d'])):
-            start = day(payload.get('start') or end - timedelta(days=365 if period == '1d' else 90))
+        for period in periods(payload.get('periods', ['1d']), payload.get('source', 'qmt')):
+            minute = period in MINUTE_PERIODS
+            start = day(payload.get('start') or end - timedelta(days=90 if minute else 365))
             if start > end or end > today:
                 raise ValueError('日期范围无效或包含未来日期')
             while start <= end:
-                last = min(end, start + timedelta(days=364 if period == '1d' else 6))
+                last = min(end, start + timedelta(days=6 if minute else 364))
                 result.append({'code': code, 'period': period, 'start': start.isoformat(), 'end': last.isoformat()})
                 start = last + timedelta(days=1)
     return result

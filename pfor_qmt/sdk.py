@@ -50,6 +50,18 @@ class DataClient:
     def calendar(self, market, start, end, source='qmt'):
         return self.request('/calendar',market=market,start=start,end=end,source=source)
 
+    def futures_options(self, exchange='DCE'):
+        return self.request('/futures/options',source='tushare',exchange=exchange)
+
+    def futures_records(self, resource, start, end, **options):
+        return self.request('/futures/records',source='tushare',resource=resource,start=start,end=end,**options)
+
+    def sync_futures(self, resource, start, end, account_id=None, **options):
+        return self.request('/futures/sync',dict(source='tushare',resource=resource,start=start,end=end,account_id=account_id,**options))
+
+    def export_futures(self, resource, start, end, format='csv', **options):
+        return self.request('/futures/export',dict(source='tushare',resource=resource,start=start,end=end,format=format,**options))
+
     def boards(self, search='', category='', limit=50, offset=0):
         return self.request('/boards', search=search, category=category, limit=limit, offset=offset)
 

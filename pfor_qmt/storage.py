@@ -8,7 +8,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .data import codes, day, periods, json_default, FIELDS
+from .data import codes, day, periods, json_default, FIELDS, MINUTE_PERIODS, AGGREGATE_PERIODS, period_label
 from .symbols import KINDS, market_of
 from .identifiers import provider_name, source_market, identity_key
 
@@ -167,7 +167,7 @@ class Store:
     def create_dataset(self, payload):
         source = provider_name(payload.get('source', 'qmt'))
         members = codes(payload['members'], source)
-        selected = periods(payload.get('periods', ['1d']))
+        selected = periods(payload.get('periods', ['1d']), source)
         name = str(payload.get('name', '')).strip()
         if not name or len(name) > 100:
             raise ValueError('数据集名称需要 1 至 100 个字符')
@@ -192,7 +192,7 @@ class Store:
             found = self.query('SELECT code,subtype FROM securities WHERE source=%s AND code=ANY(%s)', (source,members))
             if len(found) != len(members) or index_code or board_name:
                 raise ValueError('请先同步并选择Tushare期货目录')
-            if set(selected) - {'1d'} and any(row['subtype'] != 'contract' for row in found):
+            if set(selected) & set(MINUTE_PERIODS) and any(row['subtype'] != 'contract' for row in found):
                 raise ValueError('分钟数据集只能包含具体月份合约')
         return self.query('INSERT INTO datasets(id,name,members,periods,index_code,snapshot_id,scheduled,board_name,board_snapshot_id,source,account_id,endpoint,schedule_time) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *',
                           (str(uuid.uuid4()), name, document(members), document(selected), index_code, snapshot, bool(payload.get('scheduled')), board_name, board_snapshot,source,payload.get('account_id'),payload.get('endpoint'),schedule_time), one=True)
@@ -222,28 +222,33 @@ class Store:
         with self.connect() as conn:
             if rows:
                 with conn.cursor() as cursor:
-                    fields = ('code', 'period', 'time', *FIELDS, 'trading_day', 'source', 'normalization_version')
+                    fields = ('code', 'period', 'time', *FIELDS, 'trading_day', 'source', 'normalization_version', 'as_of_date', 'source_fields')
                     columns = sql.SQL(',').join(map(sql.Identifier, fields))
                     placeholders = sql.SQL(',').join(sql.Placeholder(field) for field in fields)
-                    updates = sql.SQL(',').join(sql.SQL('{}=EXCLUDED.{}').format(sql.Identifier(field), sql.Identifier(field)) for field in (*FIELDS, 'trading_day'))
-                    statement = sql.SQL('INSERT INTO bars({}) VALUES({}) ON CONFLICT(instrument_id,source,period,time) DO UPDATE SET {},updated_at=now()').format(columns, placeholders, updates)
-                    cursor.executemany(statement, [dict({field: row.get(field) for field in fields}, source=source, normalization_version='tushare-futures-v1' if source == 'tushare' else 'qmt-raw-v1') for row in rows])
-            conn.execute('INSERT INTO coverage(job_id,code,period,requested_start,requested_end,actual_start,actual_end,row_count,gaps) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(job_id,code,period,requested_start) DO UPDATE SET actual_start=EXCLUDED.actual_start,actual_end=EXCLUDED.actual_end,row_count=EXCLUDED.row_count,gaps=EXCLUDED.gaps',
-                         (job_id, part['code'], part['period'], part['start'], part['end'], rows[0]['time'] if rows else None, rows[-1]['time'] if rows else None, len(rows), document(gaps)))
+                    updates = sql.SQL(',').join(sql.SQL('{}=EXCLUDED.{}').format(sql.Identifier(field), sql.Identifier(field)) for field in (*FIELDS, 'trading_day','as_of_date','source_fields','normalization_version'))
+                    statement = sql.SQL('INSERT INTO bars({}) VALUES({}) ON CONFLICT(instrument_id,source,period,time) DO UPDATE SET {},updated_at=now() WHERE EXCLUDED.as_of_date IS NULL OR bars.as_of_date IS NULL OR EXCLUDED.as_of_date >= bars.as_of_date').format(columns, placeholders, updates)
+                    cursor.executemany(statement, [dict({field: row.get(field) for field in fields}, source=source, source_fields=document(row.get('source_fields',{})), normalization_version='tushare-futures-v2' if part['period'] in AGGREGATE_PERIODS else 'tushare-futures-v1' if source == 'tushare' else 'qmt-raw-v1') for row in rows])
             if factor is not None:
                 conn.execute('INSERT INTO factors(code,raw) VALUES(%s,%s) ON CONFLICT(code) DO UPDATE SET raw=EXCLUDED.raw,observed_at=now()', (part['code'], document(factor)))
-            conn.execute("UPDATE jobs SET checkpoint=%s,attempts=0,result=result || jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=%s)),updated_at=now() WHERE id=%s", (checkpoint, job_id, job_id))
+            self.write_coverage(conn,job_id,part,len(rows),gaps,checkpoint,rows[0]['time'] if rows else None,rows[-1]['time'] if rows else None)
+
+    def write_coverage(self, conn, job_id, part, count, gaps, checkpoint, actual_start=None, actual_end=None):
+        conn.execute('INSERT INTO coverage(job_id,code,period,requested_start,requested_end,actual_start,actual_end,row_count,gaps) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(job_id,code,period,requested_start) DO UPDATE SET actual_start=EXCLUDED.actual_start,actual_end=EXCLUDED.actual_end,row_count=EXCLUDED.row_count,gaps=EXCLUDED.gaps',
+                     (job_id,part['code'],part['period'],part['start'],part['end'],actual_start,actual_end,count,document(gaps)))
+        conn.execute("UPDATE jobs SET checkpoint=%s,attempts=0,result=result || jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=%s)),updated_at=now() WHERE id=%s", (checkpoint,job_id,job_id))
 
     def history(self, code, period='1d', start='1990-01-01', end='2100-01-01', limit=500, offset=0, conn=None, source='qmt'):
         code = codes([code], source)[0]
-        period = periods([period])[0]
+        period = periods([period],source)[0]
         limit, offset = int(limit), int(offset)
         if not 1 <= limit <= 5000 or offset < 0:
             raise ValueError('分页 limit 需要 1 至 5000，offset 不得为负')
-        statement = "SELECT code,period,time,open,high,low,close,volume,amount,open_interest,settlement,previous_settlement,trading_day,source FROM bars WHERE source=%s AND code=%s AND period=%s AND coalesce(trading_day,time::date) BETWEEN %s::date AND %s::date ORDER BY time LIMIT %s OFFSET %s"
-        args = (source, code, period, day(start), day(end), limit, offset)
+        aggregate = period in AGGREGATE_PERIODS
+        extra = ',as_of_date,source_fields' if aggregate else ''
+        statement = "SELECT code,period,time,open,high,low,close,volume,amount,open_interest,settlement,previous_settlement,trading_day,source" + extra + " FROM bars WHERE source=%s AND code=%s AND period=%s AND coalesce(trading_day,time::date) BETWEEN %s::date AND %s::date ORDER BY time LIMIT %s OFFSET %s"
+        args = (source, code, period, period_label(start,period), period_label(end,period), limit, offset)
         rows = conn.execute(statement, args).fetchall() if conn else self.query(statement, args)
         return {'rows': rows, 'offset': offset, 'limit': limit, 'next_offset': offset + len(rows) if len(rows) == limit else None,
-                'source': 'postgresql', 'provider': source, 'normalization_version': 'tushare-futures-v1' if source == 'tushare' else 'qmt-raw-v1', 'adjustment': 'none', 'timezone': 'Asia/Shanghai',
-                'date_basis': '日线按交易日；分钟按上海自然时间查询，未提供交易日时夜盘归属待核验' if source == 'tushare' else '优先使用终端 trading_day；未提供时按行情时间的上海自然日查询，夜盘归属待核验',
+                'source': 'postgresql', 'provider': source, 'normalization_version': 'tushare-futures-v2' if aggregate else 'tushare-futures-v1' if source == 'tushare' else 'qmt-raw-v1', 'adjustment': 'none', 'timezone': 'Asia/Shanghai',
+                'date_basis': '按日期所在周/月的周期标签查询；time为周五/月末标签，as_of_date为上游计算截至日期，不是历史时点快照；source_fields保留上游原始字段及万元金额' if aggregate else '日线按交易日；分钟按上海自然时间查询，未提供交易日时夜盘归属待核验' if source == 'tushare' else '优先使用终端 trading_day；未提供时按行情时间的上海自然日查询，夜盘归属待核验',
                 'units': {'price': '合约报价单位（见合约资料）', 'volume': '手', 'amount': '元', 'open_interest': '手'} if source == 'tushare' else {'price': 'QMT 原始报价', 'volume': 'QMT 原始成交量单位（未换算）', 'amount': 'QMT 原始成交额单位（未换算）', 'open_interest': 'QMT 原始持仓量单位（未换算）'}}
