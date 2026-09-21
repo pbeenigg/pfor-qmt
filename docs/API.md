@@ -1,5 +1,41 @@
 # API 与数据口径
 
+## 名称与历史汇总
+
+POST /history/summary在groups之外返回instrument_names，按请求source从证券目录映射代码到名称；没有目录记录时不返回猜测名称。POST /futures/summary和分页资料查询对mapping/settle返回同源instrument_names，映射代码、对应月份代码和结算合约代码均可用于名称展示。原始rows和导出字段不变。
+
+## 资料明细筛选
+
+POST /futures/records、/futures/summary、/futures/export支持顶层dimensions对象：warehouse资料允许warehouse、unit；holding资料允许broker。字段值为最多1000项的字符串或null列表，不用逗号分隔，保留原始名称。不同字段取交集，同字段多值取并集；空列表不加限制。例：`"dimensions":{"warehouse":["甲,仓库"],"unit":["吨"]}`。
+
+POST /futures/filter-options接受与资料查询相同的来源、对象和日期范围，返回options、total、snapshot、evaluated_at。选项来自该范围的完整入库记录，不按传入dimensions缩减；超过1000个不同值明确拒绝。列表、统计及导出复用同一筛选，导出任务及口径JSON保留dimensions。
+
+/futures/sync和维护范围不接受非空dimensions，防止把资料查询条件当成上游采集限制。SDK新增futures_filter_options；futures_records有dimensions时使用POST，query_futures、futures_summary、export_futures及export_futures_batch均可传同一对象。
+
+## 分块与事件筛选
+
+GET /jobs/{id}/units新增states、quality_states、search、error_code可选参数；状态支持列表或逗号分隔，search检索分块请求与问题说明。返回total、limit、offset和next_offset，数量与记录在同一只读快照计算，按unit_index稳定排序。省略筛选保留原查询范围；SDK job_units接受同名关键字参数。
+
+POST /events/query新增search，匹配事件说明或代码；job_id接受完整ID或至少8位前缀。GET /jobs/{id}/events始终固定该任务，支持同样的search、levels、code、start/end筛选及before游标，SDK job_events接受这些关键字参数。事件页展示本批数量，不把当前页当作全部结果。
+
+## 回收站
+
+POST /console/datasets/{id}/delete、/restore及/console/maintenance/{id}/delete、/restore要求当前revision。POST /jobs/{id}/delete、/restore接受空对象；只允许已结束任务回收。响应含deleted_at，恢复后为空。配置删除与恢复均停用自动更新；活动引用、维护依赖、过期版本会拒绝操作。已删除记录仍可追溯，但不能执行采集或重试。
+
+/datasets/query、/maintenance/query、/jobs/query和/operations/summary新增trash=active|deleted|all，默认active。执行统计与任务列表共用筛选；数据质量统计保留已删除任务的未解决证据。GET /datasets和/maintenance默认排除回收站项，避免采集时误选。SDK提供delete_dataset/restore_dataset、delete_maintenance/restore_maintenance、delete_job/restore_job；前两组要求revision。
+
+## 任务列表筛选
+
+POST /jobs/query与/operations/summary共用search、states、kinds、sources、start/end、account_ids及origins筛选。search匹配任务ID、错误、成员代码、账号ID和当前关联数据集/维护名称；日期指上海时区的任务创建日期。account_ids和origins接受列表或逗号分隔值；origins包括manual、scheduled、maintenance（执行一次）、retry、repair、verify。
+
+/jobs/query新增只读origin、dataset_name、maintenance_name字段。名称来自当前配置，可能为NULL；成员、日期、账号绑定仍以任务payload为准。列表默认创建时间倒序，支持白名单排序和50/100/200条分页，不回传chunks大字段。
+
+## 维护执行与固定绑定
+
+POST /console/maintenance接受job_id时复制原任务成员、周期、账号和端点；payload仅有dataset_id时才读取数据集当前配置。已有固定范围传回成员及端点时，编辑/复制保持原绑定。新计划默认停用，启用前校验能力。
+
+POST /console/maintenance/{id}/preview接受可选start/end，自定义范围优先，否则按同源已保存交易日历回读；返回五分钟有效preview_key及实际范围，不创建任务。/run确认时再次检查权限和绑定，重复同一preview_key返回原任务。POST /console/datasets/{id}可显式传rebind_account=true更新所选账号端点；普通名称修改或停用不重绑。停用的维护范围可显式选择账号并重新绑定，原已排队任务不变。
+
 ## 执行、质量与运维
 
 GET /status新增worker_issues数组，包含source、lane、scope_kind/scope_id、name、market、code、reason和action（非范围故障不含scope字段）。原worker等文本字段仍保留兼容；工作台用结构化字段渲染折叠摘要与逐范围详情，不解析拼接文本。
@@ -174,6 +210,26 @@ reports = client.query_futures([
 网页快捷范围按上海日期计算并包含今天；近三天含今天及前两天，一周含前六天，月/年按日历回退并钳制月末，不代表相应交易日数量。周/月查询仍按周期标签和计算截至日口径。采集账号不可用不会阻止已入库数据查询与导出。
 
 ## 时间、数值与覆盖
+
+### QMT日历与主力映射
+
+2026-09-21原生适配：当前月份代码未带后缀时按请求所属市场补齐；原始值仍保留。近月连续别名的品种关系需终端ProductID证据。能力检测新增limited（仅已观察交易日）与bridge_outdated（桥缺动作）；终端缺原生接口仍unsupported，但不再建议重复更新同版模型。
+
+独立日历未提供时，从同源证券目录按代码排序选取该市场最多三个连续合约，用period=1d读取K线日期并集，不下载行情。证据保存在trading_dates.source_fields，含样本代码与原始日期；仅入库实际观察到的开市日，未返回日期保持未知，任务为partial。空响应、权限拒绝、连接错误不伪造日历；历史映射仍不能用当前快照补齐。
+
+`GET /sources` 的QMT项新增 `reports` 和 `reference_capabilities`；`POST /sources/qmt/references/test` 接受 `resource=calendar|mapping`、`mapping_mode=current|history` 和可选31天以内的检测日期。该检测只读终端缓存，不发下载、不写业务资料；历史空响应不等于无权限。能力按样本返回状态、时间、原因，服务重启后需重新检测。
+
+现有 `/futures/options`、`/futures/records`、`/futures/summary`、`/futures/sync`、`/futures/export` 对calendar/mapping接受 `source=qmt`。QMT映射默认current，Tushare默认history；同一任务/查询不能混来源或模式。QMT采集不绑定Tushare账号。SDK新增 `test_qmt_references`，现有资料查询、sync_futures及导出增加可选source，旧Tushare默认保留。
+
+```python
+client.sync_futures('mapping', source='qmt', code='a00.DF', mapping_mode='current')
+client.sync_futures('calendar', '2026-09-14', '2026-09-20', source='qmt', exchange='DCE')
+client.futures_records('mapping', '2026-09-14', '2026-09-20', source='qmt', code='a00.DF', mapping_mode='history')
+```
+
+current查询和导出返回所选合约最新保存快照，不按业务日期筛选；采集始终记录执行时状态，历史日期不会触发历史回填。observed_at为采集时间，trading_day仅采用终端明确字段，可为NULL或晚于采集自然日。原任务核验读取原快照，不读后续新快照冒充原结果。
+
+日历记录的evidence为calendar（独立日历）、calendar_open（未来已返回开市日）、bar_observation（K线日期观察）或legacy（旧记录）。只有独立日历明确覆盖的过去区间可补充休市；未来未确认日期不填休市，空响应不产生全休市日历。旧 `/calendar` 仍只返回已保存开市日列表，完整资料及证据请用 `/futures/records`。
 
 日期为 `YYYY-MM-DD`，查询包含结束日。行情时间以Asia/Shanghai解析；日线统一到交易日零点，分钟保留原始行情时间。QMT毫秒epoch与YYYYMMDD/YYYYMMDDHHMMSS格式显式解析。新增open_interest、settlement、previous_settlement和trading_day可空字段，原生settle映射结算价，openInterest映射持仓量。
 

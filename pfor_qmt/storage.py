@@ -2,6 +2,7 @@ import json
 import re
 import uuid
 import hashlib
+import time
 from pathlib import Path
 
 import psycopg
@@ -12,7 +13,7 @@ from psycopg.types.json import Jsonb
 from .data import codes, day, periods, json_default, FIELDS, MINUTE_PERIODS, AGGREGATE_PERIODS, period_label, filter_values
 from .symbols import KINDS, MARKETS, market_of
 from .identifiers import provider_name, source_market, identity_key, TS_EXCHANGES
-from .reliability import STATES, classify_gaps, quality, redact, issue
+from .reliability import STATES, QUALITY_STATES, classify_gaps, quality, redact, issue
 
 
 def document(value):
@@ -36,10 +37,20 @@ class Store:
     def connect(self):
         if not self.dsn:
             raise ValueError('请先配置 PostgreSQL 连接')
-        conn = psycopg.connect(self.dsn, connect_timeout=5, row_factory=dict_row)
-        conn.execute(sql.SQL('SET search_path TO {}, pg_catalog').format(sql.Identifier(self.schema)))
-        conn.execute("SET TIME ZONE 'Asia/Shanghai'")
-        return conn
+        # Only retry before handing a connection to business code; never replay a transaction.
+        for attempt in range(3):
+            conn=None
+            try:
+                conn = psycopg.connect(self.dsn, connect_timeout=5, row_factory=dict_row)
+                conn.execute(sql.SQL('SET search_path TO {}, pg_catalog').format(sql.Identifier(self.schema)))
+                conn.execute("SET TIME ZONE 'Asia/Shanghai'")
+                return conn
+            except psycopg.Error as error:
+                if conn is not None: conn.close()
+                state=error.sqlstate or ''
+                transient=isinstance(error,psycopg.OperationalError) and (not state or state.startswith('08') or state in ('57P01','57P02','57P03','53300'))
+                if not transient or attempt==2: raise
+                time.sleep(0.25*(attempt+1))
 
     def migrate(self):
         with self.connect() as conn:
@@ -73,7 +84,9 @@ class Store:
         return self.query("SELECT * FROM securities WHERE source=%s AND (code ILIKE %s OR name ILIKE %s) AND (%s='' OR kind=%s OR (%s='etf' AND subtype='etf')) ORDER BY code LIMIT 1000",
                           (provider_name(source), '%' + search + '%', '%' + search + '%', kind, kind, kind))
 
-    def catalog_page(self, search='', kind='', limit=50, offset=0, market='', subtype='', source='qmt', active=False, select_all=False):
+    def catalog_page(self, search='', kind='', limit=50, offset=0, market='', subtype='', source='qmt', active=False, select_all=False, sort='code', direction='asc'):
+        from .analytics import ordering
+        order=ordering({'sort':sort,'direction':direction},('code','name','kind','market','updated_at'),'code',('code',))
         limit, offset = int(limit), int(offset)
         kinds = filter_values(kind, (*KINDS, 'etf'), '证券类别')
         markets = filter_values(market, MARKETS, '交易所')
@@ -89,7 +102,7 @@ class Store:
                 if total > 10000:
                     raise ValueError(f'筛选结果共{total}个，超过单次10000个上限，请缩小范围；未截断选择')
                 limit, offset = max(1, total), 0
-            rows = conn.execute('SELECT code,name,kind,market,subtype,metadata,updated_at,source,instrument_id ' + query + ' ORDER BY code LIMIT %s OFFSET %s', args + (limit, offset)).fetchall()
+            rows = conn.execute('SELECT code,name,kind,market,subtype,metadata,updated_at,source,instrument_id ' + query + ' ORDER BY '+order+' LIMIT %s OFFSET %s', args + (limit, offset)).fetchall()
         return dict(rows=rows, total=total, offset=offset, next_offset=offset + len(rows) if offset + len(rows) < total else None)
 
     def create_catalog_job(self, kinds, source='qmt', account_id=None, endpoint=None, exchanges=None):
@@ -152,7 +165,9 @@ class Store:
         conn.execute('INSERT INTO catalog_sectors(name,category,path) VALUES(%s,%s,%s) ON CONFLICT(name) DO UPDATE SET category=EXCLUDED.category,path=EXCLUDED.path,observed_at=now()', (part['name'], part['category'], document(part['path'])))
         conn.execute('INSERT INTO board_snapshots(id,name,category,members) VALUES(%s,%s,%s,%s)', (str(uuid.uuid4()), part['name'], part['category'], document(members)))
 
-    def boards(self, search='', category='', limit=50, offset=0):
+    def boards(self, search='', category='', limit=50, offset=0, sort='name', direction='asc'):
+        from .analytics import ordering
+        order=ordering({'sort':sort,'direction':direction},('name','category','observed_at'),'name',('name',))
         limit, offset = int(limit), int(offset)
         if category not in ('', 'industry', 'concept') or not 1 <= limit <= 200 or offset < 0:
             raise ValueError('无效板块筛选或分页参数')
@@ -161,7 +176,7 @@ class Store:
         with self.connect() as conn:
             conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
             total = conn.execute('SELECT count(*) AS n ' + query, args).fetchone()['n']
-            rows = conn.execute('SELECT name,category,path,observed_at ' + query + ' ORDER BY name LIMIT %s OFFSET %s', args + (limit, offset)).fetchall()
+            rows = conn.execute('SELECT name,category,path,observed_at ' + query + ' ORDER BY '+order+' LIMIT %s OFFSET %s', args + (limit, offset)).fetchall()
         return dict(rows=rows, total=total, next_offset=offset + len(rows) if offset + len(rows) < total else None)
 
     def board(self, name):
@@ -178,7 +193,7 @@ class Store:
             conn.execute('INSERT INTO constituent_snapshots(id,index_code,members) VALUES(%s,%s,%s)', (identifier, code, document(members)))
         return self.query('SELECT * FROM constituent_snapshots WHERE id=%s', (identifier,), one=True)
 
-    def create_dataset(self, payload):
+    def dataset_values(self, payload):
         source = provider_name(payload.get('source', 'qmt'))
         members = codes(payload['members'], source)
         selected = periods(payload.get('periods', ['1d']), source)
@@ -206,10 +221,18 @@ class Store:
             found = self.query('SELECT code,subtype FROM securities WHERE source=%s AND code=ANY(%s)', (source,members))
             if len(found) != len(members) or index_code or board_name:
                 raise ValueError('请先同步并选择Tushare期货目录')
-            if set(selected) & set(MINUTE_PERIODS) and any(row['subtype'] != 'contract' for row in found):
-                raise ValueError('分钟数据集只能包含具体月份合约')
-        return self.query('INSERT INTO datasets(id,name,members,periods,index_code,snapshot_id,scheduled,board_name,board_snapshot_id,source,account_id,endpoint,schedule_time) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *',
-                          (str(uuid.uuid4()), name, document(members), document(selected), index_code, snapshot, bool(payload.get('scheduled')), board_name, board_snapshot,source,payload.get('account_id'),payload.get('endpoint'),schedule_time), one=True)
+            incompatible = [row['code'] for row in found if row['subtype'] != 'contract']
+            if set(selected) & set(MINUTE_PERIODS) and incompatible:
+                raise ValueError('分钟数据集只能包含具体月份合约；请移除以下非月份合约，或仅保留日/周/月周期：' + '、'.join(incompatible[:10]) + (f' 等{len(incompatible)}个' if len(incompatible)>10 else ''))
+        return dict(name=name,members=members,periods=selected,index_code=index_code,snapshot_id=snapshot,
+                    scheduled=bool(payload.get('scheduled')),board_name=board_name,board_snapshot_id=board_snapshot,
+                    source=source,account_id=payload.get('account_id'),endpoint=payload.get('endpoint'),schedule_time=schedule_time)
+
+    def create_dataset(self, payload):
+        value=self.dataset_values(payload)
+        fields=list(value)
+        return self.query('INSERT INTO datasets(id,'+','.join(fields)+') VALUES('+','.join(['%s']*(len(fields)+1))+') RETURNING *',
+                          (str(uuid.uuid4()),*(document(value[key]) if key in ('members','periods') else value[key] for key in fields)),one=True)
 
     def create_job(self, kind, payload, schedule_key=None):
         return self.query('INSERT INTO jobs(id,kind,payload,schedule_key) VALUES(%s,%s,%s,%s) ON CONFLICT(schedule_key) DO UPDATE SET schedule_key=EXCLUDED.schedule_key RETURNING *',
@@ -231,23 +254,25 @@ class Store:
         return row
 
     def jobs_page(self, payload):
-        states = filter_values(payload.get('states', []), (*STATES, 'completed'), '任务状态')
-        states = ['succeeded' if state == 'completed' else state for state in states]
-        kinds = filter_values(payload.get('kinds', []), ('download','export','catalog','verify'), '任务类型')
-        sources = filter_values(payload.get('sources', []), ('qmt','tushare'), '任务来源')
+        from .analytics import jobs_filter, ordering, snapshot, JOB_ORIGIN_SQL
         limit, offset = int(payload.get('limit', 50)), int(payload.get('offset', 0))
         start, end = day(payload.get('start') or '1990-01-01'), day(payload.get('end') or '2100-01-01')
         if not 1 <= limit <= 200 or offset < 0 or start > end:
             raise ValueError('无效任务查询日期或分页')
-        where = "FROM jobs WHERE (%s OR state=ANY(%s)) AND (%s OR kind=ANY(%s)) AND (%s OR coalesce(payload->>'source','qmt')=ANY(%s)) AND created_at::date BETWEEN %s AND %s AND (id::text ILIKE %s OR coalesce(error,'') ILIKE %s)"
-        search = '%'+str(payload.get('search',''))+'%'
-        args = (not states,states,not kinds,kinds,not sources,sources,start,end,search,search)
-        fields = "id,kind,state,parent_id,error_code,action,run_number,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,CASE WHEN kind IN ('download','verify') THEN jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=jobs.id)) || (result-'coverage') ELSE result-'coverage' END AS result,error,created_at,updated_at"
+        predicate,args=jobs_filter(payload)
+        where='FROM jobs WHERE '+predicate
+        order=ordering({'direction':'desc',**payload},('created_at','updated_at','state','kind','id'),'created_at',('id',))
+        fields = "id,kind,state,deleted_at,parent_id,error_code,action,run_number,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,CASE WHEN kind IN ('download','verify') THEN jsonb_build_object('rows',(SELECT coalesce(sum(row_count),0) FROM coverage WHERE job_id=jobs.id)) || (result-'coverage') ELSE result-'coverage' END AS result,error,created_at,updated_at"
+        fields += ",("+JOB_ORIGIN_SQL+") AS origin,(SELECT name FROM datasets d WHERE d.id::text=jobs.payload->>'dataset_id') AS dataset_name,(SELECT name FROM maintenance_plans m WHERE m.id::text=coalesce(jobs.payload->>'maintenance_id',jobs.payload->>'manual_maintenance_id')) AS maintenance_name"
         with self.connect() as conn:
             conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
-            total = conn.execute('SELECT count(*) AS n '+where,args).fetchone()['n']
-            rows = conn.execute('SELECT '+fields+' '+where+' ORDER BY created_at DESC,id DESC LIMIT %s OFFSET %s',(*args,limit,offset)).fetchall()
-        return dict(rows=rows,total=total,offset=offset,next_offset=offset+len(rows) if offset+len(rows)<total else None)
+            meta=snapshot(conn,'jobs',predicate,args,payload)
+            total=meta['total']
+            if payload.get('select_all'):
+                if total>1000: raise ValueError('匹配任务超过1000个，请缩小筛选范围；未截断选择')
+                limit,offset=max(1,total),0
+            rows = conn.execute('SELECT '+fields+' '+where+' ORDER BY '+order+' LIMIT %s OFFSET %s',(*args,limit,offset)).fetchall()
+        return dict(meta,rows=rows,offset=offset,next_offset=offset+len(rows) if offset+len(rows)<total else None)
 
     def update_job(self, identifier, **changes):
         allowed = {'state','checkpoint','attempts','cancel_requested','result','error','payload','error_code','action','run_number'}
@@ -307,12 +332,22 @@ class Store:
         self.event(job_id,error_code or 'UNIT_COMMITTED','分块已提交' if state == 'succeeded' else '分块未入库',
                    'warning' if issues else 'info',index,dict(request=part,rows=count,quality_state=quality(issues),issues=issues),sample,conn)
 
-    def units_page(self, identifier, limit=50, offset=0):
+    def units_page(self, identifier, limit=50, offset=0, filters=None):
         limit, offset = int(limit), int(offset)
         if not 1 <= limit <= 200 or offset < 0:
             raise ValueError('无效分块分页参数')
-        rows = self.query('SELECT * FROM job_units WHERE job_id=%s ORDER BY unit_index LIMIT %s OFFSET %s', (identifier,limit+1,offset))
-        return dict(rows=rows[:limit],next_offset=offset+limit if len(rows)>limit else None,offset=offset)
+        filters=filters or {}
+        states=filter_values(filters.get('states',[]),STATES,'分块执行状态')
+        qualities=filter_values(filters.get('quality_states',[]),QUALITY_STATES,'分块质量状态')
+        search='%'+str(filters.get('search') or '').strip()+'%'
+        error_code=str(filters.get('error_code') or '').strip()
+        where="job_id=%s AND (%s OR state=ANY(%s)) AND (%s OR quality_state=ANY(%s)) AND (%s='' OR error_code=%s) AND (request::text ILIKE %s OR coalesce(error_code,'') ILIKE %s OR issues::text ILIKE %s)"
+        args=(identifier,not states,states,not qualities,qualities,error_code,error_code,search,search,search)
+        with self.connect() as conn:
+            conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+            total=conn.execute('SELECT count(*) AS n FROM job_units WHERE '+where,args).fetchone()['n']
+            rows=conn.execute('SELECT * FROM job_units WHERE '+where+' ORDER BY unit_index LIMIT %s OFFSET %s',(*args,limit,offset)).fetchall()
+        return dict(rows=rows,total=total,limit=limit,next_offset=offset+len(rows) if offset+len(rows)<total else None,offset=offset)
 
     def events_page(self, payload):
         limit, before = int(payload.get('limit',50)), int(payload.get('before') or 9223372036854775807)
@@ -320,17 +355,21 @@ class Store:
             raise ValueError('无效日志分页参数')
         levels = filter_values(payload.get('levels',[]), ('info','warning','error'), '日志级别')
         sources = filter_values(payload.get('sources',[]), ('qmt','tushare'), '日志来源')
-        job_id = str(payload.get('job_id') or '')
+        job_id = str(payload.get('job_id') or '').strip().lower()
+        if job_id and not re.fullmatch(r'[0-9a-f-]{8,36}',job_id):
+            raise ValueError('请输入完整任务ID或至少8位ID前缀')
         code = str(payload.get('code') or '')
+        search='%'+str(payload.get('search') or '').strip()+'%'
         start, end = day(payload.get('start') or '1990-01-01'), day(payload.get('end') or '2100-01-01')
         if start > end:
             raise ValueError('日志开始日期不得晚于结束日期')
-        rows = self.query("SELECT e.*,coalesce(j.payload->>'source',e.context->>'source','qmt') AS source FROM job_events e LEFT JOIN jobs j ON j.id=e.job_id WHERE e.id<%s AND (%s='' OR e.job_id::text=%s) AND (%s OR e.level=ANY(%s)) AND (%s OR coalesce(j.payload->>'source',e.context->>'source','qmt')=ANY(%s)) AND (%s='' OR e.code=%s) AND e.created_at::date BETWEEN %s AND %s ORDER BY e.id DESC LIMIT %s", (before,job_id,job_id,not levels,levels,not sources,sources,code,code,start,end,limit+1))
+        rows = self.query("WITH job_sources AS MATERIALIZED (SELECT id,payload->>'source' AS source FROM jobs) SELECT e.*,coalesce(j.source,e.context->>'source','qmt') AS source FROM job_events e LEFT JOIN job_sources j ON j.id=e.job_id WHERE e.id<%s AND (%s='' OR e.job_id::text LIKE %s) AND (%s OR e.level=ANY(%s)) AND (%s OR coalesce(j.source,e.context->>'source','qmt')=ANY(%s)) AND (%s='' OR e.code=%s) AND (e.message ILIKE %s OR e.code ILIKE %s) AND e.created_at::date BETWEEN %s AND %s ORDER BY e.id DESC LIMIT %s", (before,job_id,job_id+'%',not levels,levels,not sources,sources,code,code,search,search,start,end,limit+1))
         return dict(rows=rows[:limit],next_before=rows[limit-1]['id'] if len(rows)>limit else None)
 
     def create_verification(self, identifier):
         with self.connect() as conn:
             job=conn.execute('SELECT * FROM jobs WHERE id=%s FOR UPDATE',(identifier,)).fetchone()
+            if job and job['deleted_at']: raise ValueError('任务在回收站，请先恢复')
             if not job or job['kind'] not in ('download','verify') or job['state'] in ('queued','running','retrying') or not job['payload'].get('chunks'):
                 raise ValueError('请选择已有处理范围的非活动采集任务重新核验')
             active=conn.execute("SELECT * FROM jobs WHERE kind='verify' AND payload->>'verification_of'=%s AND state IN ('queued','running','retrying') LIMIT 1",(str(identifier),)).fetchone()
@@ -345,6 +384,7 @@ class Store:
         from .quality_checks import repair_ranges
         with self.connect() as conn:
             job=conn.execute('SELECT * FROM jobs WHERE id=%s FOR UPDATE',(identifier,)).fetchone()
+            if job and job['deleted_at']: raise ValueError('任务在回收站，请先恢复')
             if not job or job['kind']!='verify' or job['state'] in ('queued','running','retrying'):
                 raise ValueError('请先完成只读核验，再预览可补缺口')
             units=list(conn.execute('SELECT * FROM job_units WHERE job_id=%s ORDER BY unit_index',(identifier,)))
@@ -397,6 +437,7 @@ class Store:
     def retry_job(self, identifier, unit_indices=None, automatic=False, now=None):
         with self.connect() as conn:
             job = conn.execute('SELECT * FROM jobs WHERE id=%s FOR UPDATE', (identifier,)).fetchone()
+            if job and job['deleted_at']: raise ValueError('任务在回收站，请先恢复')
             if not job or job['state'] not in ('failed','cancelled','partial','blocked'):
                 raise ValueError('任务状态不允许重试')
             payload = dict(job['payload'])
@@ -450,18 +491,22 @@ class Store:
             conn.execute("UPDATE job_events SET sample=NULL WHERE sample IS NOT NULL AND created_at < now() - %s * interval '1 day'", (sample_days,))
             conn.execute("DELETE FROM job_events WHERE created_at < now() - %s * interval '1 day'", (event_days,))
 
-    def operations_health(self, now=None):
+    def operations_health(self, now=None, source=None, view=None):
         from .freshness import freshness_page
-        latest = "WITH latest AS (SELECT DISTINCT ON (coalesce(j.payload->>'source','qmt'),u.request-'source') u.*,coalesce(j.payload->>'source','qmt') AS source FROM job_units u JOIN jobs j ON j.id=u.job_id ORDER BY coalesce(j.payload->>'source','qmt'),u.request-'source',u.updated_at DESC) "
+        if source is not None: source=provider_name(source)
+        if view not in (None,'overview','quality'): raise ValueError('无效健康视图')
+        # Materialize source once per job: large jobs contain thousands of JSON chunks.
+        latest = "WITH job_sources AS MATERIALIZED (SELECT id,coalesce(payload->>'source','qmt') AS source FROM jobs), latest AS MATERIALIZED (SELECT DISTINCT ON (j.source,u.request-'source') u.job_id,u.state,u.quality_state,j.source FROM job_units u JOIN job_sources j ON j.id=u.job_id WHERE (%s::text IS NULL OR j.source=%s) ORDER BY j.source,u.request-'source',u.updated_at DESC), unresolved AS (SELECT DISTINCT job_id FROM latest WHERE state!='succeeded' OR quality_state NOT IN ('verified','not_applicable')) "
+        args=(source,source)
         return dict(
             database=self.health(),
             database_bytes=self.query('SELECT pg_database_size(current_database()) AS bytes',one=True)['bytes'],
-            queues=self.query("SELECT coalesce(payload->>'source','qmt') AS source,state,count(*) AS count,min(created_at) AS oldest FROM jobs WHERE state IN ('queued','running','retrying') GROUP BY 1,2 ORDER BY 1,2"),
-            quality=self.query(latest+"SELECT source,quality_state,count(*) AS count FROM latest GROUP BY 1,2 ORDER BY 1,2"),
-            attention=self.query(latest+"SELECT id,state,error_code,error,action,updated_at,payload->>'source' AS source FROM jobs j WHERE state IN ('blocked','failed','partial') AND (EXISTS(SELECT 1 FROM latest u WHERE u.job_id=j.id AND (u.state!='succeeded' OR u.quality_state NOT IN ('verified','not_applicable'))) OR NOT EXISTS(SELECT 1 FROM job_units u WHERE u.job_id=j.id)) ORDER BY updated_at DESC LIMIT 50"),
-            freshness=self.query('SELECT source,period,max(time) AS last_bar,max(updated_at) AS last_write FROM bars GROUP BY source,period ORDER BY source,period'),
-            scheduled_freshness=freshness_page(self, {}, now),
-            maintenance=self.query('SELECT id,name,source,enabled,last_date,last_error,updated_at FROM maintenance_plans ORDER BY name'),
+            queues=self.query("SELECT coalesce(payload->>'source','qmt') AS source,state,count(*) AS count,min(created_at) AS oldest FROM jobs WHERE state IN ('queued','running','retrying') AND (%s::text IS NULL OR coalesce(payload->>'source','qmt')=%s) GROUP BY 1,2 ORDER BY 1,2",args) if view!='quality' else [],
+            quality=self.query(latest+"SELECT source,quality_state,count(*) AS count FROM latest GROUP BY 1,2 ORDER BY 1,2",args),
+            attention=self.query(latest+"SELECT j.id,j.state,j.error_code,j.error,j.action,j.updated_at,s.source FROM jobs j JOIN job_sources s ON s.id=j.id WHERE j.state IN ('blocked','failed','partial') AND (%s::text IS NULL OR s.source=%s) AND (j.id IN (SELECT job_id FROM unresolved) OR NOT EXISTS(SELECT 1 FROM job_units u WHERE u.job_id=j.id)) ORDER BY j.updated_at DESC LIMIT 50",args+args) if view!='overview' else [],
+            freshness=self.query('SELECT source,period,max(time) AS last_bar,max(updated_at) AS last_write FROM bars WHERE (%s::text IS NULL OR source=%s) GROUP BY source,period ORDER BY source,period',args) if view!='quality' else [],
+            scheduled_freshness=freshness_page(self, {'sources':[source]} if source else {}, now) if view is None else None,
+            maintenance=self.query('SELECT id,name,source,enabled,last_date,last_error,updated_at FROM maintenance_plans WHERE (%s::text IS NULL OR source=%s) ORDER BY name',args) if view is None else [],
             database_free_space={'state':'unverified','reason':'远端或容器数据库磁盘不可由应用本地磁盘推断'})
 
     def history(self, code, period='1d', start='1990-01-01', end='2100-01-01', limit=500, offset=0, conn=None, source='qmt'):

@@ -7,8 +7,9 @@ const names = { market: '行情', indices: '指数', boards:'行业概念', hist
 const periodNames = {'1d':'日线','1w':'周线','1mo':'月线','1m':'1 分钟','5m':'5 分钟','15m':'15 分钟','30m':'30 分钟','60m':'60 分钟'};
 const minutePeriods = ['1m','5m','15m','30m','60m'];
 const reportNames = {calendar:'交易日历',mapping:'主力映射',warehouse:'仓单日报',holding:'成交持仓排名',settle:'结算参数',weekly_detail:'主要品种交易周报'};
-let boardRows = [], boardOffset = 0, boardNext = null;
+let boardRows = [], boardOffset = 0, boardNext = null, boardsRequest=0;
 const statuses = { queued:'排队中', running:'运行中', retrying:'重试等待', succeeded:'已完成', completed:'已完成', partial:'部分完成', failed:'失败', blocked:'需处理', cancelled:'已取消' };
+const originNames={manual:'手动创建',scheduled:'自动更新',maintenance:'维护执行一次',retry:'失败重试',repair:'缺口补数',verify:'只读核验'};
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const icon = (name) => `<i data-lucide="${name}"></i>`;
 const icons = () => window.lucide?.createIcons();
@@ -23,6 +24,7 @@ const number = (value) => value === undefined || value === null ? '—' : String
 const empty = (id, cols, message) => { $(id).innerHTML = `<tr><td colspan="${cols}" class="empty">${escape(message)}</td></tr>`; };
 let chart;
 let provider = 'qmt', accounts = [], sourceCapabilities = {};
+let qmtReferenceCapabilities = {};
 let accountsRequest=0, datasetsRequest=0, jobsRequest=0, securitiesRequest=0, catalogRequest=0, historyRequest=0;
 let futuresRequest=0, futuresOptionsRequest=0, futuresOffset=0, futuresNext=null, futuresActive='calendar';
 let jobOffset=0, jobNext=null, jobDetailRequest=0;
@@ -35,6 +37,12 @@ function notice(message) {
 async function api(path, payload) {
   const scoped = ['/catalog','/catalog/securities','/catalog/select','/catalog/resolve','/catalog/detail','/catalog/sync','/history','/history/query','/exports','/exports/batch','/downloads/batch','/securities'];
   const route = path.split('?')[0];
+  if(window.Workspace){
+    if(['/jobs/query','/events/query','/freshness/query','/operations/summary','/maintenance/query','/datasets/query'].includes(route))payload={...payload,sources:[provider]};
+    if(payload===undefined&&['/health','/maintenance','/datasets','/runtime/events'].includes(route)){
+      const url=new URL(path,location.origin);url.searchParams.set('source',provider);path=url.pathname+url.search;
+    }
+  }
   if (scoped.includes(route) || route === '/datasets' && payload !== undefined) {
     if (payload === undefined) {
       const url = new URL(path,location.origin);
@@ -53,6 +61,7 @@ async function api(path, payload) {
     }
     throw new Error(result.error || '请求失败');
   }
+  if(payload!==undefined&&/^\/jobs\/[^/]+\/(cancel|retry|verify|repair|delete|restore)$/.test(route))window.Workspace?.discardPendingList('job-filter');
   return result;
 }
 
@@ -60,8 +69,9 @@ function action(callback) {
   return async (event) => {
     event?.preventDefault();
     const button = event?.submitter || (event?.currentTarget?.tagName === 'BUTTON' ? event.currentTarget : null);
+    const form = event?.currentTarget?.tagName === 'FORM' ? event.currentTarget : null;
     if (button) button.disabled = true;
-    try { await callback(event); } catch (error) { notice(error.message); }
+    try { await callback(event); } catch (error) { notice(error.message);if(form)window.Workspace?.queryFailed(form,error); }
     finally { if (button) button.disabled = button.matches('#catalog-form button[type="submit"]') && ['queued','running','retrying'].includes(catalogJob?.state); requestAnimationFrame(icons); }
   };
 }
@@ -71,13 +81,15 @@ async function status() {
   $('#db-state').textContent = result.database.connected ? '历史库已连接' : '历史库未连接';
   $('#db-state').classList.toggle('online', result.database.connected);
   $('#db-configured').textContent = result.settings.database_configured ? '已保存连接信息' : '尚未配置';
-  $('#settings-form [name="qmt_root"]').value = result.settings.qmt_root;
-  $('#settings-form [name="login_enabled"]').checked = result.settings.login_enabled;
-  $('#settings-form [name="password"]').disabled = !result.settings.login_enabled;
+  $('#settings-form').elements.qmt_root.value = result.settings.qmt_root;
+  $('#settings-form').elements.login_enabled.checked = result.settings.login_enabled;
+  $('#settings-form').elements.password.disabled = !result.settings.login_enabled;
+  window.Workspace?.configLoaded(result.settings);
   return result;
 }
 
 async function switchView(view) {
+  if(window.Workspace)return Workspace.navigate(view);
   if (!names[view]) view = 'market';
   if (view==='futures' && provider!=='tushare') view='market';
   state.view = view;
@@ -101,10 +113,14 @@ async function switchView(view) {
   } catch (error) { notice(error.message); }
 }
 
-async function loadSecurities(offset = 0) {
-  const request=++securitiesRequest, selectedSource=provider;
-  const result = await api('/catalog/securities?' + new URLSearchParams({ ...values($('#security-form')), active:$('#catalog-active').checked, limit:50, offset }));
-  if(request!==securitiesRequest || selectedSource!==provider)return;
+async function loadSecurities(offset = 0, apply=false) {
+  const selectedSource=provider, view=state.view;
+  const query=window.Workspace?.listQuery('security-form',apply) || {...values($('#security-form')),active:$('#catalog-active').checked};
+  const read=query=>api('/catalog/securities?' + new URLSearchParams({ ...query, limit:50, ...window.Workspace?.pageOptions('security-form'), offset }));
+  const result = window.Workspace?await Workspace.readList('security-form',apply,read):await read(query);
+  if(!result)return;
+  const request=++securitiesRequest;
+  if(request!==securitiesRequest || selectedSource!==provider || view!==state.view)return;
   const rows = result.rows;
   rememberSecurities(rows);
   securityOffset = offset; securityNext = result.next_offset;
@@ -112,6 +128,7 @@ async function loadSecurities(offset = 0) {
   $('#security-page-status').textContent = `共 ${result.total} 个${rows.length ? ` · ${offset + 1}–${offset + rows.length}` : ''}`;
   if (!rows.length) return empty('#securities', 6, '没有匹配证券');
   $('#securities').innerHTML = rows.map((row) => `<tr><td>${escape(row.code)}</td><td>${escape(row.name)}</td><td>${escape(kindNames[row.kind])}<span class="muted">${escape(subtypeNames[row.subtype] || '')}</span></td><td>${escape(marketNames[row.market] || row.market)}</td><td>${formatTime(row.updated_at)}</td><td><button type="button" class="icon" data-instrument="${escape(row.code)}" title="查看合约资料" aria-label="查看 ${escape(row.name)} 资料">${icon('file-search')}</button></td></tr>`).join('');
+  window.Workspace?.catalogLoaded(rows);
   icons();
 }
 
@@ -178,7 +195,9 @@ async function connectSocket() {
   try {
     const ticket = await api('/ws-ticket', {});
     if (!state.authenticated) return;
-    const socket = new WebSocket(`ws://127.0.0.1:${ticket.port}/?ticket=${encodeURIComponent(ticket.ticket)}`);
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    const hostname = location.hostname.includes(':') ? `[${location.hostname}]` : location.hostname;
+    const socket = new WebSocket(`${protocol}://${hostname}:${ticket.port}/?ticket=${encodeURIComponent(ticket.ticket)}`);
     state.socket = socket;
     socket.onopen = () => { if (state.watch.length) sendWatch(); };
     socket.onmessage = (event) => {
@@ -189,7 +208,7 @@ async function connectSocket() {
         $('#quote-status').textContent = state.watch.length ? `已订阅 ${state.watch.length} 个证券` : '已停止订阅';
         $('#quote-stop').disabled = !state.watch.length;
       }
-      if (message.event === 'job' && state.view === 'jobs') loadJobs().catch((error) => notice(error.message));
+      if (message.event === 'job' && ['jobs','exports'].includes(state.view)) loadJobs().catch((error) => notice(error.message));
       if (message.event === 'source') {
         $('#qmt-state').textContent = message.connected ? '行情桥已连接' : '行情桥未连接';
         $('#qmt-state').classList.toggle('online', !!message.connected);
@@ -242,28 +261,32 @@ async function loadIndices() {
   suggestSector();
   if (!state.indices.length) return empty('#index-rows', 5, '尚未建立指数映射');
   $('#index-rows').innerHTML = state.indices.map((row, index) => `<tr><td>${escape(row.name)}<span class="muted">${escape(row.code)}</span></td><td>${escape(row.sector)}</td><td>${row.members?.length ?? 0}</td><td>${formatTime(row.observed_at)}</td><td><div class="actions"><button data-index-members="${index}" title="查看成分" aria-label="查看成分">${icon('list')}</button><button data-index-dataset="${index}" title="以当前成分创建数据集" aria-label="以当前成分创建数据集">${icon('folder-plus')}</button></div></td></tr>`).join('');
-  icons();
+  window.Workspace?.filterLocalRows('indices');icons();
 }
 
-async function loadDatasets() {
-  const request=++datasetsRequest;
-  const rows=await api('/datasets');
-  if(request!==datasetsRequest)return;
+async function loadDatasets(apply=false) {
+  const source=provider;
+  const querying=state.view==='datasets'&&window.Workspace;
+  const page=querying?await Workspace.datasetRows(apply):null;if(querying&&!page)return;
+  const rows=page?page.active_rows:await api('/datasets');
+  if(source!==provider)return;
   state.datasets=rows;
   const select = $('#download-form [name="dataset_id"]');
   const selected = new Set(selectedValues(select));
   select.innerHTML = '<option value="">选择数据集</option>' + state.datasets.filter(row=>row.source===provider).map((row) => `<option value="${row.id}" ${selected.has(row.id)?'selected':''}>${escape(row.name)} · ${row.members.length} 个证券 · ${escape(row.account_id || 'QMT')}</option>`).join('');
   refreshMulti(select);
   updateDownloadPeriods();
-  const visible=state.datasets.filter(row=>row.source===provider);
-  if (!visible.length) return empty('#datasets', 5, '当前来源暂无数据集');
-  $('#datasets').innerHTML = visible.map((row) => `<tr><td>${escape(row.name)}${row.index_code || row.board_name ? `<span class="muted">${escape(row.board_name || row.index_code)} 当前成分快照</span>` : ''}</td><td>${row.members.length}</td><td>${row.periods.map(period=>periodNames[period]).join(' / ')}</td><td><input type="checkbox" data-schedule="${row.id}" aria-label="${escape(row.name)} 交易日自动更新" ${row.scheduled ? 'checked' : ''}></td><td><div class="actions"><button data-download="${row.id}" aria-label="下载此数据集" title="下载此数据集">${icon('download')}</button><button data-dataset-detail="${row.id}" aria-label="数据集详情" title="数据集详情">${icon('file-search')}</button>${row.index_code || row.board_name ? `<button data-refresh-dataset="${row.id}" title="显式刷新成员" aria-label="显式刷新成员">${icon('refresh-cw')}</button>` : ''}</div></td></tr>`).join('');
+  const visible=page?page.rows:state.datasets.filter(row=>row.source===provider);
+  if(!visible||source!==provider)return;
+  state.datasetRows=visible;
+  if (!visible.length) return empty('#datasets', 5, '没有匹配的数据集');
+  $('#datasets').innerHTML = visible.map((row) => `<tr data-dataset-id="${row.id}"><td>${escape(row.name)}${row.deleted_at?`<span class="badge cancelled">回收站</span><span class="muted">${formatTime(row.deleted_at)}</span>`:""}${row.index_code || row.board_name ? `<span class="muted">${escape(row.board_name || row.index_code)} 当前成分快照</span>` : ''}</td><td>${row.members.length}</td><td>${row.periods.map(period=>periodNames[period]).join(' / ')}</td><td><input type="checkbox" data-schedule="${row.id}" ${row.deleted_at?'disabled':''} aria-label="${escape(row.name)} 交易日自动更新" ${row.scheduled ? 'checked' : ''}></td><td><div class="actions"><button data-download="${row.id}" aria-label="下载此数据集" title="下载此数据集">${icon('download')}</button><button data-dataset-detail="${row.id}" aria-label="数据集详情" title="数据集详情">${icon('file-search')}</button>${row.index_code || row.board_name ? `<button data-refresh-dataset="${row.id}" title="显式刷新成员" aria-label="显式刷新成员">${icon('refresh-cw')}</button>` : ''}</div></td></tr>`).join('');
   icons();
   $$('#datasets tr').forEach((tr,index) => {
     const row = visible[index];
     tr.children[0].insertAdjacentHTML('beforeend',`<span class="muted">${escape(row.source)}${row.account_id ? ' · ' + escape(row.account_id) : ''}</span>`);
     tr.children[3].insertAdjacentHTML('beforeend',`<span class="muted">${escape(row.schedule_time?.slice(0,5) || '17:00')}</span>`);
-    if (row.source === 'tushare') tr.children[4].insertAdjacentHTML('beforeend',`<select data-dataset-account="${row.id}" aria-label="${escape(row.name)} 采集账号">${accounts.filter(a=>a.enabled).map(a=>`<option value="${escape(a.id)}" ${a.id===row.account_id?'selected':''}>${escape(a.name)}</option>`).join('')}</select>`);
+    if (row.source === 'tushare' && !row.deleted_at) tr.children[4].insertAdjacentHTML('beforeend',`<select data-dataset-account="${row.id}" aria-label="${escape(row.name)} 采集账号">${accounts.filter(a=>a.enabled).map(a=>`<option value="${escape(a.id)}" ${a.id===row.account_id?'selected':''}>${escape(a.name)}</option>`).join('')}</select>`);
   });
 }
 
@@ -288,15 +311,17 @@ function updateDownloadPeriods() {
   refreshCheckAll();
 }
 
-const barLabels={code:'证券 / 合约',period:'周期',time:'行情时间 / 周期标签',trading_day:'交易日',as_of_date:'计算截至日',open:'开盘',high:'最高',low:'最低',close:'收盘',volume:'成交量',amount:'成交额',open_interest:'持仓量',settlement:'结算价',previous_settlement:'前结算价',source:'来源'};
+const barLabels={price:'价格',code:'证券 / 合约',period:'周期',time:'行情时间 / 周期标签',trading_day:'交易日',as_of_date:'计算截至日',open:'开盘',high:'最高',low:'最低',close:'收盘',volume:'成交量',amount:'成交额',open_interest:'持仓量',settlement:'结算价',previous_settlement:'前结算价',source:'来源'};
 let historySelection=null;
 function clearHistoryResults() {
+  if(window.Workspace)return Workspace.invalidate('history');
   ++historyRequest;historySelection=null;state.offset=0;state.next=null;
   empty('#bars',14,'筛选已变更，尚未查询');$('#page-status').textContent='0 条';$('#prev-page').disabled=true;$('#next-page').disabled=true;
   chart?.clear();$('#chart-empty').hidden=false;$('#history-units').textContent='';$('#chart-selection').hidden=true;
 }
 
-async function loadHistory(offset = 0) {
+async function loadHistory(offset = 0, apply = false) {
+  if(window.Workspace)return Workspace.history(offset,apply);
   const request=++historyRequest, selectedSource=provider;
   const query = values($('#history-form')), members=splitCodes(query.code), periods=selectedValues($('#history-form [name=period]'));
   if(!members.length || !periods.length)throw new Error('请选择证券和查询周期');
@@ -339,6 +364,7 @@ function renderChart(rows,code,period) {
 
 let chartRequest=0;
 async function loadChart() {
+  if(window.Workspace)return Workspace.chart();
   if(!historySelection)return;
   const request=++chartRequest, selection=historySelection, code=$('#chart-code').value, period=$('#chart-period').value;
   const result=await api('/history?'+new URLSearchParams({source:selection.source,code,period,start:selection.start,end:selection.end,limit:300}));
@@ -348,7 +374,7 @@ async function loadChart() {
 
 function renderWorkerStatus(health) {
   const fallback=[['worker','qmt','schedule'],['tushare_worker','tushare','schedule'],['catalog_worker','qmt','catalog'],['tushare_catalog_worker','tushare','catalog'],['export_worker','qmt','export']];
-  const issues=health.worker_issues || fallback.filter(([key])=>health[key]).map(([key,source,lane])=>({source,lane,name:'后台服务',reason:health[key],action:'查看运行日志'}));
+  const issues=(health.worker_issues || fallback.filter(([key])=>health[key]).map(([key,source,lane])=>({source,lane,name:'后台服务',reason:health[key],action:'查看运行日志'}))).filter(row=>!window.Workspace||row.source===provider);
   const panel=$('#worker-status');panel.hidden=!issues.length;
   if(!issues.length) { panel.open=false;$('#worker-alert-rows').replaceChildren();return; }
   const laneNames={schedule:'自动更新',catalog:'目录同步',export:'文件导出'};
@@ -362,26 +388,37 @@ function renderWorkerStatus(health) {
 
 $('#worker-alert-logs').addEventListener('click',action(()=>switchView('operations')));
 
-async function loadJobs(offset=jobOffset) {
+async function loadJobs(offset=jobOffset,apply=false) {
   if(typeof offset!=='number')offset=jobOffset;
+  const view=state.view;
+  const query=window.Workspace?.listQuery('job-filter',apply) || values($('#job-filter'));
+  const read=query=>api('/jobs/query',{...query,limit:50,...window.Workspace?.pageOptions('job-filter'),offset});
+  const result=window.Workspace?await Workspace.readList('job-filter',apply,read):await read(query);
+  if(!result)return;
   const request=++jobsRequest;
-  const result=await api('/jobs/query',{...values($('#job-filter')),limit:50,offset});
   const rows=result.rows;
+  if(offset&&!rows.length&&result.total)return loadJobs(Math.floor((result.total-1)/(window.Workspace?.pageSize('job-filter')||50))*(window.Workspace?.pageSize('job-filter')||50));
+  if(!result.total)offset=0;
   const health = await api('/status');
-  if(request!==jobsRequest)return;
+  if(request!==jobsRequest || view!==state.view)return;
   state.jobs=rows;
   jobOffset=offset;jobNext=result.next_offset;
   $('#job-page').textContent=`共 ${result.total} 个${rows.length?` · ${offset+1}–${offset+rows.length}`:''}`;
   $('#job-prev').disabled=!offset;$('#job-next').disabled=jobNext===null;
   renderWorkerStatus(health);
-  if (!state.jobs.length) return empty('#job-rows', 6, '暂无下载或导出任务');
+  if (!state.jobs.length) {empty('#job-rows',9,'没有匹配任务');window.Workspace?.jobsLoaded();return;}
   $('#job-rows').innerHTML = state.jobs.map((job) => {
     const total = job.total_chunks;
     const unit = job.kind === 'catalog' ? job.payload.source === 'tushare' ? '批次' : '证券' : '分块';
-    const kind = (job.kind === 'verify' ? '只读核验' : job.kind === 'download' ? reportNames[job.payload.resource] || '历史回补' : job.kind === 'catalog' ? '目录同步' : job.payload.format.toUpperCase())+(job.payload.schedule_market?' · '+escape(marketNames[job.payload.schedule_market] || job.payload.schedule_market):'');
-    return `<tr><td>${job.id.slice(0,8)}<span class="muted">${formatTime(job.created_at)}</span></td><td>${kind}<span class="muted">${escape(job.payload.source || 'qmt')}${job.payload.periods ? ' · ' + escape(job.payload.periods.join(' / ')) : ''}</span></td><td><span class="badge ${job.state}">${statuses[job.state] || escape(job.state)}</span></td><td>${total ? `<progress value="${job.checkpoint}" max="${total}"></progress><span class="muted">${job.checkpoint} / ${total} ${unit}</span>` : job.checkpoint + ' 行'}</td><td>${job.result.rows === undefined ? '—' : job.kind === 'download' ? '已入库 ' + job.result.rows + ' 行' : job.result.rows + ' 行'}${job.error ? `<span class="muted">${escape(job.error)}</span>` : ''}</td><td><div class="actions"><button data-job-detail="${job.id}" title="任务详情" aria-label="任务详情">${icon('list')}</button>${['queued','running','retrying'].includes(job.state) ? `<button data-job="cancel" data-id="${job.id}" title="取消后续处理" aria-label="取消后续处理">${icon('square')}</button>` : ''}${['failed','cancelled','partial','blocked'].includes(job.state) ? `<button data-job="retry" data-id="${job.id}" title="重试" aria-label="重试">${icon('rotate-cw')}</button>` : ''}${job.kind === 'export' && job.state === 'succeeded' ? `<a href="/api/v1/files/${job.id}" title="下载文件" aria-label="下载文件">${icon('download')}</a><a href="/api/v1/files/${job.id}/metadata" title="下载口径说明" aria-label="下载口径说明">${icon('file-text')}</a>` : ''}</div></td></tr>`;
+    const p=job.payload, kind=job.kind==='verify'?'只读核验':job.kind==='download'?reportNames[p.resource] || '历史回补':job.kind==='catalog'?'目录同步':(p.format || '文件').toUpperCase();
+    const scope=job.maintenance_name || job.dataset_name || (job.kind==='catalog'?(p.exchanges || p.kinds?.map(value=>kindNames[value]||value))?.join('、'):p.code || p.members?.slice(0,2).map(securityLabel).join('、') || p.symbol || p.selections?.slice(0,2).map(row=>row.code||row.symbol||row.exchange).join('、')) || '未记录范围名称';
+    const count=p.members?.length || p.selections?.length;
+    const account=accounts.find(row=>row.id===p.account_id)?.name || p.account_id || (p.source==='tushare'?(job.kind==='export'?'不适用':'未记录账号'):'本地行情桥');
+    const periods=(p.periods || (p.period?[p.period]:[])).map(value=>periodNames[value]||value).join(' / ');
+    return `<tr><td title="${job.id}">${job.id.slice(0,8)}<span class="muted">${formatTime(job.created_at)}</span><span class="muted">${escape(originNames[job.origin] || '手动创建')}</span></td><td class="task-scope"><strong>${escape(scope)}</strong>${count?`<span class="muted">${count} 个对象</span>`:''}<span class="muted">${p.start||p.end?escape((p.start||'未记录')+' 至 '+(p.end||'未记录')):'日期未记录或不适用'}</span></td><td>${p.source==='tushare'?'Tushare':'QMT'}<span class="muted" title="${escape(p.account_id||'')}">${escape(account)}</span></td><td>${escape(kind)}<span class="muted">${escape(periods || (p.schedule_market?marketNames[p.schedule_market]||p.schedule_market:''))}</span></td><td><span class="badge ${job.state}">${statuses[job.state] || escape(job.state)}</span></td><td>${total ? `<progress value="${job.checkpoint}" max="${total}" aria-label="任务分块进度"></progress><span class="muted">${job.checkpoint} / ${total} ${unit}</span>` : escape(job.checkpoint+' '+(job.kind==='catalog'?'批次':'行'))}</td><td class="task-result">${job.result.rows === undefined ? '—' : job.kind === 'download' ? '已入库 ' + job.result.rows + ' 行' : job.result.rows + ' 行'}${job.result.rows===0&&job.result.message?`<span class="muted">${escape(job.result.message)}</span>`:''}${job.error ? `<details><summary>${escape(({SOURCE_PERMISSION:'接口权限不足',SOURCE_UNAVAILABLE:'数据源不可用',OHLC_RANGE:'价格范围异常',INVALID_DATA:'数据校验未通过'})[job.error_code] || '查看原因')}</summary><span class="muted">${escape(job.error_code||'')}</span><p>${escape(job.error)}</p>${job.action?`<p>${escape(job.action)}</p>`:''}</details>` : ''}</td><td>${formatTime(job.updated_at)}</td><td><div class="actions"><button data-job-detail="${job.id}" title="任务详情" aria-label="任务详情">${icon('list')}</button>${['queued','running','retrying'].includes(job.state) ? `<button data-job="cancel" data-id="${job.id}" title="取消后续处理" aria-label="取消后续处理">${icon('square')}</button>` : ''}${['failed','cancelled','partial','blocked'].includes(job.state) ? `<button data-job="retry" data-id="${job.id}" title="重试" aria-label="重试">${icon('rotate-cw')}</button>` : ''}${job.kind === 'export' && job.state === 'succeeded' ? `<a href="/api/v1/files/${job.id}" title="下载文件" aria-label="下载文件">${icon('download')}</a><a href="/api/v1/files/${job.id}/metadata" title="下载口径说明" aria-label="下载口径说明">${icon('file-text')}</a>` : ''}</div></td></tr>`;
   }).join('');
   icons();
+  window.Workspace?.jobsLoaded();
 }
 
 $$('nav button').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
@@ -406,8 +443,8 @@ $('#logout').addEventListener('click', action(async () => {
   closeQuotes();
   $('#login-dialog').showModal();
 }));
-$('#security-form').addEventListener('submit', action(() => loadSecurities()));
-$('#security-prev').addEventListener('click', action(() => loadSecurities(Math.max(0, securityOffset - 50))));
+$('#security-form').addEventListener('submit', action(() => loadSecurities(0,true)));
+$('#security-prev').addEventListener('click', action(() => loadSecurities(Math.max(0, securityOffset - (window.Workspace?.pageSize('security-form') || 50)))));
 $('#security-next').addEventListener('click', action(() => loadSecurities(securityNext)));
 $('#catalog-form').addEventListener('submit', action(async () => {
   const kinds = new FormData($('#catalog-form')).getAll('kind');
@@ -436,10 +473,11 @@ $('#quote-stop').addEventListener('click', () => { state.watch = []; $('#quote-s
 $('#load-sectors').addEventListener('click', action(async () => { catalogSectors = await api('/sectors'); filterSectors(); suggestSector(); notice(`已读取 ${catalogSectors.length} 个板块`); }));
 $('#sector-search').addEventListener('input', filterSectors);
 $('#index-form').addEventListener('submit', action(async () => { await api('/indices/refresh', values($('#index-form'))); await loadIndices(); notice('当前成分快照已保存'); }));
-$('#history-form').addEventListener('submit', action(() => loadHistory(0)));
-$('#prev-page').addEventListener('click', action(() => loadHistory(Math.max(0,state.offset-300))));
+$('#history-form').addEventListener('submit', action(() => loadHistory(0,true)));
+$('#prev-page').addEventListener('click', action(() => loadHistory(Math.max(0,state.offset-(window.Workspace?.pageSize('history-form') || 300)))));
 $('#next-page').addEventListener('click', action(() => loadHistory(state.next)));
 for (const format of ['csv','parquet']) $(`#export-${format}`).addEventListener('click', action(async () => {
+  if(window.Workspace)return Workspace.exportHistory(format);
   const p=values($('#history-form')), members=splitCodes(p.code), periods=selectedValues($('#history-form [name=period]'));
   if(!members.length || !periods.length)throw new Error('请选择证券和导出周期');
   if((members.length>1 || periods.length>1) && !await confirmBatch('批量导出行情',{来源:provider,合约数:members.length,周期:periods.map(value=>periodNames[value]).join('、'),日期:`${p.start} 至 ${p.end}`,文件:`${periods.length} 个 ${format.toUpperCase()} 文件`}))return;
@@ -458,12 +496,12 @@ $('#download-form').addEventListener('submit', action(async () => {
   await loadJobs(); notice('回补任务已排队');
 }));
 $('#refresh-jobs').addEventListener('click', action(loadJobs));
-$('#job-filter').addEventListener('submit',action(()=>loadJobs(0)));
-$('#job-filter').addEventListener('reset',()=>setTimeout(()=>loadJobs(0).catch(error=>notice(error.message)),0));
-$('#job-prev').addEventListener('click',action(()=>loadJobs(Math.max(0,jobOffset-50))));
+$('#job-filter').addEventListener('submit',action(()=>loadJobs(0,true)));
+$('#job-filter').addEventListener('reset',()=>setTimeout(()=>loadJobs(0,true).catch(error=>notice(error.message)),0));
+$('#job-prev').addEventListener('click',action(()=>loadJobs(Math.max(0,jobOffset-(window.Workspace?.pageSize('job-filter') || 50)))));
 $('#job-next').addEventListener('click',action(()=>loadJobs(jobNext)));
-$('#settings-form [name="login_enabled"]').addEventListener('change', (event) => { $('#settings-form [name="password"]').disabled = !event.target.checked; });
-$('#settings-form').addEventListener('submit', action(async () => { const p = values($('#settings-form')); p.login_enabled = $('#settings-form [name="login_enabled"]').checked; await api('/settings', p); $('#settings-form [name="dsn"]').value = ''; $('#settings-form [name="password"]').value = ''; await status(); notice('本地配置已保存'); }));
+$('#settings-form').elements.login_enabled.addEventListener('change', (event) => { $('#settings-form').elements.password.disabled = !event.target.checked; });
+$('#settings-form').addEventListener('submit', action(async () => { const p = values($('#settings-form')); p.login_enabled = $('#settings-form').elements.login_enabled.checked; await api('/settings', p); $('#settings-form').elements.dsn.value = ''; $('#settings-form').elements.password.value = ''; await status(); notice('本地配置已保存'); }));
 $('#migrate').addEventListener('click', action(async () => { await api('/database/migrate', {}); await status(); notice('历史库已初始化'); }));
 $('#test-source').addEventListener('click', action(async () => { const result = await api('/source/test', {}); $('#source-result').textContent = result.mode === 'market-only' ? '行情桥连接正常' : '响应已收到'; $('#qmt-state').textContent = '行情桥已连接'; $('#qmt-state').classList.add('online'); }));
 $('#diagnose-source').addEventListener('click', action(async () => {
@@ -518,7 +556,7 @@ document.addEventListener('click', async (event) => {
   if (d.indexDataset !== undefined) { const row = state.indices[Number(d.indexDataset)]; state.snapshot = row; await switchView('history'); $('#dataset-form [name="name"]').value = row.name + '成分'; $('#dataset-form [name="members"]').value = row.members.join(', '); await resolveSelections(); $('#dataset-form').scrollIntoView({ block:'center' }); }
   if (d.download) { await loadDatasets(); $('#download-form [name="dataset_id"]').value = d.download; await switchView('jobs');refreshMulti($('#download-form [name=dataset_id]')); }
   if (d.datasetDetail) {
-    const dataset=state.datasets.find(row=>row.id===d.datasetDetail);
+    const dataset=(state.datasetRows||state.datasets).find(row=>row.id===d.datasetDetail);
     recordSets.dataset={title:'数据集详情',rows:[dataset],labels:{id:'数据集ID',name:'名称',source:'来源',account_id:'采集账号',endpoint:'固定端点',scheduled:'自动更新',schedule_time:'更新时间',created_at:'创建时间'},extra:row=>`<h3>周期</h3><p>${row.periods.map(value=>periodNames[value]).join('、')}</p><h3>固定成员 · ${row.members.length} 个</h3><div class="member-list">${row.members.map(code=>`<span>${escape(securityLabel(code))}</span>`).join('')}</div>`};
     showRecord('dataset');
   }
@@ -535,8 +573,13 @@ document.addEventListener('click', async (event) => {
   }
   } catch (error) { notice(error.message); }
 });
-async function loadBoards(offset = 0) {
-  const result = await api('/boards?' + new URLSearchParams({...values($('#board-form')), offset, limit:50}));
+async function loadBoards(offset = 0,apply=false) {
+  const source=provider,query=window.Workspace?.listQuery('board-form',apply) || values($('#board-form'));
+  const read=query=>api('/boards?' + new URLSearchParams({...query, limit:50,...window.Workspace?.pageOptions('board-form'),offset}));
+  const result = window.Workspace?await Workspace.readList('board-form',apply,read):await read(query);
+  if(!result)return;
+  const request=++boardsRequest;
+  if(request!==boardsRequest||source!==provider)return;
   boardRows = result.rows; boardOffset = offset; boardNext = result.next_offset;
   $('#board-page').textContent = `共 ${result.total} 个`;
   $('#board-prev').disabled = !offset; $('#board-next').disabled = boardNext === null;
@@ -555,8 +598,8 @@ async function showInstrument(code) {
   $('#instrument-dialog').showModal();
 }
 $('#instrument-close').addEventListener('click', () => $('#instrument-dialog').close());
-$('#board-form').addEventListener('submit',action(() => loadBoards()));
-$('#board-prev').addEventListener('click',action(() => loadBoards(Math.max(0,boardOffset-50))));
+$('#board-form').addEventListener('submit',action(() => loadBoards(0,true)));
+$('#board-prev').addEventListener('click',action(() => loadBoards(Math.max(0,boardOffset-(window.Workspace?.pageSize('board-form') || 50)))));
 $('#board-next').addEventListener('click',action(() => loadBoards(boardNext)));
 $('#board-sync').addEventListener('click',action(async () => { await api('/catalog/sync',{kinds:['board']}); await switchView('market'); notice('行业概念同步已排队'); }));
 document.addEventListener('change', action(async (event) => { const id = event.target.dataset.schedule; if (!id) return; try { await api('/datasets/' + id + '/schedule', { enabled:event.target.checked }); } catch (error) { event.target.checked = !event.target.checked; throw error; } }));
@@ -572,7 +615,7 @@ for (const id of ['dataset-form','download-form']) {
 updateCapabilities();
 icons();
 initializePickers();
-switchView(location.hash.slice(1) || 'market');
+state.view=location.hash.slice(1) || 'market';
 status().then(async () => { state.authenticated = true; await loadAccounts(); await connectSocket(); await switchView(state.view); }).catch(() => { if (!$('#login-dialog').open) $('#login-dialog').showModal(); });
 
 async function loadAccounts() {
@@ -580,11 +623,15 @@ async function loadAccounts() {
   const result = await api('/sources');
   if(request!==accountsRequest)return;
   accounts = result.tushare.accounts; sourceCapabilities = result.capabilities;
+  qmtReferenceCapabilities=result.sources.find(item=>item.id==='qmt')?.reference_capabilities || {};
+  const jobAccount=$('#job-filter [name=account_ids]');
+  if(jobAccount){const selected=new Set(selectedValues(jobAccount));jobAccount.innerHTML='<option value="">全部账号</option>'+accounts.map(account=>`<option value="${escape(account.id)}" ${selected.has(account.id)?'selected':''}>${escape(account.name)} · ${escape(account.id)}${account.enabled?'':'（已停用）'}</option>`).join('');refreshMulti(jobAccount);}
   const selected = $('#data-account').value;
   $('#data-account').innerHTML = '<option value="">选择采集账号</option>' + accounts.filter(a=>a.enabled).map(a=>`<option value="${escape(a.id)}">${escape(a.name)}${a.token_configured?'':' · Token未配置'}</option>`).join('');
   $('#data-account').value = accounts.some(a=>a.id===selected && a.enabled) ? selected : result.tushare.default_account_id;
   $('#account-rows').innerHTML = accounts.map(a=>`<tr><td>${escape(a.name)}${a.id===result.tushare.default_account_id?' · 默认':''}<span class="muted">${escape(a.id)}</span></td><td>${escape(a.endpoint)}</td><td>${a.token_configured?'已配置':'未配置'} · ${a.enabled?'启用':'停用'}${a.managed_by_env.length ? '<span class="muted">环境变量管理</span>':''}</td><td><div class="actions"><button data-account-edit="${escape(a.id)}" title="编辑账号" aria-label="编辑 ${escape(a.name)}">${icon('pencil')}</button><button data-account-test="${escape(a.id)}" title="检测接口权限" aria-label="检测 ${escape(a.name)} 接口权限">${icon('plug-zap')}</button><button data-account-delete="${escape(a.id)}" title="删除账号" aria-label="删除 ${escape(a.name)}">${icon('trash-2')}</button></div></td></tr>`).join('');
   if (!accounts.length) empty('#account-rows',4,'尚未配置 Tushare 账号');
+  window.Workspace?.filterLocalRows('accounts');
   $('#account-form button[type="submit"]').disabled=false;
   updateCapabilities(); icons();
 }
@@ -607,7 +654,10 @@ function updateCapabilities() {
   refreshMulti($('#history-form [name=period]'));refreshCheckAll();
 }
 
-$('#data-source').addEventListener('change',action(async () => {
+async function changeSource() {
+  if(window.Workspace && !await Workspace.allowSourceChange()){$('#data-source').value=provider;return;}
+  window.Workspace?.sourceChanged();
+  const jobAccount=$('#job-filter [name=account_ids]');if(jobAccount){[...jobAccount.options].forEach(option=>option.selected=false);refreshMulti(jobAccount);}
   provider=$('#data-source').value;
   ++futuresOptionsRequest; clearFuturesResults();
   state.watch=[]; sendWatch(); state.quotes={}; state.snapshot=null;
@@ -619,18 +669,23 @@ $('#data-source').addEventListener('change',action(async () => {
   $('#qmt-deployment').hidden=provider!=='qmt';
   $('#qmt-state').hidden=provider!=='qmt';
   $('#market .section-heading .source').textContent=provider==='qmt'?'QMT · 国内市场':'Tushare · 国内期货';
-  $$('nav [data-view="indices"],nav [data-view="boards"]').forEach(button=>{button.hidden=provider!=='qmt';});
-  $('nav [data-view="futures"]').hidden=provider!=='tushare';
+  if(!window.Workspace){
+    $$('nav [data-view="indices"],nav [data-view="boards"]').forEach(button=>{button.hidden=provider!=='qmt';});
+    $('nav [data-view="futures"]').hidden=provider!=='tushare';
+  }
   $$('#catalog-form input[name="kind"]').forEach(input=>{input.disabled=provider==='tushare' && input.value!=='future'; input.checked=provider==='tushare'?input.value==='future':['future','option'].includes(input.value);});
   $('#security-form [name="kind"]').value=provider==='tushare'?'future':'';
   $('#security-form [name="market"]').value=''; $('#security-form [name="subtype"]').value='';
   $$('#security-form select').forEach(refreshMulti);
-  $('#catalog-active').checked=provider==='tushare'; $('#dataset-schedule-time').value=provider==='tushare'?'19:00':'17:00';
+  updateCatalogFilters();
+  $('#catalog-active').defaultChecked=$('#catalog-active').checked=provider==='tushare'; $('#dataset-schedule-time').value=provider==='tushare'?'19:00':'17:00';
   $('footer span').textContent=provider==='tushare'?'Tushare · 不复权 / 成交量与持仓量：手 / 成交额：元':'QMT · 不复权 / 空值保留 / 原始成交单位';
   updateCapabilities(); rememberSecurities([]);
-  await switchView(['indices','boards'].includes(state.view) || state.view==='futures' && provider!=='tushare' ? 'market' : state.view);
-}));
-$('#catalog-active').addEventListener('change',action(()=>loadSecurities()));
+  if(window.Workspace){Workspace.rememberSource();await switchView(state.view);}
+  else await switchView(['indices','boards'].includes(state.view) || state.view==='futures' && provider!=='tushare' ? 'market' : state.view);
+}
+$('#data-source').addEventListener('change',action(changeSource));
+$('#catalog-active').addEventListener('change',action(()=>loadSecurities(0,true)));
 $('#data-account').addEventListener('change',updateCapabilities);
 $('#open-tushare-history').addEventListener('click',()=>switchView('history'));
 $('#account-new').addEventListener('click',()=>{$('#account-form').reset();$('#account-form [name="id"]').readOnly=false;$('#account-form [name="id"]').focus();});
@@ -647,7 +702,7 @@ document.addEventListener('click',event=>{
   const button=event.target.closest('button'); if(!button)return;
   const d=button.dataset;
   if(d.accountEdit){const row=accounts.find(a=>a.id===d.accountEdit),form=$('#account-form');form.reset();for(const key of ['id','name','endpoint','timeout','requests_per_minute'])form.elements[key].value=row[key];form.elements.enabled.checked=row.enabled;form.elements.id.readOnly=true;form.scrollIntoView({block:'center'});}
-  if(d.accountDelete){await api(`/sources/tushare/accounts/${d.accountDelete}/delete`,{});await loadAccounts();}
+  if(d.accountDelete){const account=accounts.find(row=>row.id===d.accountDelete);if(!await confirmBatch('删除 Tushare 账号',{账号:account?.name||d.accountDelete,影响:'删除本地认证配置；被数据集、维护计划或活动任务引用时不可删除'}))return;await api(`/sources/tushare/accounts/${d.accountDelete}/delete`,{});await loadAccounts();}
   if(d.accountTest){button.disabled=true;$('#account-test-status').textContent='正在检测接口权限';try{const result=await api(`/sources/tushare/accounts/${d.accountTest}/test`,{});sourceCapabilities[d.accountTest]=result;const labels={catalog:'合约目录',calendar:'期货日历',daily:'日线',minutes:'历史分钟（独立权限）',mapping:'主力映射',weekly:'周线',monthly:'月线',warehouse:'仓单日报',holding:'成交持仓排名',settle:'结算参数',weekly_detail:'主要品种交易周报',tick:'Tick'};const states={available:'可用',empty:'空结果',permission:'权限不足',authentication:'认证失败',unverified:'未验证',network:'连接失败',rate_limit:'达到限额',incomplete:'覆盖不完整',unsupported:'无API'};$('#account-capabilities').innerHTML=Object.entries(result.capabilities).map(([key,item])=>`<tr><td>${escape(labels[key] || key)}</td><td>${escape(states[item.state] || item.state)}</td><td>${escape(item.message || (item.rows+' 条'))}</td></tr>`).join('');$('#account-test-status').textContent='检测完成 · '+d.accountTest;updateCapabilities();}catch(error){$('#account-test-status').textContent='检测失败';throw error;}finally{button.disabled=false;}}
   })(event);
 });
@@ -657,6 +712,14 @@ const exchangeMarkets={CFFEX:'IF',SHFE:'SF',DCE:'DF',CZCE:'ZF',INE:'INE',GFEX:'G
 const futuresFields = {ts_code:'合约代码',settle:'结算价',trading_fee_rate:'交易手续费率（原值）',trading_fee:'交易手续费（原值）',delivery_fee:'交割手续费（原值）',b_hedging_margin_rate:'买套保保证金率（原值）',s_hedging_margin_rate:'卖套保保证金率（原值）',long_margin_rate:'买投机保证金率（原值）',short_margin_rate:'卖投机保证金率（原值）',offset_today_fee:'平今仓手续率（原值）',prd:'品种代码',name:'品种名称',week:'原始周编号',week_date:'周日期',vol_yoy:'成交量同比（%）',amount:'成交金额（元）',amout_yoy:'成交额同比（%）',cumvol:'年累计成交量（手）',cumvol_yoy:'累计成交量同比（%）',cumamt:'年累计成交额（元）',cumamt_yoy:'累计成交额同比（%）',open_interest:'持仓量（手）',interest_wow:'持仓环比（%）',mc_close:'主力收盘价',close_wow:'收盘价环比（%）',original_amount:'原始成交额（亿元）',original_cumamt:'原始累计成交额（亿元）',normalization_version:'转换版本',source:'来源',market:'市场',day:'日期',is_open:'开市状态',pretrade_date:'前交易日',code:'主力 / 连续',trading_day:'交易日',member_code:'对应月份合约',exchange:'交易所',symbol:'产品 / 合约',trade_date:'交易日',fut_name:'产品名称',warehouse:'仓库',wh_id:'仓库编号',pre_vol:'昨日仓单',vol:'数量 / 成交量',vol_chg:'变化量',area:'地区',year:'年度',grade:'等级',brand:'品牌',place:'产地',pd:'升贴水',is_ct:'折算仓单',unit:'单位',broker:'期货公司会员',long_hld:'持买仓量',long_chg:'买仓变化',short_hld:'持卖仓量',short_chg:'卖仓变化'};
 $('#futures-form [name="start"]').value=today(-7);
 $('#futures-form [name="end"]').value=today(-1);
+Object.assign(futuresFields,{observed_at:'采集时间',evidence:'日历依据'});
+$('#futures-form [name=mapping_mode]').addEventListener('change',()=>{updateFuturesForm();clearFuturesResults();});
+$('#qmt-reference-test').addEventListener('click',action(async()=>{
+  const form=$('#futures-form'),resource=selectedValues(form.elements.resource)[0],mode=form.elements.mapping_mode.value;
+  const result=await api('/sources/qmt/references/test',{resource,mapping_mode:mode});
+  qmtReferenceCapabilities[resource==='calendar'?'calendar':'mapping_'+mode]=result;
+  if(provider==='qmt')updateFuturesForm();
+}));
 
 function updateFuturesForm() {
   const form=$('#futures-form'), resources=selectedValues(form.elements.resource);
@@ -665,21 +728,35 @@ function updateFuturesForm() {
   $('#futures-mapping-field').hidden=!resources.includes('mapping');
   $('#futures-scope-field').hidden=!resources.includes('holding');
   $('#futures-contract-field').hidden=!contract;
+  $('#futures-mapping-mode').hidden=provider!=='qmt'||!resources.includes('mapping');
+  const current=provider==='qmt'&&resources.includes('mapping')&&form.elements.mapping_mode.value==='current';
+  for(const name of ['start','end']){form.elements[name].closest('label').hidden=current;form.elements[name].required=!current;}
+  form.querySelector('[data-date-preset]')?.closest('label')?.toggleAttribute('hidden',current);
+  $('#qmt-reference-test').hidden=provider!=='qmt';
   const caps=sourceCapabilities[$('#data-account').value]?.capabilities || {};
   const states={available:'接口可用',permission:'接口权限不足',authentication:'认证失败',empty:'检测返回空数据',network:'连接失败',incomplete:'覆盖待核验'};
   $('#futures-capability').textContent=resources.map(resource=>`${reportNames[resource]} · ${states[caps[resource]?.state] || '接口权限未检测'}`).join('；');
   $('#futures-sync').disabled=!resources.length || resources.some(resource=>['permission','authentication','unsupported'].includes(caps[resource]?.state));
+  if(provider==='qmt'){
+    const key=resources[0]==='calendar'?'calendar':'mapping_'+form.elements.mapping_mode.value;
+    const labels={available:'可用',limited:'有限可用',bridge_outdated:'行情桥需更新',unsupported:'终端未提供',permission:'权限不足',empty:'空响应',connection_failed:'连接失败',invalid_response:'响应待核查',unchecked:'未检测'};
+    const results=qmtReferenceCapabilities[key]?.results || [];
+    $('#futures-capability').textContent=results.length?'QMT资料能力 · '+formatTime(qmtReferenceCapabilities[key].checked_at):'QMT资料能力未检测；已保存资料可离线查询';
+    $('#qmt-reference-results').hidden=!results.length;
+    $('#qmt-reference-results').innerHTML='<table><thead><tr><th>检测对象</th><th>状态</th><th>记录数</th><th>说明</th></tr></thead><tbody>'+results.map(item=>'<tr><td>'+escape(item.target.exchange||item.target.code)+'</td><td>'+escape(labels[item.state]||item.state)+'</td><td class="numeric">'+item.rows+'</td><td class="wrap-text">'+escape(item.reason)+'</td></tr>').join('')+'</tbody></table>';
+    $('#futures-sync').disabled=!resources.length;
+  }else $('#qmt-reference-results').hidden=true;
   if(!resources.includes(futuresActive))futuresActive=resources[0];
   $('#futures-tabs').innerHTML=resources.map(resource=>`<button type="button" role="tab" aria-selected="${resource===futuresActive}" data-resource-tab="${resource}">${reportNames[resource]}</button>`).join('');
+  window.Workspace?.updateReportDimensions();
 }
 
 async function loadFuturesOptions() {
-  if(provider!=='tushare') return;
-  const request=++futuresOptionsRequest, form=$('#futures-form');
+  const request=++futuresOptionsRequest, form=$('#futures-form'),source=provider;
   const exchange=selectedValues(form.elements.exchange).join(',');
   if(!exchange){form.elements.symbol.replaceChildren();form.elements.code.replaceChildren();return;}
-  const result=await api('/futures/options?'+new URLSearchParams({source:'tushare',exchange}));
-  if(request!==futuresOptionsRequest || provider!=='tushare' || selectedValues(form.elements.exchange).join(',')!==exchange)return;
+  const result=await api('/futures/options?'+new URLSearchParams({source,exchange}));
+  if(request!==futuresOptionsRequest || provider!==source || selectedValues(form.elements.exchange).join(',')!==exchange)return;
   for(const [name,rows,key] of [['symbol',result.products,'symbol'],['code',result.continuous,'code']]){
     const select=form.elements[name],previous=new Set(selectedValues(select));
     select.innerHTML=rows.map(row=>{
@@ -690,18 +767,19 @@ async function loadFuturesOptions() {
   }
 }
 
-function futuresQuery(onlyResource) {
+function futuresQuery(onlyResource,includeDimensions=true) {
   const form=$('#futures-form'), p=values(form), exchanges=selectedValues(form.elements.exchange);
   const resources=onlyResource?[onlyResource]:selectedValues(form.elements.resource), selections=[];
+  if(provider==='qmt'&&resources.includes('mapping')&&p.mapping_mode==='current')p.start=p.end=today();
   if(!resources.length || !exchanges.length)throw new Error('请选择资料类型和交易所');
   if(!p.start || !p.end || p.start>p.end)throw new Error('请选择有效的开始和结束日期');
   for(const resource of resources){
     const items=[];
     if(resource==='calendar')exchanges.forEach(exchange=>items.push({resource,exchange}));
     if(resource==='mapping')selectedValues(form.elements.code).forEach(code=>{
-      const market={CFX:'CFFEX',SHF:'SHFE',DCE:'DCE',ZCE:'CZCE',INE:'INE',GFE:'GFEX'}[code.split('.')[1]];
+      const market={CFX:'CFFEX',SHF:'SHFE',DCE:'DCE',ZCE:'CZCE',INE:'INE',GFE:'GFEX',IF:'CFFEX',SF:'SHFE',DF:'DCE',ZF:'CZCE',GF:'GFEX'}[code.split('.')[1]];
       if(!exchanges.includes(market))throw new Error('主力合约与所选交易所不一致');
-      items.push({resource,code});
+      items.push({resource,code,...(provider==='qmt'?{mapping_mode:p.mapping_mode}:{})});
     });
     if(resource==='weekly_detail' || resource==='warehouse' || resource==='holding' && p.scope!=='contract'){
       selectedValues(form.elements.symbol).forEach(value=>{const [exchange,symbol]=value.split(':');if(exchanges.includes(exchange))items.push({resource,exchange,symbol});});
@@ -713,11 +791,15 @@ function futuresQuery(onlyResource) {
     if(!items.length)throw new Error('请选择'+reportNames[resource]+'的产品或合约');
     selections.push(...items);
   }
-  const result={source:'tushare',start:p.start,end:p.end};
-  return selections.length===1?{...result,...selections[0]}:{...result,selections};
+  const result={source:provider,start:p.start,end:p.end};
+  const payload=selections.length===1?{...result,...selections[0]}:{...result,selections};
+  const dimensions=includeDimensions?window.Workspace?.reportDimensions():null;
+  if(dimensions&&Object.keys(dimensions).length)payload.dimensions=dimensions;
+  return payload;
 }
 
 function clearFuturesResults() {
+  if(window.Workspace)return Workspace.invalidate('futures');
   ++futuresRequest;
   $('#futures-head').replaceChildren(); empty('#futures-rows',1,'暂无查询结果');
   $('#futures-page').textContent=''; $('#futures-units').textContent='';
@@ -725,7 +807,8 @@ function clearFuturesResults() {
   futuresOffset=0;futuresNext=null;
 }
 
-async function loadFutures(offset=0) {
+async function loadFutures(offset=0,apply=false) {
+  if(window.Workspace)return Workspace.futures(offset,apply);
   const request=++futuresRequest, p=futuresQuery(futuresActive);
   empty('#futures-rows',1,'正在查询资料');$('#futures-rows').setAttribute('aria-busy','true');
   const result=p.selections?await api('/futures/records',{...p,limit:200,offset}):await api('/futures/records?'+new URLSearchParams({...p,limit:200,offset}));
@@ -744,7 +827,7 @@ async function loadFutures(offset=0) {
   icons();
 }
 
-$('#futures-form').addEventListener('submit',action(()=>loadFutures()));
+$('#futures-form').addEventListener('submit',action(()=>loadFutures(0,true)));
 $('#futures-form').addEventListener('change',action(async event=>{
   clearFuturesResults();
   updateFuturesForm();
@@ -757,19 +840,22 @@ $('#futures-sync').addEventListener('click',action(async()=>{
   await switchView('jobs'); notice(`${result.jobs?.length || 1} 个资料同步任务已排队`);
 }));
 for(const format of ['csv','parquet'])$(`#futures-${format}`).addEventListener('click',action(async()=>{
+  if(window.Workspace)return Workspace.exportFutures(format);
   const payload={...futuresQuery(),format};
   if(payload.selections && !await confirmBatch('批量导出期货资料',{来源:'Tushare',资料类型:[...new Set(payload.selections.map(item=>reportNames[item.resource]))].join('、'),对象数:payload.selections.length,日期:`${payload.start} 至 ${payload.end}`,格式:format.toUpperCase()}))return;
   await api('/futures/export',payload); await switchView('jobs'); notice('资料导出已排队');
 }));
-$('#futures-prev').addEventListener('click',action(()=>loadFutures(Math.max(0,futuresOffset-200))));
+$('#futures-prev').addEventListener('click',action(()=>loadFutures(Math.max(0,futuresOffset-(window.Workspace?.pageSize('futures-form') || 200)))));
 $('#futures-next').addEventListener('click',action(()=>loadFutures(futuresNext)));
 $('#futures-rows').addEventListener('click',action(async event=>{
   const code=event.target.closest('[data-mapped-history]')?.dataset.mappedHistory;
   if(!code)return;
+  const start=$('#futures-form [name="start"]').value,end=$('#futures-form [name="end"]').value;
+  await switchView('history');
   $('#history-form [name="code"]').value=code;
-  $('#history-form [name="start"]').value=$('#futures-form [name="start"]').value;
-  $('#history-form [name="end"]').value=$('#futures-form [name="end"]').value;
-  await switchView('history'); await loadHistory();
+  $('#history-form [name="start"]').value=start;
+  $('#history-form [name="end"]').value=end;
+  await resolveSelections();await loadHistory(0,true);
 }));
 
 $('#futures-tabs').addEventListener('click',action(async event=>{

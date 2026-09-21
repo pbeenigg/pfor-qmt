@@ -85,6 +85,7 @@ def test_offline_verification_preserves_prices_original_job_and_account_binding(
 def test_verification_cancellation_and_resume_do_not_write_bars(store,tmp_path):
     original=make_job(store,['000300.SH','000001.SZ'])
     Worker(store,tmp_path,source=Source()).execute(original)
+    store.query("UPDATE trading_dates SET evidence='calendar'")
     bars=store.query('SELECT * FROM bars ORDER BY code')
     job=store.create_verification(original['id'])
     worker=Worker(store,tmp_path,source=object())

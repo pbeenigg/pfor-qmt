@@ -6,12 +6,14 @@
   <meta name="theme-color" content="#12674a">
   <title>pfor-qmt · 行情工作台</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/workspace.css">
   <script src="/vendor/echarts.min.js" defer></script>
   <script src="/vendor/lucide.min.js" defer></script>
   <script src="/controls.js" defer></script>
   <script src="/picker.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/operations.js" defer></script>
+  <script src="/workspace.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -26,7 +28,7 @@
       <button data-view="operations"><i data-lucide="list-checks"></i><span>运行与日志</span></button>
       <button data-view="settings"><i data-lucide="settings-2"></i><span>数据源设置</span></button>
     </nav>
-    <div class="sidebar-foot"><span class="label">本地运行 / v0.1.0</span><p>基于 cfquant 派生</p><p>MIT · 非上游官方产品</p></div>
+    <div class="sidebar-foot"><span class="label">本地运行 / v0.1.0</span><p>基于 cfquant 派生</p></div>
   </aside>
   <main>
     <header><div><div class="eyebrow">PFOR / MARKET DATA</div><h1 id="view-title">行情</h1></div><div class="header-status"><span id="db-state" class="status">数据库未连接</span><span id="qmt-state" class="status">行情桥待检查</span><button class="icon" id="logout" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button></div></header>
@@ -43,7 +45,7 @@
       <div class="table-wrap"><table><thead><tr><th>证券</th><th>最新价</th><th>昨收</th><th>较昨收涨跌幅</th><th>前结算价</th><th>持仓量 · 原始单位</th><th>成交量 · 原始单位</th><th>成交额 · 原始单位</th><th>行情时间</th></tr></thead><tbody id="quotes"><tr><td colspan="9" class="empty">暂无行情</td></tr></tbody></table></div>
       </div>
       <div id="tushare-history-link" class="toolbar" hidden><span class="source">Tushare · 日 / 周 / 月 / 分钟历史</span><button type="button" id="open-tushare-history"><i data-lucide="chart-candlestick"></i>历史行情</button></div>
-      <div class="section-heading"><h2>目录查询</h2><span class="source">名称 / 代码 / 品种</span><label class="inline-label"><input id="catalog-active" type="checkbox">仅在市合约</label></div>
+      <div class="section-heading"><h2>目录查询</h2><span class="source">名称 / 代码 / 品种</span><label class="inline-label"><input id="catalog-active" name="active" form="security-form" type="checkbox">仅在市合约</label></div>
       <form id="security-form" class="toolbar"><label class="grow">查询<input name="search" placeholder="代码或名称"></label><label>类别<select name="kind" data-kind-filter></select></label><label>交易所<select name="market" data-market-filter></select></label><label>合约与基金类型<select name="subtype"><option value="">全部</option><option value="contract">普通合约</option><option value="continuous">连续合约</option><option value="combination">组合合约</option><option value="efp">期转现</option><option value="etf">ETF</option></select></label><button type="submit"><i data-lucide="search"></i>查询</button></form>
       <div class="table-wrap"><table><thead><tr><th>代码</th><th>名称</th><th>类别 / 类型</th><th>交易所</th><th>资料更新时间</th><th>资料</th></tr></thead><tbody id="securities"><tr><td colspan="6" class="empty">尚未同步证券资料</td></tr></tbody></table></div>
       <div class="pagination"><span id="security-page-status"></span><button type="button" class="icon" id="security-prev" aria-label="上一页证券" title="上一页证券" disabled><i data-lucide="chevron-left"></i></button><button type="button" class="icon" id="security-next" aria-label="下一页证券" title="下一页证券" disabled><i data-lucide="chevron-right"></i></button></div>
@@ -81,15 +83,17 @@
         <label>交易所<select name="exchange"><option value="DCE">大商所</option><option value="SHFE">上期所</option><option value="CFFEX">中金所</option><option value="CZCE">郑商所</option><option value="INE">能源中心</option><option value="GFEX">广期所</option></select></label>
         <label id="futures-product-field" hidden>产品<select name="symbol"></select></label>
         <label id="futures-mapping-field" class="grow" hidden>主力 / 连续合约<select name="code"></select></label>
+        <label id="futures-mapping-mode" hidden>映射模式<select name="mapping_mode"><option value="current">当前映射</option><option value="history">历史逐日映射</option></select></label>
         <label id="futures-scope-field" hidden>排名范围<select name="scope"><option value="product">产品</option><option value="contract">月份合约</option></select></label>
         <div id="futures-contract-field" class="selection-field grow" hidden><span id="report-label">月份合约</span><input type="hidden" name="contract"><button type="button" class="selection-button" data-picker="report" aria-labelledby="report-label report-selection"><span id="report-selection">选择证券</span><i data-lucide="chevron-down"></i></button></div>
         <label>开始日期<input name="start" type="date" required></label><label>结束日期<input name="end" type="date" required></label>
         <button type="submit" class="primary"><i data-lucide="search"></i>查询</button>
         <button type="button" id="futures-sync"><i data-lucide="download"></i>同步资料</button>
+        <button type="button" id="qmt-reference-test" hidden><i data-lucide="plug"></i>检测资料能力</button>
         <button type="button" id="futures-csv" class="icon" title="导出资料 CSV" aria-label="导出资料 CSV"><i data-lucide="file-spreadsheet"></i></button>
         <button type="button" id="futures-parquet" class="icon" title="导出资料 Parquet" aria-label="导出资料 Parquet"><i data-lucide="file-archive"></i></button>
       </form>
-      <p id="futures-capability" class="catalog-meta" role="status"></p><div id="futures-tabs" class="result-tabs" role="tablist" aria-label="资料结果类型"></div><p id="futures-units" class="catalog-meta"></p>
+      <p id="futures-capability" class="catalog-meta" role="status"></p><div id="qmt-reference-results" class="table-wrap" hidden></div><div id="futures-tabs" class="result-tabs" role="tablist" aria-label="资料结果类型"></div><p id="futures-units" class="catalog-meta"></p>
       <div class="table-wrap"><table><thead id="futures-head"></thead><tbody id="futures-rows"><tr><td class="empty">暂无查询结果</td></tr></tbody></table></div>
       <div class="pagination"><span id="futures-page"></span><button type="button" id="futures-prev" class="icon" title="上一页资料" aria-label="上一页资料" disabled><i data-lucide="chevron-left"></i></button><button type="button" id="futures-next" class="icon" title="下一页资料" aria-label="下一页资料" disabled><i data-lucide="chevron-right"></i></button></div>
     </section>
@@ -104,7 +108,7 @@
       </details>
       <div class="section-heading"><h2>任务记录</h2><span class="source">按创建日期筛选</span></div>
       <form id="job-filter" class="toolbar"><label class="grow">任务 ID / 错误<input name="search" type="search"></label><label>状态<select name="states"><option value="">全部</option><option value="queued">排队中</option><option value="running">运行中</option><option value="completed">已完成</option><option value="partial">待核验</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></label><label>任务类型<select name="kinds"><option value="">全部</option><option value="download">回补 / 资料同步</option><option value="catalog">目录同步</option><option value="export">文件导出</option></select></label><label>来源<select name="sources"><option value="">全部</option><option value="qmt">QMT</option><option value="tushare">Tushare</option></select></label><label>开始日期<input type="date" name="start"></label><label>结束日期<input type="date" name="end"></label><button type="submit"><i data-lucide="search"></i>筛选任务</button><button type="reset" class="icon" title="重置任务筛选" aria-label="重置任务筛选"><i data-lucide="filter-x"></i></button></form>
-      <div class="table-wrap"><table><thead><tr><th>任务 / 创建时间</th><th>类型</th><th>状态</th><th>检查点</th><th>结果</th><th>操作</th></tr></thead><tbody id="job-rows"><tr><td colspan="6" class="empty">暂无下载或导出任务</td></tr></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>任务 / 创建时间</th><th>数据集 / 维护范围</th><th>数据源 / 账号</th><th>类型 / 周期</th><th>状态</th><th>检查点</th><th>结果</th><th>最近更新</th><th>操作</th></tr></thead><tbody id="job-rows"><tr><td colspan="9" class="empty">暂无下载或导出任务</td></tr></tbody></table></div>
       <div class="pagination"><span id="job-page"></span><button type="button" id="job-prev" class="icon" title="上一页任务" aria-label="上一页任务"><i data-lucide="chevron-left"></i></button><button type="button" id="job-next" class="icon" title="下一页任务" aria-label="下一页任务"><i data-lucide="chevron-right"></i></button></div>
     </section>
     <section id="operations" class="view" hidden>
@@ -163,6 +167,7 @@
     <div class="picker-heading"><h2 id="picker-title">选择证券</h2><button type="button" id="picker-close" class="icon" title="关闭选择" aria-label="关闭选择"><i data-lucide="x"></i></button></div>
     <form id="picker-search-form" class="toolbar"><label class="grow">代码或名称<input id="picker-search" type="search" autocomplete="off" autofocus></label><label>类别<select id="picker-kind" data-kind-filter></select></label><label>交易所<select id="picker-market" data-market-filter></select></label><button type="submit" class="icon" title="搜索证券" aria-label="搜索证券"><i data-lucide="search"></i></button></form>
     <div class="picker-controls"><label class="inline-label" id="picker-all-label"><input type="checkbox" id="picker-all">本页全选</label><button type="button" id="picker-select-matched"><i data-lucide="list-checks"></i>全选筛选结果</button><label class="inline-label"><input type="checkbox" id="picker-active">仅在市合约</label><label class="inline-label"><input type="checkbox" id="picker-selected-only">仅看已选</label><button type="button" id="picker-clear" class="icon" title="清空选择" aria-label="清空选择"><i data-lucide="eraser"></i></button><span id="picker-count" role="status"></span></div>
+    <p id="picker-constraint" class="query-state" role="status" hidden></p>
     <p id="picker-error" role="alert" hidden></p>
     <div class="table-wrap picker-results"><table><thead><tr><th>选择</th><th>代码</th><th>名称</th><th>类别</th></tr></thead><tbody id="picker-rows"></tbody></table></div>
     <div class="pagination"><span id="picker-page" role="status"></span><button type="button" id="picker-prev" class="icon" title="上一页结果" aria-label="上一页结果"><i data-lucide="chevron-left"></i></button><button type="button" id="picker-next" class="icon" title="下一页结果" aria-label="下一页结果"><i data-lucide="chevron-right"></i></button></div>

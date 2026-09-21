@@ -1,5 +1,17 @@
 'use strict';
 
+function attachDateRange(form) {
+  const start=form.elements.start,end=form.elements.end;if(!start||!end||form.querySelector('[data-date-preset]'))return;
+  const range=document.createElement('div');range.className='date-range';
+  start.parentElement.before(range);
+  const label=document.createElement('label');label.textContent='日期范围';
+  const presets=document.createElement('select');presets.dataset.datePreset=form.id;presets.setAttribute('aria-label','日期快捷范围');
+  presets.innerHTML=Object.entries({'':'自定义',today:'今天','3d':'近三天','1w':'近一周','1m':'近一个月','3m':'近三个月','6m':'近六个月','1y':'近一年','2y':'近两年','3y':'近三年'}).map(([value,text])=>`<option value="${value}">${text}</option>`).join('');
+  label.append(presets);range.append(label,start.parentElement,end.parentElement);
+  presets.addEventListener('change',()=>{if(!presets.value)return;const dates=dateRangeFor(presets.value);start.value=dates.start;end.value=dates.end;form.dispatchEvent(new Event('change',{bubbles:true}));});
+  for(const input of [start,end]) input.addEventListener('input',()=>{presets.value='';});
+}
+
 const selectedValues = select => [...select.selectedOptions].filter(option=>option.value && !option.disabled).map(option=>option.value);
 let optionSelect, optionDraft, optionTrigger, batchResolve, recordContext;
 const recordSets = {};
@@ -108,17 +120,7 @@ function initializeControls() {
   catalogLabel.append(catalogSelect);$('#catalog-form fieldset').after(catalogLabel);enableMulti(catalogSelect,'请选择',true);
   for(const selector of ['#security-form [name=kind]','#security-form [name=market]','#security-form [name=subtype]','#picker-kind','#picker-market','#job-filter [name=states]','#job-filter [name=kinds]','#job-filter [name=sources]']) enableMulti($(selector),'全部');
   for(const selector of ['#history-form [name=period]','#download-form [name=dataset_id]','#futures-form [name=resource]','#futures-form [name=exchange]','#futures-form [name=symbol]','#futures-form [name=code]']) enableMulti($(selector),'请选择',true);
-  for(const id of ['history-form','download-form','futures-form','job-filter','event-filter']) {
-    const form=$('#'+id), start=form.elements.start, end=form.elements.end;
-    const range=document.createElement('div');range.className='date-range';
-    start.parentElement.before(range);
-    const label=document.createElement('label');label.textContent='日期范围';
-    const presets=document.createElement('select');presets.dataset.datePreset=id;presets.setAttribute('aria-label','日期快捷范围');
-    presets.innerHTML=Object.entries({'':'自定义',today:'今天','3d':'近三天','1w':'近一周','1m':'近一个月','3m':'近三个月','6m':'近六个月','1y':'近一年','2y':'近两年','3y':'近三年'}).map(([value,text])=>`<option value="${value}">${text}</option>`).join('');
-    label.append(presets);range.append(label,start.parentElement,end.parentElement);
-    presets.addEventListener('change',()=>{if(!presets.value)return;const dates=dateRangeFor(presets.value);start.value=dates.start;end.value=dates.end;form.dispatchEvent(new Event('change',{bubbles:true}));});
-    for(const input of [start,end]) input.addEventListener('input',()=>{presets.value='';});
-  }
+  for(const id of ['history-form','download-form','futures-form','job-filter','event-filter'])attachDateRange($('#'+id));
   for(const fieldset of $$('#catalog-form fieldset,#dataset-form fieldset,#download-form fieldset')) {
     fieldset.insertAdjacentHTML('beforeend','<label class="inline-label select-all-control"><input type="checkbox" data-check-all>全选可用项</label>');
     fieldset.querySelector('[data-check-all]').addEventListener('change',event=>{

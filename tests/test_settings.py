@@ -42,6 +42,7 @@ def test_cli_env_file_defaults_and_overrides_not_persisted(tmp_path, monkeypatch
     monkeypatch.setenv('PFOR_QMT_PORT','8802')
     monkeypatch.setenv('PFOR_QMT_RUNTIME_DIR','env-runtime')
     settings = Settings(runtime='cli-runtime',port=8803)
+    assert settings.value('host') == '127.0.0.1'
     assert settings.value('port') == 8803
     assert settings.value('ws_port') == 8767
     assert settings.runtime == tmp_path / 'cli-runtime'

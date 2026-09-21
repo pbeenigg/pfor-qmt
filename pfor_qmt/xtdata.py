@@ -60,6 +60,22 @@ def get_trading_dates(stockcode="000001.SH", start_date="", end_date="", count=-
     return get_client().request("xtdata.get_trading_dates", dict(stockcode=stockcode, start_date=start_date, end_date=end_date, count=count, period=period))
 
 
+def get_main_contract(stock_code):
+    return get_client().request('xtdata.get_main_contract',dict(stock_code=stock_code))
+
+
+def get_trading_calendar(market,start_time,end_time):
+    return get_client().request('xtdata.get_trading_calendar',dict(market=market,start_time=start_time,end_time=end_time))
+
+
+def get_main_contract_history(stock_code,start_time,end_time):
+    return get_client().request('xtdata.get_main_contract_history',dict(stock_code=stock_code,start_time=start_time,end_time=end_time))
+
+
+def download_main_contract_history(stock_code,start_time,end_time):
+    return get_client().request('xtdata.download_main_contract_history',dict(stock_code=stock_code,start_time=start_time,end_time=end_time),timeout=180)
+
+
 def get_divid_factors(stock_code):
     return get_client().request("xtdata.get_divid_factors", dict(stock_code=stock_code))
 

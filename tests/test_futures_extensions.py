@@ -218,8 +218,10 @@ def test_permission_guard_does_not_block_weekly_and_mapping_requires_continuous(
         app.dispatch('POST','/datasets',dict(source='tushare',members=['CU2610.SHF'],name='分钟',periods=['15m']))
     with pytest.raises(ValueError,match='主力'):
         app.dispatch('POST','/futures/sync',dict(source='tushare',resource='mapping',code='CU2610.SHF',start='2026-09-14',end='2026-09-14'))
-    with pytest.raises(ValueError,match='Tushare'):
-        app.dispatch('POST','/futures/sync',dict(source='qmt',resource='calendar',exchange='SHFE',start='2026-09-14',end='2026-09-14'))
+    qmt=app.dispatch('POST','/futures/sync',dict(source='qmt',resource='calendar',exchange='SHFE',start='2026-09-14',end='2026-09-14'))
+    assert qmt['payload']['source']=='qmt' and qmt['payload']['account_id'] is None
+    with pytest.raises(ValueError,match='不支持'):
+        app.dispatch('POST','/futures/sync',dict(source='qmt',resource='holding',exchange='SHFE',symbol='CU',start='2026-09-14',end='2026-09-14'))
     with pytest.raises(ValueError):
         request_chunks(dict(resource='holding',code='',symbol='CU',exchange='SHFE',start='2026-01-01',end='2100-01-01'))
 

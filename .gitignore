@@ -15,3 +15,5 @@ config.toml
 *.local.toml
 .playwright-cli/
 node_modules/
+/%SystemDrive%/
+config.toml

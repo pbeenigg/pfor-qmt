@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import sync_playwright,expect
 
-from browser_helpers import choose_many
+from browser_helpers import choose_many, navigate, sync_report, confirm_export
 from pfor_qmt.server import HTTPServer,handler_for
 from test_settlement_weekly import report_app
 
@@ -23,16 +23,16 @@ def test_settlement_holding_and_weekly_workspace(report_app):
             page.on('pageerror',lambda e:errors.append(str(e)))
             page.goto(f'http://127.0.0.1:{server.server_port}/')
             page.get_by_label('API Key 或网页登录密码').fill(app.settings.api_key);page.locator('#login-form button').click()
-            page.locator('#data-source').select_option('tushare');page.locator('nav [data-view=futures]').click()
+            page.locator('#data-source').select_option('tushare');navigate(page,'futures')
             choose_many(page,'#futures-form [name=resource]','settle')
             choose_many(page,'#futures-form [name=exchange]','SHFE')
             page.locator('[data-picker=report]').click();page.locator('#picker-search').fill('CU2610.SHF')
             page.locator('#picker-rows input[value="CU2610.SHF"]').check();page.locator('#picker-apply').click()
             for name in ('start','end'):page.locator(f'#futures-form [name={name}]').fill('2026-09-14')
-            with page.expect_response(lambda r:r.url.endswith('/futures/sync')) as response:page.locator('#futures-sync').click()
+            with page.expect_response(lambda r:r.url.endswith('/futures/sync')) as response:sync_report(page)
             job=response.value.json();assert response.value.status==200
             app.tushare_worker.execute(store.job(job['id']));assert store.job(job['id'])['state']=='succeeded'
-            page.locator('nav [data-view=futures]').click();page.locator('#futures-form button[type=submit]').click()
+            navigate(page,'settle');page.locator('#futures-form button[type=submit]').click()
             expect(page.locator('#futures-rows')).to_contain_text('CU2610.SHF')
             expect(page.locator('#futures-rows')).to_contain_text('0.050')
             page.locator('#futures-rows [data-record]').first.click()
@@ -48,12 +48,12 @@ def test_settlement_holding_and_weekly_workspace(report_app):
             expect(page.locator('#futures-contract-field')).not_to_be_visible()
             choose_many(page,'#futures-form [name=symbol]','SHFE:CU')
             for name in ('start','end'):page.locator(f'#futures-form [name={name}]').fill('2019-03-01')
-            with page.expect_response(lambda r:r.url.endswith('/futures/sync')) as response:page.locator('#futures-sync').click()
+            with page.expect_response(lambda r:r.url.endswith('/futures/sync')) as response:sync_report(page)
             job=response.value.json();app.tushare_worker.execute(store.job(job['id']))
             assert store.job(job['id'])['result']['rows']==1
-            page.locator('nav [data-view=futures]').click();page.locator('#futures-form button[type=submit]').click()
+            navigate(page,'weekly_detail');page.locator('#futures-form button[type=submit]').click()
             expect(page.locator('#futures-rows')).to_contain_text('20199')
-            expect(page.locator('#futures-rows')).to_contain_text('123412345678.9012345678901234567890')
+            expect(page.locator('#futures-rows [title="123412345678.9012345678901234567890"]')).to_have_count(1)
             page.locator('#futures-rows [data-record]').first.click()
             expect(page.locator('#record-fields')).to_contain_text('原始成交额（亿元）')
             expect(page.locator('#record-fields')).to_contain_text('成交额同比（%）')
@@ -64,11 +64,11 @@ def test_settlement_holding_and_weekly_workspace(report_app):
                 page.screenshot(path=str(output/f'weekly-detail-{label}.png'),full_page=True)
             page.keyboard.press('Escape')
             for fmt in ('csv','parquet'):
-                with page.expect_response(lambda r:r.url.endswith('/futures/export')) as response:page.locator('#futures-'+fmt).click()
+                with page.expect_response(lambda r:r.url.endswith('/futures/export')) as response:confirm_export(page,'#futures-'+fmt)
                 export=response.value.json();app.worker.execute(store.job(export['id']))
                 page.locator('#refresh-jobs').click()
                 expect(page.locator('#job-rows tr').filter(has_text=export['id'][:8])).to_contain_text('已完成')
-                page.locator('nav [data-view=futures]').click()
+                navigate(page,'weekly_detail')
             assert not errors,errors
             browser.close()
     finally:

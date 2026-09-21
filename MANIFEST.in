@@ -5,11 +5,13 @@ recursive-include tools *.py
 recursive-include tests *.py
 recursive-include web_dashboard *.html *.css *.js *.txt
 recursive-include pfor_qmt/migrations *.sql
+recursive-include pfor_qmt/docs *.md
 recursive-include qmt_scripts *.py
 prune runtime
 prune log
 prune exports
 prune output
 prune .venv
+prune %SystemDrive%
 global-exclude *.pyc *.local.json
 global-exclude config.toml *.local.toml

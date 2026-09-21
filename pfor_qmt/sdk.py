@@ -50,11 +50,20 @@ class DataClient:
     def calendar(self, market, start, end, source='qmt'):
         return self.request('/calendar',market=market,start=start,end=end,source=source)
 
-    def futures_options(self, exchange='DCE'):
-        return self.request('/futures/options',source='tushare',exchange=exchange)
+    def futures_options(self, exchange='DCE', source='tushare'):
+        return self.request('/futures/options',source=source,exchange=exchange)
+
+    def test_qmt_references(self, resource='mapping', mapping_mode='current', **options):
+        return self.request('/sources/qmt/references/test',dict(resource=resource,mapping_mode=mapping_mode,**options))
 
     def futures_records(self, resource, start, end, **options):
-        return self.request('/futures/records',source='tushare',resource=resource,start=start,end=end,**options)
+        source=options.pop('source','tushare')
+        if 'dimensions' in options:
+            return self.request('/futures/records',dict(source=source,resource=resource,start=start,end=end,**options))
+        return self.request('/futures/records',source=source,resource=resource,start=start,end=end,**options)
+
+    def futures_filter_options(self, selections, start, end, source='tushare'):
+        return self.request('/futures/filter-options',dict(source=source,selections=selections,start=start,end=end))
 
     def select_catalog(self, **filters):
         return self.request('/catalog/select', filters)
@@ -62,11 +71,44 @@ class DataClient:
     def query_history(self, members, periods, start, end, source='qmt', **paging):
         return self.request('/history/query', dict(members=members,periods=periods,start=start,end=end,source=source,**paging))
 
-    def query_futures(self, selections, start, end, **paging):
-        return self.request('/futures/records', dict(source='tushare',selections=selections,start=start,end=end,**paging))
+    def history_summary(self, members, periods, start, end, source='qmt', **options):
+        return self.request('/history/summary',dict(members=members,periods=periods,start=start,end=end,source=source,**options))
 
-    def sync_futures_batch(self, selections, start, end, account_id=None):
-        return self.request('/futures/sync', dict(source='tushare',selections=selections,start=start,end=end,account_id=account_id))
+    def history_chart(self, code, period, start, end, source='qmt', **window):
+        return self.request('/history/chart',dict(code=code,period=period,start=start,end=end,source=source,**window))
+
+    def futures_summary(self, selections, start, end, **options):
+        return self.request('/futures/summary',dict(selections=selections,start=start,end=end,source=options.pop('source','tushare'),**options))
+
+    def operations_summary(self, **filters):
+        return self.request('/operations/summary',filters)
+
+    def update_dataset(self, identifier, revision, **changes):
+        return self.request('/console/datasets/'+identifier,dict(revision=revision,**changes))
+
+    def query_datasets(self, **filters):
+        return self.request('/datasets/query',filters)
+
+    def query_maintenance(self, **filters):
+        return self.request('/maintenance/query',filters)
+
+    def update_maintenance_scope(self, identifier, revision, **changes):
+        return self.request('/console/maintenance/'+identifier,dict(revision=revision,**changes))
+
+    def save_maintenance_scope(self, **params):
+        return self.request('/console/maintenance',params)
+
+    def preview_maintenance(self, identifier, **params):
+        return self.request('/console/maintenance/'+identifier+'/preview',params)
+
+    def run_maintenance(self, identifier, preview_key, **params):
+        return self.request('/console/maintenance/'+identifier+'/run',dict(preview_key=preview_key,**params))
+
+    def query_futures(self, selections, start, end, **paging):
+        return self.request('/futures/records', dict(source=paging.pop('source','tushare'),selections=selections,start=start,end=end,**paging))
+
+    def sync_futures_batch(self, selections, start, end, account_id=None, source='tushare'):
+        return self.request('/futures/sync', dict(source=source,selections=selections,start=start,end=end,account_id=account_id))
 
     def download_batch(self, dataset_ids, periods, start=None, end=None, source='qmt'):
         return self.request('/downloads/batch',dict(dataset_ids=dataset_ids,periods=periods,start=start,end=end,source=source))
@@ -74,17 +116,38 @@ class DataClient:
     def export_batch(self, members, periods, start, end, format='csv', source='qmt'):
         return self.request('/exports/batch',dict(members=members,periods=periods,start=start,end=end,format=format,source=source))
 
-    def export_futures_batch(self, selections, start, end, format='csv'):
-        return self.request('/futures/export',dict(source='tushare',selections=selections,start=start,end=end,format=format))
+    def export_futures_batch(self, selections, start, end, format='csv', **options):
+        return self.request('/futures/export',dict(source=options.pop('source','tushare'),selections=selections,start=start,end=end,format=format,**options))
 
     def query_jobs(self, **filters):
         return self.request('/jobs/query', filters)
 
-    def sync_futures(self, resource, start, end, account_id=None, **options):
-        return self.request('/futures/sync',dict(source='tushare',resource=resource,start=start,end=end,account_id=account_id,**options))
+    def delete_dataset(self, identifier, revision):
+        return self.request('/console/datasets/'+identifier+'/delete', {'revision':revision})
+
+    def restore_dataset(self, identifier, revision):
+        return self.request('/console/datasets/'+identifier+'/restore', {'revision':revision})
+
+    def delete_maintenance(self, identifier, revision):
+        return self.request('/console/maintenance/'+identifier+'/delete', {'revision':revision})
+
+    def restore_maintenance(self, identifier, revision):
+        return self.request('/console/maintenance/'+identifier+'/restore', {'revision':revision})
+
+    def delete_job(self, identifier):
+        return self.request('/jobs/'+identifier+'/delete', {})
+
+    def restore_job(self, identifier):
+        return self.request('/jobs/'+identifier+'/restore', {})
+
+    def sync_futures(self, resource, start=None, end=None, account_id=None, **options):
+        from .data import SHANGHAI
+        from datetime import datetime
+        today=datetime.now(SHANGHAI).date().isoformat()
+        return self.request('/futures/sync',dict(source=options.pop('source','tushare'),resource=resource,start=start or today,end=end or today,account_id=account_id,**options))
 
     def export_futures(self, resource, start, end, format='csv', **options):
-        return self.request('/futures/export',dict(source='tushare',resource=resource,start=start,end=end,format=format,**options))
+        return self.request('/futures/export',dict(source=options.pop('source','tushare'),resource=resource,start=start,end=end,format=format,**options))
 
     def boards(self, search='', category='', limit=50, offset=0):
         return self.request('/boards', search=search, category=category, limit=limit, offset=offset)
@@ -137,11 +200,11 @@ class DataClient:
     def job_links(self, identifier, limit=50, offset=0):
         return self.request('/jobs/'+identifier+'/links',limit=limit,offset=offset)
 
-    def job_units(self, identifier, limit=50, offset=0):
-        return self.request('/jobs/' + identifier + '/units', limit=limit, offset=offset)
+    def job_units(self, identifier, limit=50, offset=0, **filters):
+        return self.request('/jobs/' + identifier + '/units', limit=limit, offset=offset,**{key:','.join(value) if isinstance(value,(list,tuple)) else value for key,value in filters.items() if value is not None})
 
-    def job_events(self, identifier, limit=50, before=None):
-        return self.request('/jobs/' + identifier + '/events', limit=limit, **({'before':before} if before is not None else {}))
+    def job_events(self, identifier, limit=50, before=None, **filters):
+        return self.request('/jobs/' + identifier + '/events', limit=limit, **({'before':before} if before is not None else {}),**{key:','.join(value) if isinstance(value,(list,tuple)) else value for key,value in filters.items() if value is not None})
 
     def query_events(self, **filters):
         return self.request('/events/query', filters)

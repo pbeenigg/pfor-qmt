@@ -18,7 +18,8 @@ def validate_plan(name, clock, lookback):
 
 def check_conflict(conn, payload, identifier=None):
     if payload.get('dataset_id'):
-        dataset=conn.execute('SELECT scheduled FROM datasets WHERE id=%s',(payload['dataset_id'],)).fetchone()
+        dataset=conn.execute('SELECT scheduled,deleted_at FROM datasets WHERE id=%s',(payload['dataset_id'],)).fetchone()
+        if dataset and dataset['deleted_at']: raise ValueError('关联数据集在回收站，请先恢复')
         if dataset and dataset['scheduled']:
             raise ValueError('该数据集已开启自动更新，请先停用一种维护方式')
     duplicate=conn.execute('SELECT id FROM maintenance_plans WHERE enabled AND payload=%s AND (%s::uuid IS NULL OR id!=%s::uuid)',(document(payload),identifier,identifier)).fetchone()
@@ -28,6 +29,7 @@ def check_conflict(conn, payload, identifier=None):
 
 def save_plan(store, params):
     job = store.job(params['job_id'])
+    if job.get('deleted_at'): raise ValueError('任务在回收站，请先恢复')
     if job['kind'] not in ('catalog','download') or any(job['payload'].get(key) for key in ('retry_of','maintenance_id','repair_of')):
         raise ValueError('请选择原始目录或采集任务作为维护范围，不使用局部重试任务')
     name = str(params.get('name','')).strip()
@@ -53,6 +55,7 @@ def update_plan(store, identifier, params):
         conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))',(store.schema+'.maintenance-config',))
         old=conn.execute('SELECT * FROM maintenance_plans WHERE id=%s FOR UPDATE',(identifier,)).fetchone()
         if not old: raise ValueError('维护计划不存在')
+        if old['deleted_at']: raise ValueError('维护计划在回收站，请先恢复')
         value=dict(old,**params)
         clock=params.get('schedule_time',old['schedule_time'].strftime('%H:%M'))
         validate_plan(value['name'],clock,value['lookback_days'])
@@ -71,6 +74,7 @@ def set_dataset_schedule(store, identifier, enabled, now=None):
         conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))',(store.schema+'.maintenance-config',))
         old=conn.execute('SELECT * FROM datasets WHERE id=%s FOR UPDATE',(identifier,)).fetchone()
         if not old: raise ValueError('数据集不存在')
+        if old['deleted_at']: raise ValueError('数据集在回收站，请先恢复')
         if enabled and conn.execute("SELECT 1 FROM maintenance_plans WHERE enabled AND payload->>'dataset_id'=%s LIMIT 1",(str(identifier),)).fetchone():
             raise ValueError('该数据集已有启用的维护计划，请先停用一种维护方式')
         if old['scheduled'] != enabled:
@@ -85,7 +89,7 @@ def market_scopes(payload, provider):
     if payload.get('resource'):
         for target in payload.get('selections') or [payload]:
             market=source_market(target['code'],provider) if target['resource']=='mapping' else TS_EXCHANGES[target['exchange']]
-            groups.setdefault(market,[]).append({key:target[key] for key in ('resource','exchange','symbol','code') if key in target})
+            groups.setdefault(market,[]).append({key:target[key] for key in ('source','resource','exchange','symbol','code','mapping_mode') if key in target})
         return {market:dict(payload,selections=selected) for market,selected in groups.items()}
     for code in payload['members']:
         groups.setdefault(source_market(code,provider),[]).append(code)
@@ -170,6 +174,14 @@ def schedule_scope(worker, scope, kind, now):
         last=last_dates.get(market)
         if last and last>=cutoff: continue
         lookback=scope.get('lookback_days',5)
+        from .qmt_references import natural_schedule,current_mapping
+        if natural_schedule(part):
+            start=cutoff if current_mapping(part) else min(last or cutoff-timedelta(days=lookback-1),cutoff-timedelta(days=lookback-1))
+            part.update(start=start.isoformat(),end=cutoff.isoformat(),schedule_market=market)
+            part['chunks']=request_chunks(part)
+            enqueue(worker,scope,kind,part,market,cutoff)
+            schedule_event(worker,scope,kind,market)
+            continue
         first=cutoff-timedelta(days=max(60,lookback*3))
         earliest=last+timedelta(days=1) if last else scope.get('schedule_from',cutoff)
         first=min(first,earliest)
@@ -181,6 +193,9 @@ def schedule_scope(worker, scope, kind, now):
         try:
             if blocked and blocked[0]==fingerprint: raise blocked[1]
             values=worker.calendar(representative,first.strftime('%Y%m%d'),cutoff.strftime('%Y%m%d'),adapter=adapter)
+            if worker.provider=='qmt' and part.get('resource')=='mapping':
+                complete=store.query("SELECT count(*) AS n FROM trading_dates WHERE source='qmt' AND market=%s AND day BETWEEN %s AND %s AND evidence='calendar'",(market,first,cutoff),one=True)['n']
+                if complete!=(cutoff-first).days+1: raise ValueError('历史映射维护需要完整的同源交易所日历')
             dates=sorted({timestamp(value).date() for value in values if first<=timestamp(value).date()<=cutoff})
             if not dates: message=market+' 交易日历为空，无法确认到期交易日'
             with store.connect() as conn:
@@ -194,6 +209,7 @@ def schedule_scope(worker, scope, kind, now):
             if adapter and getattr(error,'category',None) in ('permission','unsupported','authentication','rate_limit'):
                 worker.calendar_blocks[block_key]=(fingerprint,error)
             dates=[row['day'] for row in store.query('SELECT day FROM trading_dates WHERE source=%s AND market=%s AND is_open AND day BETWEEN %s AND %s ORDER BY day',(worker.provider,market,first,cutoff))]
+            if worker.provider=='qmt' and part.get('resource')=='mapping': dates=[]
         applicable=[date for date in dates if date>=earliest]
         if applicable and len(dates)<lookback:
             message=market+' 最近'+('五' if lookback==5 else str(lookback))+'个交易日尚未就绪，调度等待补齐'
@@ -220,7 +236,7 @@ def tick(worker, now=None):
 def repair(worker, now):
     store = worker.store
     # Repair only opted-in maintenance jobs, never old ad-hoc failures or permission denials.
-    jobs = store.query("SELECT j.* FROM jobs j WHERE coalesce(payload->>'source','qmt')=%s AND parent_id IS NULL AND kind!='verify' AND state IN ('partial','failed','blocked') AND NOT cancel_requested AND ((payload ? 'maintenance_id' AND EXISTS(SELECT 1 FROM maintenance_plans p WHERE p.id::text=j.payload->>'maintenance_id' AND enabled)) OR EXISTS(SELECT 1 FROM datasets d WHERE d.id::text=j.payload->>'dataset_id' AND scheduled)) AND EXISTS(SELECT 1 FROM job_units u WHERE u.job_id=j.id AND retryable) ORDER BY updated_at",(worker.provider,))
+    jobs = store.query("SELECT j.* FROM jobs j WHERE j.deleted_at IS NULL AND coalesce(payload->>'source','qmt')=%s AND parent_id IS NULL AND kind!='verify' AND state IN ('partial','failed','blocked') AND NOT cancel_requested AND ((payload ? 'maintenance_id' AND EXISTS(SELECT 1 FROM maintenance_plans p WHERE p.id::text=j.payload->>'maintenance_id' AND enabled)) OR EXISTS(SELECT 1 FROM datasets d WHERE d.id::text=j.payload->>'dataset_id' AND scheduled)) AND EXISTS(SELECT 1 FROM job_units u WHERE u.job_id=j.id AND retryable) ORDER BY updated_at",(worker.provider,))
     maximum = worker.options.get('repair_attempts',3)
     for job in jobs:
         if worker.stop.is_set():

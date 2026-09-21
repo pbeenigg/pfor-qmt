@@ -12,6 +12,7 @@ import tomlkit
 # key: (TOML table, field, default, environment variable)
 FIELDS = {
     'runtime_dir': ('app', 'runtime_dir', 'runtime', 'PFOR_QMT_RUNTIME_DIR'),
+    'host': ('server', 'host', '127.0.0.1', 'PFOR_QMT_HOST'),
     'port': ('server', 'port', 8766, 'PFOR_QMT_PORT'),
     'ws_port': ('server', 'ws_port', 8767, 'PFOR_QMT_WS_PORT'),
     'dsn': ('database', 'dsn', '', 'PFOR_QMT_DATABASE_URL'),
@@ -33,10 +34,10 @@ FIELDS = {
 
 
 class Settings:
-    def __init__(self, runtime=None, config_path=None, port=None, ws_port=None):
+    def __init__(self, runtime=None, config_path=None, port=None, ws_port=None, host=None):
         runtime = os.fspath(runtime) if runtime is not None else None
         self.path = Path(config_path or os.environ.get('PFOR_QMT_CONFIG') or 'config.toml').expanduser().resolve()
-        self.overrides = {key:value for key,value in {'runtime_dir':runtime,'port':port,'ws_port':ws_port}.items() if value is not None}
+        self.overrides = {key:value for key,value in {'runtime_dir':runtime,'port':port,'ws_port':ws_port,'host':host}.items() if value is not None}
         exists = self.path.exists()
         self._source_text = self.path.read_text('utf-8-sig') if exists else None
         try:
@@ -110,6 +111,8 @@ class Settings:
                     raise ValueError('配置项 %s.%s 类型或范围无效' % (table,field))
         if any(not 1 <= self.value(key) <= 65535 for key in ('port','ws_port')) or self.value('port') == self.value('ws_port'):
             raise ValueError('HTTP/WebSocket 端口必须在 1..65535 且不能相同')
+        if not self.value('host') or any(char.isspace() for char in self.value('host')) or '/' in self.value('host'):
+            raise ValueError('server.host must be a valid address')
         if not self.value('runtime_dir'):
             raise ValueError('app.runtime_dir 不得为空')
         if self.value('sample_retention_days') > self.value('event_retention_days') or self.value('repair_attempts') > 3:
@@ -172,7 +175,12 @@ class Settings:
     def public(self):
         return {'database_configured': bool(self.dsn), 'qmt_root': self.qmt_root,
                 'login_enabled': bool(self.data['login_hash']), 'schema': 'pfor_qmt',
-                'timezone': 'Asia/Shanghai', 'adjustment': 'none', 'config_file': str(self.path)}
+                'timezone': 'Asia/Shanghai', 'adjustment': 'none', 'config_file': str(self.path),
+                'config_revision':self.revision,'host':self.value('host'),'port':self.value('port'),'ws_port':self.value('ws_port')}
+
+    @property
+    def revision(self):
+        return hashlib.sha256((self._source_text or '').encode('utf-8')).hexdigest()
 
     def account(self, identifier=None):
         from .accounts import profile
@@ -187,4 +195,4 @@ class Settings:
 
     def public_accounts(self):
         from .accounts import public
-        return {'accounts': [public(item) for item in self.accounts], 'default_account_id': self.default_account_id}
+        return {'accounts': [public(item) for item in self.accounts], 'default_account_id': self.default_account_id,'config_revision':self.revision}

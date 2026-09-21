@@ -51,6 +51,13 @@ def test_option_strikes_are_not_continuous_contract_suffixes():
     assert contract_type('cu2610.SF') == 'contract'
 
 
+@pytest.mark.parametrize('code',['PL611.ZF','TL2612.IF','PL701.ZF','TL2610.IF'])
+def test_product_ending_in_l_is_still_a_month_contract(code):
+    assert contract_type(code)=='contract'
+    for continuous in ('TL00.IF','PL00.ZF','IFL00.IF','cuL0.SF'):
+        assert contract_type(continuous)=='continuous'
+
+
 def test_batch_bridge_and_sector_ancestry():
     calls = []
     tree = {'': [[], ['行业', '概念']], '行业': [['银行'], []], '概念': [['人工智能'], []]}

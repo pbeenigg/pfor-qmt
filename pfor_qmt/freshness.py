@@ -20,7 +20,7 @@ def targets(conn):
             for target in payload.get('selections') or [payload]:
                 resource = target['resource']
                 yield dict(base, resource=resource, code=target.get('code') or target['exchange']+':'+target.get('symbol',''),
-                           period=resource, exchange=target.get('exchange',''), symbol=target.get('symbol',''))
+                           period=resource, exchange=target.get('exchange',''), symbol=target.get('symbol',''),mapping_mode=target.get('mapping_mode'))
         else:
             for code in payload['members']:
                 for period in payload['periods']:
@@ -35,6 +35,12 @@ def assess(conn, target, now, calendars):
     source, resource, code, period = (target[key] for key in ('source','resource','code','period'))
     cutoff = now.date() if now.time() >= target['schedule_time'] else now.date()-timedelta(days=1)
     result['cutoff'] = cutoff
+    if source=='qmt' and resource=='mapping' and target.get('mapping_mode')=='current':
+        record=conn.execute('SELECT observed_at,trading_day FROM current_contract_mappings WHERE source=%s AND code=%s',(source,code)).fetchone()
+        result['expected_day']=cutoff
+        result['actual_day']=record['observed_at'].date() if record else None
+        result['last_write']=record['observed_at'] if record else None
+        return finish('current' if record and result['actual_day']>=cutoff else 'stale' if record else 'missing','MAPPING_SNAPSHOT','按采集时间评估当前快照，不代表历史逐日覆盖','刷新当前主力快照')
     if target['schedule_from'] and cutoff < target['schedule_from']:
         return finish('not_due','SCHEDULE_NOT_DUE','尚未到达启用后的首次维护时间','等待设定时间')
     if resource == 'catalog':
@@ -98,8 +104,10 @@ def assess(conn, target, now, calendars):
         return finish('not_applicable','OUTSIDE_LIFECYCLE','维护起始日已超过合约存续区间','保留历史归档；无需继续更新')
     key = source,market,start,cutoff
     if key not in calendars:
-        calendars[key] = conn.execute('SELECT day,is_open FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s ORDER BY day',(source,market,start,cutoff)).fetchall()
+        calendars[key] = conn.execute('SELECT day,is_open,evidence FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s ORDER BY day',(source,market,start,cutoff)).fetchall()
     calendar = calendars[key]
+    if source=='qmt' and resource=='calendar' and any(row['evidence']!='calendar' for row in calendar):
+        return finish('pending_verification','CALENDAR_EVIDENCE_UNKNOWN','仅有观察日期或旧记录，不能确认交易所日历完整','同步并核验独立交易日历')
     opened = [row['day'] for row in calendar if row['is_open']]
     expected = opened[-1] if opened else None
     result['expected_day'] = cutoff if resource=='calendar' else expected
@@ -129,6 +137,7 @@ def freshness_page(store, params, now=None):
     limit, offset = int(params.get('limit',50)), int(params.get('offset',0))
     sources = filter_values(params.get('sources',[]),('qmt','tushare'),'新鲜度来源')
     search = str(params.get('search','')).strip().casefold()
+    states=filter_values(params.get('states',[]),('current','stale','missing','pending_verification','not_applicable','not_due','not_published','rejected'),'新鲜度状态')
     if not 1<=limit<=200 or offset<0:
         raise ValueError('无效新鲜度分页参数')
     with store.connect() as conn:
@@ -137,7 +146,18 @@ def freshness_page(store, params, now=None):
         def matching():
             return (target for target in targets(conn) if (not sources or target['source'] in sources) and
                     (not search or search in (target['name']+' '+target['code']+' '+target['period']).casefold()))
-        total = sum(1 for _ in matching())
         calendars = {}
-        rows = [assess(conn,target,now,calendars) for target in islice(matching(),offset,offset+limit)]
-    return dict(rows=rows,total=total,offset=offset,next_offset=offset+len(rows) if offset+len(rows)<total else None,evaluated_at=now)
+        summary={}
+        if params.get('include_summary') or states:
+            total=0;rows=[]
+            for target in matching():
+                value=assess(conn,target,now,calendars)
+                summary[value['freshness_state']]=summary.get(value['freshness_state'],0)+1
+                if states and value['freshness_state'] not in states: continue
+                if offset<=total<offset+limit: rows.append(value)
+                total+=1
+        else:
+            total = sum(1 for _ in matching())
+            rows = [assess(conn,target,now,calendars) for target in islice(matching(),offset,offset+limit)]
+    return dict(rows=rows,total=total,offset=offset,next_offset=offset+len(rows) if offset+len(rows)<total else None,evaluated_at=now,summary=summary,
+                summary_scope='当前来源与名称筛选下的全部启用维护对象；状态分布不是数据连续率')

@@ -25,8 +25,13 @@ for path in artifacts:
     required.append('pfor_qmt/freshness.py')
     required.extend(['pfor_qmt/quality_checks.py','pfor_qmt/migrations/007_verification.sql'])
     required.append('pfor_qmt/migrations/008_settlement_weekly.sql')
+    required.extend(['pfor_qmt/qmt_references.py','pfor_qmt/migrations/011_qmt_references.sql'])
+    required.append('pfor_qmt/migrations/012_schema_comments.sql')
+    required.extend(['pfor_qmt/migrations/010_recycle.sql','pfor_qmt/migrations/009_console_versions.sql','pfor_qmt/analytics.py','pfor_qmt/workspace.py','web_dashboard/workspace.js','web_dashboard/workspace.css'])
     if path.name.endswith('.tar.gz'):
         required.append('docs/SETTLEMENT_WEEKLY.md')
+        required.extend(['docs/CONSOLE_DESIGN.md','docs/CONSOLE_GUIDE.md'])
+        required.extend(['docs/DATABASE_SCHEMA.md','tools/generate_schema_docs.py'])
     if path.name.endswith('.tar.gz'):
         required.append('docs/QUALITY_VERIFICATION.md')
         required.append('docs/MAINTENANCE.md')
@@ -35,7 +40,7 @@ for path in artifacts:
     for suffix in required:
         assert any(name.endswith(suffix) for name in names), (path.name,suffix)
     for name in names:
-        assert not any(part in {'runtime','log','exports','output','.venv','__pycache__','%NVM_SYMLINK%'} for part in Path(name).parts), name
+        assert not any(part in {'runtime','log','exports','output','.venv','__pycache__','%NVM_SYMLINK%','%SystemDrive%'} for part in Path(name).parts), name
         assert not name.endswith('.local.json'), name
         assert Path(name).name != 'config.toml' and not name.endswith('.local.toml'), name
     print(path.name + ': required resources and license files present; no runtime data')

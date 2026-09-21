@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from playwright.sync_api import sync_playwright, expect
-from browser_helpers import choose_many
+from browser_helpers import choose_many, navigate, new_dataset, confirm_export
 
 from pfor_qmt.server import HTTPServer, handler_for, start_websocket
 from pfor_qmt.service import Application
@@ -37,6 +37,7 @@ def test_multi_account_tushare_full_workflow_without_qmt(store,tmp_path,monkeypa
             page.get_by_label('API Key 或网页登录密码').fill(app.settings.api_key)
             page.locator('#login-form button').click()
             expect(page.locator('#login-dialog')).not_to_be_visible()
+            page.locator('#account-new').click()
             expect(page.locator('#account-form')).to_be_visible()
             page.locator('#account-form [name=id]').fill('main')
             page.locator('#account-form [name=name]').fill('研究账号')
@@ -44,7 +45,7 @@ def test_multi_account_tushare_full_workflow_without_qmt(store,tmp_path,monkeypa
             assert page.locator('#account-form').evaluate('form => form.checkValidity()'), page.locator('#account-form').evaluate('form => [...form.elements].filter(e=>!e.checkValidity()).map(e=>[e.name,e.validationMessage])')
             try:
                 with page.expect_response(lambda response: response.url.endswith('/sources/tushare/accounts') and response.request.method=='POST',timeout=5000) as saved:
-                    page.locator('#account-form button').click()
+                    page.locator('#account-form button[type=submit]').click()
             except Exception:
                 raise AssertionError({'errors':errors,'notice':page.locator('#notice').text_content(),'invalid':page.locator('#account-form').evaluate('form => [...form.elements].filter(e=>!e.checkValidity()).map(e=>[e.name,e.validationMessage])')}) from None
             assert saved.value.status==200, saved.value.text()
@@ -54,16 +55,18 @@ def test_multi_account_tushare_full_workflow_without_qmt(store,tmp_path,monkeypa
             expect(page.locator('#account-test-status')).to_contain_text('检测完成',timeout=15000)
             expect(page.locator('#account-capabilities')).to_contain_text('可用')
             page.screenshot(path=str(output/'tushare-settings-desktop.png'),full_page=True)
+            navigate(page,'collect')
             page.locator('#data-source').select_option('tushare')
-            page.locator('nav [data-view=market]').click()
+            page.locator('[data-collect-mode=catalog]').click()
             expect(page.locator('#qmt-live')).to_be_hidden()
             page.locator('#catalog-form button[type=submit]').click()
             expect(page.locator('#catalog-status')).to_contain_text('已完成',timeout=20000)
             expect(page.locator('#catalog-counts')).to_contain_text('期货 12 个')
+            navigate(page,'catalog')
             page.locator('#security-form [name=search]').fill('CU2610')
             page.locator('#security-form button[type=submit]').click()
             expect(page.locator('#securities tr')).to_have_count(1)
-            page.locator('nav [data-view=history]').click()
+            new_dataset(page)
             page.locator('#dataset-form [name=name]').fill('铜日线')
             page.locator('[data-picker=dataset]').click()
             page.locator('#picker-search').fill('CU2610')
@@ -79,9 +82,10 @@ def test_multi_account_tushare_full_workflow_without_qmt(store,tmp_path,monkeypa
             page.locator('#download-form [name=end]').fill('2026-09-14')
             with page.expect_response(lambda response: response.url.endswith('/downloads') and response.request.method=='POST') as download:
                 page.locator('#download-form button.primary').click()
+                page.locator('#batch-submit').click()
             assert download.value.status==200, download.value.text()
             expect(page.locator('#job-rows')).to_contain_text('1 行',timeout=15000)
-            page.locator('nav [data-view=history]').click()
+            navigate(page,'history')
             page.locator('[data-picker=history]').click()
             page.locator('#picker-search').fill('CU2610')
             expect(page.locator('#picker-rows input')).to_have_count(1)
@@ -89,21 +93,23 @@ def test_multi_account_tushare_full_workflow_without_qmt(store,tmp_path,monkeypa
             page.locator('#history-form [name=start]').fill('2026-09-14')
             page.locator('#history-form [name=end]').fill('2026-09-14')
             page.locator('#history-form button.primary').click()
-            expect(page.locator('#bars')).to_contain_text('80123.1234567890123456789')
+            expect(page.locator('#bars [title="80123.1234567890123456789"]')).to_have_count(1)
             expect(page.locator('#history-units')).to_contain_text('成交额：元')
             page.screenshot(path=str(output/'tushare-history-desktop.png'),full_page=True)
-            page.locator('#export-csv').click()
+            confirm_export(page,'#export-csv')
             expect(page.locator('#job-rows a[aria-label="下载文件"]')).to_have_count(1,timeout=15000)
             with page.expect_download() as info:
                 page.locator('#job-rows a[aria-label="下载文件"]').click()
             exported=Path(info.value.path()).read_text('utf-8-sig')
             assert 'tushare' in exported and '80123.1234567890123456789' in exported
             page.set_viewport_size({'width':390,'height':844})
-            page.locator('nav [data-view=settings]').click()
+            navigate(page,'settings')
+            page.locator('[data-account-edit=main]').click()
             expect(page.locator('#account-form')).to_be_visible()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             page.screenshot(path=str(output/'tushare-settings-mobile.png'),full_page=True)
-            page.locator('nav [data-view=history]').click()
+            page.keyboard.press('Escape')
+            navigate(page,'history')
             page.screenshot(path=str(output/'tushare-history-mobile.png'),full_page=True)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             page.locator('#data-source').select_option('qmt')
@@ -151,9 +157,11 @@ def test_failed_minutes_keep_daily_rows_and_allow_daily_only_retry(store,tmp_pat
             page.locator('#login-form button').click()
             expect(page.locator('#login-dialog')).not_to_be_visible()
             failed_row=page.locator('#job-rows tr').filter(has_text=str(failed['id'])[:8])
+            page.locator('#data-source').select_option('tushare')
             expect(failed_row).to_contain_text('部分完成')
             expect(failed_row).to_contain_text('已入库 1 行')
             expect(failed_row).to_contain_text('只选日线')
+            navigate(page,'collect')
             page.locator('#data-source').select_option('tushare')
             choose_many(page,'#download-form [name=dataset_id]',str(dataset['id']))
             daily=page.locator('#download-form input[value="1d"]')
@@ -165,17 +173,18 @@ def test_failed_minutes_keep_daily_rows_and_allow_daily_only_retry(store,tmp_pat
             page.locator('#download-form [name=end]').fill('2026-09-14')
             with page.expect_response(lambda r:r.url.endswith('/downloads') and r.request.method=='POST') as response:
                 page.locator('#download-form button.primary').click()
+                page.locator('#batch-submit').click()
             assert response.value.status==200
             job=response.value.json()
             assert job['payload']['periods']==['1d'] and job['payload']['account_id']=='main'
             completed_row=page.locator('#job-rows tr').filter(has_text=job['id'][:8])
             expect(completed_row).to_contain_text('已完成',timeout=15000)
             expect(completed_row).to_contain_text('已入库 1 行')
-            page.locator('nav [data-view=settings]').click()
+            navigate(page,'settings')
             page.locator('[data-account-test=main]').click()
             expect(page.locator('#account-test-status')).to_contain_text('检测完成',timeout=15000)
             expect(page.locator('#account-capabilities')).to_contain_text('权限不足')
-            page.locator('nav [data-view=jobs]').click()
+            navigate(page,'collect')
             expect(minute).to_be_disabled();expect(five).to_be_disabled();expect(daily).to_be_enabled()
             expect(page.locator('#download-capability')).to_contain_text('历史分钟权限不可用')
             page.screenshot(path=str(output/'tushare-failed-minutes-desktop.png'),full_page=True)

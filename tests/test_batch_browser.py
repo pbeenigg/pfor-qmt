@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import sync_playwright, expect
 
-from browser_helpers import choose_many
+from browser_helpers import choose_many, navigate, sync_report
 from pfor_qmt.server import HTTPServer, handler_for, start_websocket
 from test_batch_workflows import batch_app
 from test_futures_extensions import extension_app
@@ -61,7 +61,7 @@ def test_batch_selection_dates_records_and_jobs(batch_app):
             assert page.evaluate("dateRangeFor('1y','2024-02-29').start")=='2023-02-28'
             assert page.evaluate("dateRangeFor('3m','2026-05-31').start")=='2026-02-28'
             assert page.evaluate("dateRangeFor('3d','2026-01-01').start")=='2025-12-30'
-            page.locator('nav [data-view=jobs]').click()
+            navigate(page,'collect')
             choose_many(page,'#download-form [name=dataset_id]',*[str(row['id']) for row in datasets])
             page.locator('#download-form [data-check-all]').check()
             expect(page.locator('#download-form input[value="1d"]')).to_be_checked()
@@ -85,10 +85,10 @@ def test_batch_selection_dates_records_and_jobs(batch_app):
             page.locator('#job-filter button[type=reset]').click()
             expect(page.locator('#job-rows tr')).to_have_count(2)
             page.locator('[data-job-detail]').first.click()
-            expect(page.locator('#record-fields')).to_contain_text('任务状态')
-            expect(page.locator('#record-extra')).to_contain_text('覆盖与缺口')
-            page.keyboard.press('Escape')
-            page.locator('nav [data-view=history]').click()
+            expect(page.locator('#task-body')).to_contain_text('执行状态')
+            page.locator('[data-task-tab=units]').click()
+            expect(page.locator('#task-body')).to_contain_text('数据质量')
+            navigate(page,'history')
             for name in ('start','end'):page.locator(f'#history-form [name={name}]').fill('2026-09-14')
             page.locator('#history-form button.primary').click()
             expect(page.locator('#bars tr')).to_have_count(3)
@@ -104,8 +104,7 @@ def test_batch_selection_dates_records_and_jobs(batch_app):
             page.locator('#export-csv').click()
             with page.expect_response(lambda r:r.url.endswith('/exports/batch')) as response:page.locator('#batch-submit').click()
             assert len(response.value.json()['jobs'])==2
-            page.locator('nav [data-view=futures]').click()
-            choose_many(page,'#futures-form [name=resource]','calendar','warehouse','holding','mapping')
+            navigate(page,'warehouse')
             pending=[]
             page.route('**/api/v1/futures/options?*',lambda route:pending.append(route))
             choose_many(page,'#futures-form [name=exchange]','SHFE','DCE')
@@ -117,31 +116,35 @@ def test_batch_selection_dates_records_and_jobs(batch_app):
             page.keyboard.press('Escape')
             page.unroute('**/api/v1/futures/options?*')
             choose_many(page,'#futures-form [name=symbol]','SHFE:CU','DCE:A')
-            choose_many(page,'#futures-form [name=code]','CU.SHF','A.DCE')
-            page.locator('[data-date-preset=futures-form]').select_option('today')
-            for name in ('start','end'):page.locator(f'#futures-form [name={name}]').fill('2026-09-14')
-            page.locator('#futures-sync').click()
-            expect(page.locator('#batch-summary')).to_contain_text('8')
-            with page.expect_response(lambda r:r.url.endswith('/futures/sync')) as response:page.locator('#batch-submit').click()
-            assert response.value.status==200,response.value.text()
-            jobs=response.value.json()['jobs'];assert len(jobs)==4
-            for job in jobs:expect(page.locator('#job-rows tr').filter(has_text=job['id'][:8])).to_contain_text('已完成',timeout=15000)
-            page.locator('nav [data-view=futures]').click()
-            page.locator('#futures-form button[type=submit]').click()
-            expect(page.locator('#futures-rows tr')).to_have_count(2)
-            for resource in ('warehouse','holding','mapping'):
-                page.locator(f'[data-resource-tab={resource}]').click()
+            # Each resource now has one page; multiple exchanges remain a single atomic batch.
+            created=[]
+            for resource in ('calendar','warehouse','holding','mapping'):
+                navigate(page,resource)
+                choose_many(page,'#futures-form [name=exchange]','SHFE','DCE')
+                if resource in ('warehouse','holding'):choose_many(page,'#futures-form [name=symbol]','SHFE:CU','DCE:A')
+                if resource=='mapping':choose_many(page,'#futures-form [name=code]','CU.SHF','A.DCE')
+                page.locator('[data-date-preset=futures-form]').select_option('today')
+                for name in ('start','end'):page.locator(f'#futures-form [name={name}]').fill('2026-09-14')
+                with page.expect_response(lambda r:r.url.endswith('/futures/sync')) as response:sync_report(page)
+                assert response.value.status==200,response.value.text()
+                jobs=response.value.json()['jobs'];assert len(jobs)==1
+                created.extend(jobs)
+                for job in jobs:expect(page.locator('#job-rows tr').filter(has_text=job['id'][:8])).to_contain_text('已完成',timeout=15000)
+                navigate(page,resource)
+                page.locator('#futures-form button[type=submit]').click()
                 expect(page.locator('#futures-rows tr')).to_have_count(2)
                 expect(page.locator('#futures-units')).not_to_be_empty()
-            page.locator('[data-resource-tab=warehouse]').click()
+            assert len(created)==4
+            navigate(page,'warehouse')
+            page.locator('#futures-form button[type=submit]').click()
             expect(page.locator('#futures-rows')).to_contain_text('测试仓库')
             page.screenshot(path=str(output/'batch-futures-desktop.png'),full_page=True)
             for fmt in ('csv','parquet'):
                 page.locator(f'#futures-{fmt}').click()
                 with page.expect_response(lambda r:r.url.endswith('/futures/export')) as response:page.locator('#batch-submit').click()
-                jobs=response.value.json()['jobs'];assert len(jobs)==4
+                jobs=response.value.json()['jobs'];assert len(jobs)==1
                 for job in jobs:expect(page.locator('#job-rows tr').filter(has_text=job['id'][:8])).to_contain_text('已完成',timeout=15000)
-                page.locator('nav [data-view=futures]').click()
+                navigate(page,'warehouse')
             for width,height,label in [(1440,980,'desktop'),(390,844,'mobile'),(768,1024,'tablet')]:
                 page.set_viewport_size({'width':width,'height':height})
                 page.wait_for_function('document.documentElement.scrollWidth <= innerWidth')

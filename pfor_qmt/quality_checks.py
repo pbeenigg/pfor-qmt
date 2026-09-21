@@ -8,6 +8,18 @@ from .reliability import issue
 RULE_VERSION = 'coverage-v2'
 
 
+def qmt_daily_weekend(part):
+    """Domestic daily bars have no weekend session; this does not apply to night minutes."""
+    from .symbols import market_of, MARKETS
+    if part.get('source','qmt')!='qmt' or part.get('period')!='1d': return False
+    first,last=day(part['start']),day(part['end'])
+    return market_of(part['code']) in MARKETS and first.weekday()>=5 and 0<=(last-first).days<=6-first.weekday()
+
+
+def daily_weekend_issue():
+    return issue('DAILY_WEEKEND_CLOSED','not_applicable','国内日线请求区间仅含周六/周日，无日线交易时段','选择交易日查询；本结论不代表行情连接已验证',rule='domestic-daily-weekend-v1')
+
+
 def aggregate_issues(rows, calendar, now=None):
     now = now or datetime.now(SHANGHAI)
     dates = {row['day']:row['is_open'] for row in calendar}
@@ -60,11 +72,15 @@ def stored_issues(rows, part, calendar, metadata=None, now=None):
     if period in MINUTE_PERIODS:
         return minute_issues(rows,period,metadata)
     opened=[row['day'] for row in calendar if row['is_open'] and day(part['start'])<=row['day']<=day(part['end'])]
+    if not rows and not opened and qmt_daily_weekend(part):
+        return [daily_weekend_issue()]
     actual={row.get('trading_day') or row['time'].date() for row in rows}
     expected={period_label(date,period) for date in opened}
     result=[issue('BARS_MISSING','missing','已保存开市日未读到行情','核对停牌、生命周期后定向回补',True,day=date.isoformat()) for date in sorted(expected-actual)]
     days=(day(part['end'])-day(part['start'])).days+1
     complete=len({row['day'] for row in calendar if day(part['start'])<=row['day']<=day(part['end'])})==days
+    if part.get('source','qmt')=='qmt' and any('evidence' in row for row in calendar):
+        complete=complete and all(row.get('evidence')=='calendar' for row in calendar if day(part['start'])<=row['day']<=day(part['end']))
     if not calendar:
         result.append(issue('CALENDAR_UNKNOWN','pending_verification','无已保存日历，无法确认覆盖','同步该来源日历后重新核验'))
     elif not rows and not opened:
@@ -93,7 +109,7 @@ def repair_ranges(job, units, unit_indices=None, now=None):
         if part['period'] in MINUTE_PERIODS: continue
         intervals=[]
         for finding in unit['issues']:
-            if not finding.get('retryable') or finding.get('code') not in ('BARS_MISSING','CALENDAR_MISSING','PERIOD_STALE','PERIOD_OPEN') or not finding.get('day'): continue
+            if not finding.get('retryable') or finding.get('code') not in ('BARS_MISSING','MAPPING_MISSING','CALENDAR_MISSING','PERIOD_STALE','PERIOD_OPEN') or not finding.get('day'): continue
             missing=day(finding['day'])
             first=missing-timedelta(days=4) if part['period']=='1w' else missing.replace(day=1) if part['period']=='1mo' else missing
             if part['period'] in AGGREGATE_PERIODS and missing>=today: continue

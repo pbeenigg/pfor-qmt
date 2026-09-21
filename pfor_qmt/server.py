@@ -42,7 +42,7 @@ def handler_for(app):
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Referrer-Policy', 'no-referrer')
-            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; frame-ancestors 'none'; base-uri 'none'")
+            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'")
             for key, value in (headers or {}).items():
                 self.send_header(key, value)
             self.end_headers()
@@ -70,11 +70,10 @@ def handler_for(app):
             try:
                 self.connection.settimeout(15)
                 host = self.headers.get('Host', '')
-                expected = {'127.0.0.1:' + str(self.server.server_port), 'localhost:' + str(self.server.server_port)}
-                if host not in expected:
+                if not host:
                     return self.send(403, {'error': '仅允许本机访问'})
                 origin = self.headers.get('Origin')
-                if origin and origin not in {'http://' + item for item in expected}:
+                if origin and origin not in {'http://' + host, 'https://' + host}:
                     return self.send(403, {'error': '请求来源无效'})
                 url = urlsplit(self.path)
                 if not url.path.startswith('/api/v1/'):
@@ -153,12 +152,20 @@ def handler_for(app):
     return Handler
 
 
-def start_websocket(app, port, http_port):
+def start_websocket(app, port, http_port, host='127.0.0.1'):
     from websockets.sync.server import serve
     from websockets.exceptions import ConnectionClosed
     app.ws_port = port
 
     def handle(socket):
+        origin = socket.request.headers.get('Origin')
+        request_host = socket.request.headers.get('Host', '')
+        web_host = urlsplit('ws://' + request_host).hostname or ''
+        web_host = '[' + web_host + ']' if ':' in web_host else web_host
+        web_authority = web_host + ':' + str(http_port)
+        if origin and origin not in {'http://' + web_authority, 'https://' + web_authority}:
+            socket.close(1008, 'Invalid origin')
+            return
         query = parse_qs(urlsplit(socket.request.path).query)
         ticket = query.get('ticket', [''])[0]
         with app.lock:
@@ -266,6 +273,6 @@ def start_websocket(app, port, http_port):
                     app.source.unsubscribe_quote(subscription)
                 except Exception:
                     pass
-    server = serve(handle, '127.0.0.1', port, origins=[None, 'http://127.0.0.1:' + str(http_port), 'http://localhost:' + str(http_port)], max_size=65536)
+    server = serve(handle, host, port, origins=None, max_size=65536)
     threading.Thread(target=server.serve_forever, daemon=True, name='pfor-websocket').start()
     return server

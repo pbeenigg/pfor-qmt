@@ -28,10 +28,12 @@ class Application:
         self.source = source or xtdata
         self.listeners = set()
         self.lock = threading.RLock()
+        self.configuration_lock = threading.RLock()
         self.sessions, self.tickets = {}, {}
         self.worker = Worker(self.store, self.settings.runtime, self.publish, self.source, options=self.operation_options)
         self.tushare_worker = Worker(self.store,self.settings.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier), options=self.operation_options)
         self.capabilities = {}
+        self.qmt_reference_capabilities = {}
         self.ws_port = self.settings.value('ws_port')
 
     @property
@@ -47,18 +49,45 @@ class Application:
                     pass
 
     def dispatch(self, method, path, p):
+        if method=='POST' and (path=='/settings' or path.startswith('/sources/tushare/accounts') and not path.endswith('/test')):
+            # Stopping workers must not hold the lock used by their progress events.
+            with self.configuration_lock:
+                if 'config_revision' in p and p['config_revision']!=self.settings.revision:
+                    raise ValueError('配置已被其他操作修改，请重新打开表单后保存')
+                return self._dispatch(method,path,{key:value for key,value in p.items() if key!='config_revision'})
+        return self._dispatch(method,path,p)
+
+    def _dispatch(self, method, path, p):
         store = self.store
+        if method=='POST' and path in ('/datasets/query','/maintenance/query'):
+            from .analytics import configuration_page
+            return configuration_page(store,path.split('/')[1],p)
+        if method == 'POST' and path in ('/history/summary','/history/chart','/futures/summary','/operations/summary'):
+            from . import analytics
+            return {'/history/summary':analytics.history_summary,'/history/chart':analytics.history_chart,
+                    '/futures/summary':analytics.futures_summary,'/operations/summary':analytics.operations_summary}[path](store,p)
+        if method == 'POST' and (path == '/console/datasets' or path.startswith('/console/datasets/') or path.startswith('/console/maintenance')):
+            from .workspace import manage
+            return manage(self,path,p)
         if method == 'GET' and path == '/runtime/events':
             from .reliability import runtime_events
-            return runtime_events(self.settings.runtime)
+            return runtime_events(self.settings.runtime,p.get('source'))
         source = provider_name(p.get('source', 'qmt'))
         if source != 'qmt' and path in ('/quotes','/securities/sync','/indices','/indices/refresh','/boards','/boards/members','/boards/refresh','/source/test','/source/diagnostics','/sectors','/factors'):
             raise ValueError('Tushare本期不支持该接口，请选择期货目录或历史行情')
         if path == '/sources' and method == 'GET':
-            return {'sources':[{'id':'qmt','realtime':True,'kinds':list(KINDS)},
+            return {'sources':[{'id':'qmt','realtime':True,'kinds':list(KINDS),'reports':['calendar','mapping'],
+                                'reference_capabilities':{key:self.qmt_reference_capabilities.get(key,{'state':'unchecked','results':[]}) for key in ('calendar','mapping_current','mapping_history')}},
                                {'id':'tushare','realtime':False,'kinds':['future'],'periods':list(TUSHARE_PERIODS),'continuous_minutes':False,
                                 'reports':['calendar','mapping','warehouse','holding','settle','weekly_detail'],'tick':{'state':'unsupported','reason':'无API，单独CSV交付，不属于积分权限'}}],
                     'tushare':self.settings.public_accounts(),'capabilities':self.capabilities}
+        if path=='/sources/qmt/references/test' and method=='POST':
+            from .qmt_references import probe, calendar_samples
+            if p.get('resource') not in ('calendar','mapping') or p.get('mapping_mode','current') not in ('current','history'): raise ValueError('无效检测范围')
+            result=probe(self.source,p,calendar_samples(store) if p['resource']=='calendar' else None)
+            key='calendar' if p['resource']=='calendar' else 'mapping_'+p.get('mapping_mode','current')
+            with self.lock: self.qmt_reference_capabilities[key]=result
+            return result
         if path == '/sources/tushare/accounts' and method == 'GET':
             return self.settings.public_accounts()
         if path == '/sources/tushare/accounts' and method == 'POST':
@@ -131,6 +160,14 @@ class Application:
             return self.settings.public()
         if method == 'POST' and path == '/settings':
             candidate = copy.deepcopy(self.settings)
+            restart_required=False
+            for key in ('host','port','ws_port'):
+                if key not in p: continue
+                if 'PFOR_QMT_'+key.upper() in os.environ or key in candidate.overrides:
+                    if p[key]!=candidate.value(key): raise ValueError('此服务参数由环境或命令行管理，请修改启动配置')
+                else:
+                    restart_required=restart_required or p[key]!=candidate.value(key)
+                    candidate.data[key]=p[key]
             changing_database = bool(p.get('dsn'))
             if changing_database:
                 if 'PFOR_QMT_DATABASE_URL' in os.environ:
@@ -179,7 +216,7 @@ class Application:
                 self.worker.start()
                 self.tushare_worker = Worker(store,candidate.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier), options=self.operation_options)
                 self.tushare_worker.start()
-            return self.settings.public()
+            return dict(self.settings.public(),restart_required=restart_required)
         if method == 'POST' and path == '/database/migrate':
             store.migrate()
             return store.health()
@@ -196,15 +233,19 @@ class Application:
             return store.securities(p.get('search', ''), p.get('kind', ''),source)
         if path.startswith('/futures/'):
             from .futures import selections, request_chunks, page
-            if source != 'tushare':
-                raise ValueError('期货资料扩展当前仅支持Tushare来源')
+            if method=='POST' and path=='/futures/filter-options':
+                from .futures import filter_options
+                return filter_options(store,p)
             if method == 'GET' and path == '/futures/options':
                 exchanges = filter_values(p.get('exchange','DCE'), TS_EXCHANGES, '期货交易所')
                 if not exchanges:
                     raise ValueError('请选择期货交易所')
                 markets = [TS_EXCHANGES[ex] for ex in exchanges]
-                products = store.query("SELECT market,upper(metadata->>'product') AS symbol,min(name) FILTER(WHERE subtype='continuous') AS name FROM securities WHERE source='tushare' AND market=ANY(%s) AND coalesce(metadata->>'product','')<>'' GROUP BY market,upper(metadata->>'product') ORDER BY market,symbol",(markets,))
-                continuous = store.query("SELECT code,name,market FROM securities WHERE source='tushare' AND market=ANY(%s) AND subtype='continuous' ORDER BY code",(markets,))
+                products = store.query("SELECT market,upper(metadata->>'product') AS symbol,min(name) FILTER(WHERE subtype='continuous') AS name FROM securities WHERE source=%s AND market=ANY(%s) AND coalesce(metadata->>'product','')<>'' GROUP BY market,upper(metadata->>'product') ORDER BY market,symbol",(source,markets))
+                continuous = store.query("SELECT code,name,market FROM securities WHERE source=%s AND market=ANY(%s) AND subtype='continuous' ORDER BY code",(source,markets))
+                if source=='qmt':
+                    import re
+                    continuous=[row for row in continuous if re.fullmatch(r'[A-Za-z]+00\.[A-Z]+',row['code'])]
                 for row in products + continuous:
                     row['exchange'] = next(ex for ex, market in TS_EXCHANGES.items() if market == row['market'])
                 return {'products':products,'continuous':continuous,'exchanges':list(TS_EXCHANGES)}
@@ -212,23 +253,25 @@ class Application:
                 return page(store,p,p.get('limit',200),p.get('offset',0))
             if method == 'POST' and path in ('/futures/sync','/futures/export'):
                 exporting = path.endswith('/export')
+                if not exporting and p.get('dimensions'):
+                    raise ValueError('明细筛选仅用于查询与导出；采集请按交易所、品种和日期选择范围')
                 catalog = None
                 account = None
                 if not exporting:
-                    account = self.settings.account(p.get('account_id'))
-                    rows = store.query("SELECT code,market,subtype,upper(metadata->>'product') AS product FROM securities WHERE source='tushare'")
+                    account = self.settings.account(p.get('account_id')) if source=='tushare' else None
+                    rows = store.query("SELECT code,market,subtype,upper(metadata->>'product') AS product FROM securities WHERE source=%s",(source,))
                     catalog = {'continuous':{row['code'] for row in rows if row['subtype']=='continuous'},
                                'products':{(row['market'],row['product']) for row in rows if row['product']},
                                'contracts':{(row['market'],row['code'].split('.')[0]) for row in rows if row['subtype']=='contract'}}
                 groups = {}
                 for target in selections(p):
                     payload = self.prepare_report(target, p, exporting, catalog, account)
-                    groups.setdefault(target['resource'], []).append(payload)
+                    groups.setdefault((target['resource'],target.get('mapping_mode')), []).append(payload)
                 payloads = []
                 for targets in groups.values():
                     payload = dict(targets[0])
                     if 'selections' in p:
-                        payload['selections'] = [{key:value for key,value in target.items() if key not in ('account_id','endpoint','chunks','format')} for target in targets]
+                        payload['selections'] = [{key:value for key,value in target.items() if key not in ('account_id','endpoint','chunks','format','dimensions')} for target in targets]
                     if not exporting:
                         payload['chunks'] = request_chunks(payload)
                     payloads.append(payload)
@@ -236,7 +279,7 @@ class Application:
                 return {'jobs':jobs,'selection_count':sum(len(targets) for targets in groups.values())} if 'selections' in p else jobs[0]
             raise LookupError('接口不存在')
         if method == 'GET' and path == '/catalog/securities':
-            return store.catalog_page(p.get('search', ''), p.get('kind', ''), p.get('limit', 50), p.get('offset', 0), p.get('market', ''), p.get('subtype', ''),source,str(p.get('active','false')).lower()=='true')
+            return store.catalog_page(p.get('search', ''), p.get('kind', ''), p.get('limit', 50), p.get('offset', 0), p.get('market', ''), p.get('subtype', ''),source,str(p.get('active','false')).lower()=='true',sort=p.get('sort','code'),direction=p.get('direction','asc'))
         if method == 'POST' and path == '/catalog/select':
             return store.catalog_page(p.get('search',''), p.get('kind',''), market=p.get('market',''), subtype=p.get('subtype',''), source=source, active=str(p.get('active','false')).lower()=='true', select_all=True)
         if method == 'POST' and path == '/catalog/resolve':
@@ -256,7 +299,7 @@ class Application:
             account = self.settings.account(p.get('account_id')) if source=='tushare' else {}
             return job_summary(store.create_catalog_job(p.get('kinds', ['future'] if source=='tushare' else list(KINDS)+['board']),source,account.get('id'),account.get('endpoint'),p.get('exchanges')))
         if method == 'GET' and path == '/boards':
-            return store.boards(p.get('search', ''), p.get('category', ''), p.get('limit', 50), p.get('offset', 0))
+            return store.boards(p.get('search', ''), p.get('category', ''), p.get('limit', 50), p.get('offset', 0),sort=p.get('sort','name'),direction=p.get('direction','asc'))
         if method == 'GET' and path == '/boards/members':
             return store.board(p['name'])
         if method == 'POST' and path == '/boards/refresh':
@@ -298,7 +341,7 @@ class Application:
             members = self.source.get_stock_list_in_sector(p['sector'])
             return store.snapshot(code, p['sector'], security['name'] if security else p.get('name') or p['sector'], members)
         if method == 'GET' and path == '/datasets':
-            return store.query('SELECT * FROM datasets ORDER BY created_at DESC')
+            return store.query('SELECT * FROM datasets WHERE deleted_at IS NULL AND (%s::text IS NULL OR source=%s) ORDER BY created_at DESC',(p.get('source'),source))
         if method == 'POST' and path == '/datasets':
             if source == 'tushare':
                 account = self.settings.account(p.get('account_id'))
@@ -310,6 +353,7 @@ class Application:
             dataset = store.query('SELECT * FROM datasets WHERE id=%s', (parts[1],), one=True)
             if not dataset:
                 raise ValueError('数据集不存在')
+            if dataset['deleted_at']: raise ValueError('数据集在回收站，请先恢复')
             if method == 'POST' and len(parts) == 3 and parts[2] == 'schedule':
                 from .maintenance import set_dataset_schedule
                 result=set_dataset_schedule(store,parts[1],p.get('enabled'))
@@ -338,8 +382,14 @@ class Application:
                 store.query('UPDATE datasets SET members=%s,snapshot_id=%s WHERE id=%s', (document(snapshot['members']), snapshot['id'], parts[1]))
                 return snapshot
         if method == 'GET' and path == '/history':
+            if any(key in p for key in ('sort','direction','snapshot','include_total')):
+                from .analytics import history_page
+                return history_page(store,p)
             return store.history(p['code'], p.get('period','1d'), p.get('start','1990-01-01'), p.get('end','2100-01-01'), p.get('limit',500), p.get('offset',0),source=source)
         if method == 'POST' and path == '/history/query':
+            if p.get('console') or any(key in p for key in ('sort','direction','snapshot','include_total')):
+                from .analytics import history_page
+                return history_page(store,p)
             return store.history_many(p)
         if method == 'GET' and path == '/contract-mappings':
             return store.query('SELECT * FROM contract_mappings WHERE source=%s AND code=%s AND trading_day BETWEEN %s AND %s ORDER BY trading_day LIMIT 2000', (source,codes([p['code']],source)[0],day(p.get('start','1990-01-01')),day(p.get('end','2100-01-01'))))
@@ -359,7 +409,7 @@ class Application:
             from .freshness import freshness_page
             return freshness_page(store,p)
         if path == '/maintenance' and method == 'GET':
-            return store.query('SELECT * FROM maintenance_plans ORDER BY name,id')
+            return store.query('SELECT * FROM maintenance_plans WHERE deleted_at IS NULL AND (%s::text IS NULL OR source=%s) ORDER BY name,id',(p.get('source'),source))
         if path == '/maintenance' and method == 'POST':
             from .maintenance import save_plan
             return save_plan(store,p)
@@ -373,7 +423,7 @@ class Application:
             import shutil
             database=store.health()
             if database['connected']:
-                result = store.operations_health()
+                result = store.operations_health(source=p.get('source'),view=p.get('view'))
             else:
                 result = dict(database=database,database_bytes=None,queues=[],quality=[],attention=[],maintenance=[],freshness=[],scheduled_freshness=None,
                               database_free_space={'state':'unverified','reason':'数据库未连接'})
@@ -403,12 +453,16 @@ class Application:
             if method == 'GET' and len(parts) == 2:
                 return job
             if method == 'GET' and len(parts) == 3 and parts[2] == 'units':
-                return store.units_page(job['id'],p.get('limit',50),p.get('offset',0))
+                return store.units_page(job['id'],p.get('limit',50),p.get('offset',0),p)
             if method == 'GET' and len(parts) == 3 and parts[2] == 'events':
                 return store.events_page(dict(p,job_id=str(job['id'])))
             if method == 'GET' and len(parts) == 3 and parts[2] == 'links':
                 return store.job_links(job['id'],p.get('limit',50),p.get('offset',0))
             if method == 'POST' and len(parts) == 3:
+                if parts[2] in ('delete','restore'):
+                    from .workspace import recycle
+                    return recycle(self,'jobs',parts[1],p,parts[2]=='restore')
+                if job['deleted_at']: raise ValueError('任务在回收站，请先恢复')
                 if parts[2] == 'cancel' and job['state'] in ('queued','running','retrying'):
                     store.update_job(job['id'], cancel_requested=True, **({'state':'cancelled'} if job['state'] == 'queued' else {}))
                     store.event(job['id'],'CANCEL_REQUESTED','用户取消后续处理')
@@ -441,11 +495,15 @@ class Application:
         if exporting:
             if params.get('format') not in ('csv','parquet'):
                 raise ValueError('无效导出格式')
-            return dict(payload,format=params['format'])
+            from .futures import query_dimensions
+            dimensions=query_dimensions(payload['resource'],params.get('dimensions'))
+            return dict(payload,format=params['format'],**({'dimensions':dimensions} if dimensions else {}))
         resource = payload['resource']
         if resource == 'mapping':
             if payload['code'] not in catalog['continuous']:
                 raise ValueError('请先同步并选择主力或连续合约')
+        if payload['source']=='qmt':
+            return dict(payload,account_id=None,endpoint=None)
         if resource=='settle' and (source_market(payload['code'],'tushare'),payload['code'].split('.')[0]) not in catalog['contracts']:
             raise ValueError('结算参数请选择已同步的具体月份合约')
         if resource in ('warehouse','holding','weekly_detail'):
@@ -461,6 +519,7 @@ class Application:
         dataset = self.store.query('SELECT * FROM datasets WHERE id=%s', (p['dataset_id'],), one=True)
         if not dataset:
             raise ValueError('数据集不存在')
+        if dataset['deleted_at']: raise ValueError('数据集在回收站，请先恢复')
         selected = periods(p.get('periods', dataset['periods']),dataset['source'])
         if intersect:
             selected = [period for period in selected if period in dataset['periods']]

@@ -10,6 +10,7 @@ def main():
     parser.add_argument('--runtime', help='临时覆盖运行目录')
     commands = parser.add_subparsers(dest='command', required=True)
     serve = commands.add_parser('serve')
+    serve.add_argument('--host')
     serve.add_argument('--port', type=int)
     serve.add_argument('--ws-port', type=int)
     commands.add_parser('key')
@@ -23,7 +24,7 @@ def main():
     deploy.add_argument('--account', default='')
     args = parser.parse_args()
     from .settings import Settings
-    settings = Settings(args.runtime, args.config, getattr(args,'port',None), getattr(args,'ws_port',None))
+    settings = Settings(args.runtime, args.config, getattr(args,'port',None), getattr(args,'ws_port',None), getattr(args,'host',None))
     if args.command == 'key':
         print(settings.api_key)
         return
@@ -57,9 +58,10 @@ def main():
     from .client import configure as configure_pipe
     configure_pipe(**settings.pipe)
     app = Application(settings)
+    host = settings.value('host')
     port, ws_port = settings.value('port'), settings.value('ws_port')
-    server = HTTPServer(('127.0.0.1', port), handler_for(app))
-    websocket = start_websocket(app, ws_port, port)
+    server = HTTPServer((host, port), handler_for(app))
+    websocket = start_websocket(app, ws_port, port, host)
     hub = MarketHub(pipe_name=settings.pipe['pipe_name'], default_request_channel=settings.pipe['request_channel'], show=False)
     hub.pending_timeout_seconds = settings.value('pending_timeout')
     hub.qmt_heartbeat_timeout_seconds = settings.value('heartbeat_timeout')
@@ -67,7 +69,7 @@ def main():
     threading.Thread(target=hub.start, daemon=True, name='pfor-pipe-hub').start()
     app.worker.start()
     app.tushare_worker.start()
-    print('pfor-qmt: http://127.0.0.1:%s (WebSocket %s)' % (port, ws_port), flush=True)
+    print('pfor-qmt: http://%s:%s (WebSocket %s)' % (host, port, ws_port), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

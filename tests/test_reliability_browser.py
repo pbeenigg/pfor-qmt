@@ -12,6 +12,7 @@ from pfor_qmt.service import Application
 from pfor_qmt.settings import Settings
 from pfor_qmt.data import SHANGHAI
 from test_storage_tasks import Source, make_job
+from browser_helpers import navigate
 
 
 @pytest.mark.browser
@@ -37,7 +38,8 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path,monkeypatc
             errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
             page.goto(f'http://127.0.0.1:{server.server_port}/#operations')
             page.get_by_label('API Key 或网页登录密码').fill(app.settings.api_key);page.locator('#login-form button').click()
-            expect(page.locator('#operations')).to_be_visible()
+            expect(page.locator('#overview')).to_be_visible()
+            navigate(page,'quality')
             expect(page.locator('#freshness-rows tr')).to_have_count(50)
             expect(page.locator('#freshness-rows')).to_contain_text('尚无数据')
             page.locator('#freshness-next').click()
@@ -53,11 +55,13 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path,monkeypatc
             page.locator('#freshness-filter button[type=reset]').click()
             expect(page.locator('#freshness-rows tr')).to_have_count(50)
             expect(page.locator('#attention-rows')).to_contain_text('bad response')
+            navigate(page,'events')
             expect(page.locator('#event-rows')).to_contain_text('INVALID_DATA')
+            navigate(page,'quality')
             page.locator('#attention-rows [data-job-detail]').click()
-            expect(page.locator('#record-extra')).to_contain_text('下一步')
-            page.locator('[data-units]').click()
-            expect(page.locator('#unit-rows')).to_contain_text('已拒绝')
+            expect(page.locator('#task-body')).to_contain_text('下一步')
+            page.locator('[data-task-tab=units]').click()
+            expect(page.locator('#task-body tbody')).to_contain_text('已拒绝')
             with page.expect_response(lambda response:response.url.endswith('/retry')) as response:
                 page.locator('[data-retry-unit]').click()
             child=response.value.json()
@@ -74,20 +78,23 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path,monkeypatc
             page.locator('#refresh-jobs').click()
             expect(page.locator('#job-rows')).to_contain_text('只读核验')
             page.locator(f'#job-rows [data-job-detail="{verification["id"]}"]').click()
-            expect(page.locator('#record-extra')).to_contain_text('coverage-v2')
-            page.locator('[data-units]').click()
-            page.locator('#unit-rows [data-record]').first.click()
+            expect(page.locator('#task-body')).to_contain_text('coverage-v2')
+            page.locator('[data-task-tab=units]').click()
+            page.locator('#task-body tbody [data-record]').first.click()
             expect(page.locator('#record-extra')).to_contain_text('核验依据与异常区间')
             page.keyboard.press('Escape')
-            page.keyboard.press('Escape')
+            navigate(page,'jobs')
             page.locator(f'#job-rows [data-job-detail="{job["id"]}"]').click()
-            page.locator('[data-maintain]').click()
+            page.locator('[data-save-plan]').click()
             page.locator('#maintenance-form [name=name]').fill('日线自动维护')
             page.locator('#maintenance-form button[type=submit]').click()
             expect(page.locator('#maintenance-rows')).to_contain_text('日线自动维护')
-            page.locator('[data-maintenance-id]').click()
             expect(page.locator('#maintenance-rows')).to_contain_text('已停用')
-            page.locator('[data-maintenance-edit]').click()
+            page.locator('[data-plan=toggle]').click()
+            expect(page.locator('#maintenance-rows')).to_contain_text('已启用')
+            page.locator('[data-plan=toggle]').click()
+            expect(page.locator('#maintenance-rows')).to_contain_text('已停用')
+            page.locator('[data-plan=edit]').click()
             page.locator('#maintenance-form [name=name]').fill('收盘后核对')
             page.locator('#maintenance-form [name=schedule_time]').fill('18:30')
             page.locator('#maintenance-form [name=lookback_days]').fill('3')
@@ -98,6 +105,7 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path,monkeypatc
             plan=store.query('SELECT * FROM maintenance_plans',one=True)
             assert not plan['enabled'] and plan['lookback_days']==3
             assert store.events_page({'code':'MAINTENANCE_UPDATED'})['rows']
+            navigate(page,'events')
             page.locator('#event-filter [name=job_id]').fill(str(job['id']))
             page.locator('#event-filter button[type=submit]').click()
             expect(page.locator('#event-rows')).to_contain_text('INVALID_DATA')
@@ -112,9 +120,12 @@ def test_operations_quality_retry_logs_and_maintenance(store,tmp_path,monkeypatc
             assert not errors,errors
             (app.settings.runtime/'worker-qmt.jsonl').write_text(json.dumps(dict(time='2026-09-18T10:00:00Z',source='qmt',lane='download',code='DATABASE_ERROR',message='数据库连接中断',action='恢复数据库后刷新')),encoding='utf-8')
             monkeypatch.setattr(store,'health',lambda:{'connected':False,'message':'database offline'})
+            navigate(page,'overview')
             page.locator('#operations-refresh').click()
             expect(page.locator('#operations-summary')).to_contain_text('未连接')
+            navigate(page,'events')
             expect(page.locator('#event-rows')).to_contain_text('暂不可读取')
+            navigate(page,'runtime')
             expect(page.locator('#runtime-rows')).to_contain_text('DATABASE_ERROR')
             assert not errors,errors
             browser.close()

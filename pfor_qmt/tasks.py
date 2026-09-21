@@ -13,7 +13,7 @@ from .symbols import market_of, derivative_kind
 from .identifiers import source_market, TS_EXCHANGES
 from .tushare import TushareSource, SourceError
 from .reliability import SourceUnavailable, failure, issue, fallback_log, redact
-from .quality_checks import RULE_VERSION, aggregate_issues, minute_issues, stored_issues
+from .quality_checks import RULE_VERSION, aggregate_issues, minute_issues, stored_issues, qmt_daily_weekend, daily_weekend_issue
 
 
 class Cancelled(Exception):
@@ -206,6 +206,20 @@ class Worker:
 
     def calendar(self, code, start, end, count=-1, adapter=None):
         if self.provider == 'qmt':
+            market=code if code in TS_EXCHANGES.values() else source_market(code,'qmt')
+            if start and end:
+                first,last=timestamp(start).date(),timestamp(end).date()
+                saved=self.store.query("SELECT day,is_open FROM trading_dates WHERE source='qmt' AND market=%s AND day BETWEEN %s AND %s AND evidence='calendar' ORDER BY day",(market,first,last))
+                if len(saved)==(last-first).days+1:
+                    opened=[row['day'].strftime('%Y%m%d') for row in saved if row['is_open']]
+                    return opened[-count:] if count>0 else opened
+            if code in TS_EXCHANGES.values():
+                from .qmt_references import calendar,calendar_samples
+                from .futures import write_records
+                records=calendar(self.source,market,timestamp(start).date(),timestamp(end).date(),calendar_samples(self.store).get(market,()))
+                with self.store.connect() as conn: write_records(conn,'calendar',records)
+                opened=[row['day'].strftime('%Y%m%d') for row in records if row['is_open']]
+                return opened[-count:] if count>0 else opened
             return self.source.get_trading_dates(code, start, end, count) if count != -1 else self.source.get_trading_dates(code,start,end)
         final = datetime.strptime(end, '%Y%m%d').date()
         first = datetime.strptime(start, '%Y%m%d').date() if start else final - timedelta(days=60)
@@ -327,12 +341,21 @@ class Worker:
                     raise
                 calendar, calendar_error = [], str(error)
             if not rows and not calendar and not adapter:
+                confirmed=self.store.query("SELECT day,is_open FROM trading_dates WHERE source='qmt' AND market=%s AND day BETWEEN %s AND %s AND evidence='calendar'",(source_market(code,self.provider),start,end))
+                if period=='1d' and len(confirmed)==(end-start).days+1 and not any(row['is_open'] for row in confirmed):
+                    self.check(identifier)
+                    self.store.write_chunk(identifier,part,[],[issue('NO_OPEN_DAY','not_applicable','QMT完整交易所日历确认区间休市','无需下载日线；本结论不证明行情连接')],index+1)
+                    return
+                if qmt_daily_weekend(part) and not self.store.query("SELECT 1 FROM trading_dates WHERE source='qmt' AND market=%s AND day BETWEEN %s AND %s AND is_open LIMIT 1",(source_market(code,self.provider),start,end),one=True):
+                    self.check(identifier)
+                    self.store.write_chunk(identifier,part,[],[daily_weekend_issue()],index+1)
+                    return
                 guidance = '终端行情服务器登录与连接' if self.provider == 'qmt' else 'Tushare连接与接口权限'
                 raise SourceUnavailable(f'{code} / {period} / {start} 至 {end}：{self.provider.upper()} 历史行情和交易日历均为空，已停止后续下载；请检查{guidance}，恢复后重试。当前分块未推进检查点')
             trading_days = sorted({timestamp(value).date() for value in calendar})
             with self.store.connect() as conn:
                 with conn.cursor() as cursor:
-                    cursor.executemany('INSERT INTO trading_dates(market,day,source) VALUES(%s,%s,%s) ON CONFLICT(source,market,day) DO UPDATE SET is_open=true', [(source_market(code,self.provider), item,self.provider) for item in trading_days])
+                    cursor.executemany("INSERT INTO trading_dates(market,day,source,evidence,observed_at) VALUES(%s,%s,%s,'bar_observation',now()) ON CONFLICT(source,market,day) DO UPDATE SET is_open=true WHERE trading_dates.evidence<>'calendar'", [(source_market(code,self.provider), item,self.provider) for item in trading_days])
             actual = {row['trading_day'] or row['time'].date() for row in rows}
             expected = {period_label(value,period) for value in trading_days}
             gaps = [{'day': value.isoformat(), 'reason': '无行情，停牌或缺失待确认'} for value in sorted(expected) if value not in actual]
@@ -377,12 +400,30 @@ class Worker:
         return self.download_result(identifier)
 
     def download_report(self, job):
-        from .futures import REPORTS, write_records
+        from .futures import REPORTS, write_records, definition_for
         payload, identifier = job['payload'], job['id']
         resource = payload['resource']
-        adapter = self.tushare_source(payload, lambda: self.check(identifier))
+        adapter = self.tushare_source(payload, lambda: self.check(identifier)) if self.provider=='tushare' else None
+        from .qmt_references import calendar_samples
+        samples=calendar_samples(self.store) if not adapter and resource=='calendar' else None
         def process(index, part):
             target = part.get('selection', payload)
+            if not adapter:
+                from .qmt_references import report,findings,current_mapping
+                target=dict(target,source='qmt')
+                rows=self.retry_network(identifier,lambda:report(self.source,target,part['start'],part['end'],samples,lambda:self.check(identifier)))
+                self.check(identifier)
+                dates=self.store.query("SELECT day,is_open,evidence FROM trading_dates WHERE source='qmt' AND market=%s AND day BETWEEN %s AND %s",(source_market(target['code'],'qmt'),day(part['start']),day(part['end']))) if resource=='mapping' and not current_mapping(target) else []
+                gaps=findings(rows,target,part['start'],part['end'],dates)
+                for row in rows:
+                    if current_mapping(target): row.update(job_id=identifier,unit_index=index)
+                field=definition_for(target)['date']
+                times=[timestamp(row[field]) for row in rows]
+                with self.store.connect() as conn:
+                    self.check(identifier)
+                    write_records(conn,resource,rows)
+                    self.store.write_coverage(conn,identifier,part,len(rows),gaps,index+1,min(times) if times else None,max(times) if times else None)
+                return
             rows = self.retry_network(identifier, lambda: adapter.report(target,part['start'],part['end']))
             self.check(identifier)
             date_field = REPORTS[resource]['date']
@@ -420,7 +461,7 @@ class Worker:
         if not total and (failed or blocked):
             state = 'blocked' if blocked else 'failed'
         return {'state':state, 'rows':total, 'coverage':coverage, 'quality_summary':units, 'rule_version':RULE_VERSION,
-                'message': ('未读到资料，未写入记录' if report else '未读到行情，未写入 K 线') if not total else '已入库，仍有未完成或待核验分块' if uncertain else '实际读回并完成入库'}
+                'message': ('全部分块不适用，未写入记录' if units and not uncertain else '未读到资料，未写入记录' if report else '未读到行情，未写入 K 线') if not total else '已入库，仍有未完成或待核验分块' if uncertain else '实际读回并完成入库'}
 
     def verify(self, job):
         from .futures import page, REPORTS, normalize_report
@@ -433,6 +474,32 @@ class Worker:
             with self.store.connect() as conn:
                 conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
                 rows,offset=[],0
+                from .qmt_references import current_mapping,findings
+                if provider=='qmt' and resource:
+                    target=dict(target,source=provider)
+                    if current_mapping(target):
+                        original=payload['verification_of']
+                        while True:
+                            ancestor=conn.execute('SELECT kind,payload FROM jobs WHERE id=%s',(original,)).fetchone()
+                            if not ancestor or ancestor['kind']!='verify': break
+                            original=ancestor['payload']['verification_of']
+                        rows=list(conn.execute('SELECT * FROM contract_mapping_snapshots WHERE job_id=%s AND unit_index=%s',(original,index)))
+                    elif resource=='mapping':
+                        rows=list(conn.execute('SELECT * FROM contract_mappings WHERE source=%s AND code=%s AND trading_day BETWEEN %s AND %s ORDER BY trading_day',(provider,target['code'],day(part['start']),day(part['end']))))
+                    else:
+                        rows=page(self.store,dict(target,start=part['start'],end=part['end']),5000,0,conn)['rows']
+                    market=source_market(target['code'],provider) if resource=='mapping' else TS_EXCHANGES[target['exchange']]
+                    calendar=list(conn.execute('SELECT day,is_open,evidence FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s',(provider,market,day(part['start']),day(part['end']))))
+                    gaps=findings(rows,target,part['start'],part['end'],calendar)
+                    if resource=='mapping':
+                        from .qmt_references import member
+                        for row in rows: member(None,target['code'],row['member_code'],(row.get('source_fields') or {}).get('product_evidence'))
+                    from .futures import definition_for
+                    field=definition_for(target)['date'];times=[timestamp(row[field]) for row in rows]
+                    self.check(identifier)
+                    self.store.write_coverage(conn,identifier,part,len(rows),gaps,index+1,min(times) if times else None,max(times) if times else None)
+                    self.store.event(identifier,'VERIFICATION_READ','只读核验QMT资料，未改写原快照或历史映射',unit_index=index,context={'rows':len(rows),'issues':gaps},conn=conn)
+                    return
                 while True:
                     self.check(identifier)
                     batch=page(self.store,dict(target,start=part['start'],end=part['end']),5000,offset,conn) if resource else self.store.history(part['code'],part['period'],part['start'],part['end'],5000,offset,conn,source=provider)
@@ -440,7 +507,7 @@ class Worker:
                     if batch['next_offset'] is None: break
                     offset=batch['next_offset']
                 market=source_market(part['code'],provider) if not resource or resource=='mapping' else TS_EXCHANGES[target['exchange']]
-                calendar=list(conn.execute('SELECT day,is_open FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s',(provider,market,day(part['start'])-timedelta(days=31),period_label(part['end'],part['period']))))
+                calendar=list(conn.execute('SELECT day,is_open,evidence FROM trading_dates WHERE source=%s AND market=%s AND day BETWEEN %s AND %s',(provider,market,day(part['start'])-timedelta(days=31),period_label(part['end'],part['period']))))
                 if resource:
                     if resource in ('warehouse','holding','settle','weekly_detail'):
                         exchange='SHFE' if resource=='holding' and target['exchange']=='INE' else target['exchange']
@@ -452,14 +519,14 @@ class Worker:
                         gaps=[issue('CALENDAR_MISSING','missing','日历缺少自然日记录','同步对应交易所日历',True,day=(day(part['start'])+timedelta(days=i)).isoformat()) for i in range((day(part['end'])-day(part['start'])).days+1) if day(part['start'])+timedelta(days=i) not in dates]
                     else:
                         mapped=[dict(time=timestamp(row['trading_day']),trading_day=row['trading_day']) for row in rows]
-                        gaps=stored_issues(mapped,dict(part,period='1d'),calendar)
+                        gaps=stored_issues(mapped,dict(part,period='1d',source=provider),calendar)
                     date_field=REPORTS[resource]['date']
                     times=[timestamp(row[date_field]) for row in rows]
                 else:
                     normalize_bars(rows,part['code'],part['period'],period_label(part['start'],part['period']),period_label(part['end'],part['period']),provider)
                     security=conn.execute('SELECT metadata,subtype FROM securities WHERE source=%s AND code=%s',(provider,part['code'])).fetchone()
                     metadata=security['metadata'] if security else {}
-                    checked=dict(part)
+                    checked=dict(part,source=provider)
                     if security and security['subtype']=='contract':
                         if metadata.get('listed'): checked['start']=max(day(part['start']),timestamp(metadata['listed']).date()).isoformat()
                         if metadata.get('expiry'): checked['end']=min(day(part['end']),timestamp(metadata['expiry']).date()).isoformat()
@@ -499,8 +566,8 @@ class Worker:
         if payload.get('period') in AGGREGATE_PERIODS:
             fields.extend(['as_of_date','source_fields'])
         if payload.get('resource'):
-            from .futures import REPORTS, page as report_page
-            fields = list(REPORTS[payload['resource']]['fields'])
+            from .futures import definition_for, page as report_page
+            fields = list(definition_for(payload)['fields'])
         total = 0
         parquet = None
         metadata = None

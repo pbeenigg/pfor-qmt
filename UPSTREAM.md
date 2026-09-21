@@ -28,6 +28,8 @@
 
 ## 新增与改写
 
+2026-09-20 QMT资料扩展：新增qmt_references.py及011_qmt_references.sql；SDK/桥端增加get_main_contract、get_trading_calendar和固定historymaincontract读取/下载入口，复用原有ContextInfo上下文和本地读取机制，不另连MiniQMT。接口依据本机QMT随附Python API文档第57、58、67页及迅投公开xtdata文档；快照、日历证据、校验和页面为本项目实现，未复制客户端源码。行情数据授权不随本项目MIT许可证转授。
+
 `market_bridge.py` 新建无交易继承的派发器，依据上游 `normal_bridge.py` 的原生订阅参数、首包与退订行为适配；上游 `_call_variants` 被覆盖为先绑定签名，避免误吞内部 TypeError。旧下载接口回退覆盖所有证券。
 
 `deploy.py` 参考上游 `qmt_strategy_deploy.py` 的导入队列与模型 XML 字段，重新限定唯一自有模型，保留备份和并发检查，不复制上游清理逻辑或完整模型模板。

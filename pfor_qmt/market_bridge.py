@@ -64,6 +64,15 @@ class MarketBridge(QmtMethods):
             return {'source': 'qmt', 'mode': 'market-only', 'actions': sorted(ACTIONS),
                     'instance': self.instance, 'generation': self.generation, 'catalog_version': 2}
         method = action.split('.', 1)[1]
+        if method == 'get_main_contract':
+            return self._require_qmt_callable(method)(p['stock_code'])
+        if method == 'get_trading_calendar':
+            return self._require_qmt_callable(method)(p['market'],p['start_time'],p['end_time'])
+        if method == 'get_main_contract_history':
+            return self._get_local_data(dict(stock_list=[p['stock_code']],period='historymaincontract',
+                start_time=p['start_time'],end_time=p['end_time'],count=-1,fill_data=False))
+        if method == 'download_main_contract_history':
+            return self._download('download_history_data',dict(p,period='historymaincontract'),message)
         if method in ('get_market_data_ex', 'get_local_data', 'get_instrument_detail', 'get_stock_list_in_sector'):
             return getattr(self, '_' + method)(p)
         if method == 'get_sector_list':

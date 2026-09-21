@@ -13,6 +13,26 @@ const pickerTargets = {
 };
 let pickerTarget, pickerTrigger, pickerSelection, pickerRows = [], pickerOffset = 0, pickerNext = null, pickerRequest = 0, pickerTimer;
 
+function datasetRequiresContracts() {
+  return provider==='tushare' && [...$('#dataset-form').querySelectorAll('[name=period]:checked')].some(input=>minutePeriods.includes(input.value));
+}
+
+function incompatibleDatasetMembers() {
+  return datasetRequiresContracts()?splitCodes($('#dataset-form [name=members]').value).filter(code=>catalogNames.get(code)?.subtype!=='contract'):[];
+}
+
+function pickerSubtype() {
+  return pickerTarget==='dataset'&&datasetRequiresContracts()?'contract':pickerTargets[pickerTarget].subtype || $('#picker-subtype').value;
+}
+
+function updateCatalogFilters() {
+  for(const selector of ['#security-form [name=kind]','#security-form [name=market]','#security-form [name=subtype]','#picker-market']){
+    const field=$(selector);
+    for(const option of field.options){const allowed=provider!=='tushare'||!option.value||(field.name==='kind'?option.value==='future':field.name==='subtype'?['contract','continuous','combination','efp'].includes(option.value):['IF','SF','DF','ZF','INE','GF'].includes(option.value));option.disabled=option.hidden=!allowed;if(!allowed)option.selected=false;}
+    refreshMulti(field);
+  }
+}
+
 function rememberSecurities(rows) {
   rows.forEach((row) => catalogNames.set(row.code, row));
   for (const target of Object.values(pickerTargets)) {
@@ -48,6 +68,7 @@ async function loadPicker(offset = 0) {
   $('#picker-rows').setAttribute('aria-busy', 'true');
   pickerRows = [];
   $('#picker-rows').replaceChildren();
+  $('#picker-prev').disabled=true;$('#picker-next').disabled=true;
   pickerCount();
   try {
     const search = $('#picker-search').value.trim();
@@ -55,9 +76,10 @@ async function loadPicker(offset = 0) {
     const kind = kinds.join(','), market = markets.join(',');
     let result;
     if ($('#picker-selected-only').checked) {
-      const rows = [...pickerSelection].map((code) => catalogNames.get(code) || {code,name:'目录未收录',kind:''}).filter((row) => (!kinds.length || kinds.includes(row.kind)) && (!markets.length || markets.includes(row.market)) && `${row.code} ${row.name}`.toLowerCase().includes(search.toLowerCase()));
+      const subtype=pickerSubtype(),date=today().replaceAll('-','');
+      const rows = [...pickerSelection].map((code) => catalogNames.get(code) || {code,name:'目录未收录',kind:''}).filter((row) => (!kinds.length || kinds.includes(row.kind)) && (!markets.length || markets.includes(row.market)) && (!subtype||row.subtype===subtype) && (!$('#picker-active').checked || (!row.metadata?.expiry||row.metadata.expiry>=date)&&(!row.metadata?.listed||row.metadata.listed<=date)) && `${row.code} ${row.name} ${row.metadata?.product||''}`.toLowerCase().includes(search.toLowerCase()));
       result = { rows:rows.slice(offset, offset + 50), total:rows.length, next_offset:offset + 50 < rows.length ? offset + 50 : null };
-    } else result = await api('/catalog/securities?' + new URLSearchParams({search, kind, market, subtype:pickerTargets[pickerTarget].subtype || '', active:$('#picker-active').checked, limit:50, offset}));
+    } else result = await api('/catalog/securities?' + new URLSearchParams({search, kind, market, subtype:pickerSubtype(), active:$('#picker-active').checked, limit:50, offset}));
     if (request !== pickerRequest || !$('#security-picker').open) return;
     rememberSecurities(result.rows.filter((row) => row.kind));
     pickerRows = result.rows; pickerOffset = offset; pickerNext = result.next_offset;
@@ -76,6 +98,8 @@ async function loadPicker(offset = 0) {
 }
 
 function initializePickers() {
+  const typeLabel=document.createElement('label');typeLabel.innerHTML='合约类型<select id="picker-subtype"><option value="">全部</option>'+Object.entries(subtypeNames).map(([value,label])=>`<option value="${value}">${label}</option>`).join('')+'</select>';
+  $('#picker-search-form button').before(typeLabel);
   $$('[data-kind-filter]').forEach((select) => { select.innerHTML = '<option value="">全部</option>' + Object.entries(kindNames).map(([key, name]) => `<option value="${key}">${name}</option>`).join(''); });
   $$('[data-market-filter]').forEach((select) => { select.innerHTML = '<option value="">全部</option>' + Object.entries(marketNames).map(([key, name]) => `<option value="${key}">${name}</option>`).join(''); });
   rememberSecurities([]);
@@ -84,14 +108,21 @@ function initializePickers() {
     const target = pickerTargets[pickerTarget];
     pickerSelection = new Set(splitCodes($(target.input).value));
     $('#picker-title').textContent = target.title;
+    const contractOnly=pickerTarget==='dataset'&&datasetRequiresContracts();
+    $('#picker-subtype').value=contractOnly?'contract':target.subtype || '';
+    $('#picker-subtype').disabled=contractOnly||Boolean(target.subtype);
+    $('#picker-constraint').hidden=!contractOnly;
+    $('#picker-constraint').textContent=contractOnly?'分钟周期仅可选择具体月份合约；主力、连续与组合合约不包含在全选范围中。':'';
     $('#picker-search').value = '';
     $('#picker-kind').value = target.kind || (provider==='tushare'?'future':'');
     $('#picker-market').value = '';
     if(pickerTarget==='report'){
+      $('#picker-title').textContent='选择'+(reportNames[futuresActive] || '期货资料')+'月份合约';
       const selected=selectedValues($('#futures-form [name=exchange]')).map(exchange=>exchangeMarkets[exchange]);
       [...$('#picker-market').options].forEach(option=>{option.selected=selected.includes(option.value);});
     }
-    $('#picker-kind').disabled = !!target.kind;
+    $('#picker-kind').disabled = !!target.kind || provider==='tushare';
+    updateCatalogFilters();
     refreshMulti($('#picker-kind'));refreshMulti($('#picker-market'));
     $('#picker-selected-only').checked = false;
     $('#picker-select-matched').disabled=false;
@@ -110,6 +141,7 @@ function initializePickers() {
   $('#picker-search').addEventListener('input', () => { clearTimeout(pickerTimer); ++pickerRequest; pickerTimer = setTimeout(() => loadPicker(), 200); });
   $('#picker-kind').addEventListener('change', () => loadPicker());
   $('#picker-market').addEventListener('change', () => loadPicker());
+  $('#picker-subtype').addEventListener('change', () => loadPicker());
   $('#picker-selected-only').addEventListener('change', () => {$('#picker-select-matched').disabled=$('#picker-selected-only').checked;loadPicker();});
   $('#picker-active').addEventListener('change', () => loadPicker());
   $('#picker-prev').addEventListener('click', () => loadPicker(Math.max(0, pickerOffset - 50)));
@@ -120,7 +152,7 @@ function initializePickers() {
     const request=++pickerRequest, target=pickerTargets[pickerTarget], button=$('#picker-select-matched');
     button.disabled=true;$('#picker-error').hidden=true;
     try{
-      const result=await api('/catalog/select',{source:provider,search:$('#picker-search').value.trim(),kind:selectedValues($('#picker-kind')),market:selectedValues($('#picker-market')),subtype:target.subtype || '',active:$('#picker-active').checked});
+      const result=await api('/catalog/select',{source:provider,search:$('#picker-search').value.trim(),kind:selectedValues($('#picker-kind')),market:selectedValues($('#picker-market')),subtype:pickerSubtype(),active:$('#picker-active').checked});
       if(request!==pickerRequest || !$('#security-picker').open)return;
       const combined=new Set([...pickerSelection,...result.rows.map(row=>row.code)]);
       if(combined.size>(target.limit || 10000))throw new Error(`选中范围共${combined.size}个，当前操作最多${target.limit || 10000}个；请缩小筛选范围，未截断选择`);

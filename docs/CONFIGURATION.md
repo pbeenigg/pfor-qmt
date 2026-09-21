@@ -59,6 +59,7 @@ requests_per_minute = 60
 | TOML字段 | 环境变量 | 默认值 |
 | --- | --- | --- |
 | app.runtime_dir | PFOR_QMT_RUNTIME_DIR | runtime |
+| server.host | PFOR_QMT_HOST | 127.0.0.1 |
 | server.port | PFOR_QMT_PORT | 8766 |
 | server.ws_port | PFOR_QMT_WS_PORT | 8767 |
 | database.dsn | PFOR_QMT_DATABASE_URL | 空，未配置 |
@@ -74,11 +75,17 @@ requests_per_minute = 60
 | security.api_key | PFOR_QMT_API_KEY | 首次随机生成 |
 | security.login_hash | 无，网页管理 | 空，关闭密码登录 |
 
-HTTP和WebSocket地址固定为127.0.0.1，schema固定为pfor_qmt，不开放绕过本机或schema隔离的配置。端口必须有效且不同，未知字段和错误类型直接报错，不能静默忽略拼写错误。这里是应用配置层，不向Windows全局环境写变量，也不提供任意环境变量执行入口。
+HTTP和WebSocket默认绑定127.0.0.1；需要外部访问时设置`server.host = "0.0.0.0"`，同时开放HTTP和WebSocket端口并配置HTTPS。schema固定为pfor_qmt，不开放绕过schema隔离的配置。端口必须有效且不同，未知字段和错误类型直接报错，不能静默忽略拼写错误。这里是应用配置层，不向Windows全局环境写变量，也不提供任意环境变量执行入口。
 
 上游保留的低层诊断环境变量（日志、状态文件、进程实例标识等）仍可临时使用，但不作为业务配置。测试仅使用PFOR_QMT_TEST_DSN及PFOR_QMT_BROWSER_TEST，绝不自动取业务DSN执行测试。
 
 ## 数据库
+
+数据库错误不能统一解释为磁盘不足。ConnectionTimeout表示连接超时；42P01表示缺表，42703表示缺字段，28P01表示认证失败，53300表示连接数上限，53100才是PostgreSQL报告空间不足。当前版本按错误类型显示诊断及建议，不输出驱动原始连接信息。
+
+短暂建连失败最多尝试3次，限业务SQL执行之前；不会自动重放写入事务。恢复后从关联重试任务继续未完成范围，旧任务保留原错误。清空数据不能修复网络超时；只有缺表或字段时才应核对版本并执行数据库迁移。
+
+表注释与字段字典参见[数据库结构与ER图](DATABASE_SCHEMA.md)。schema12仅增加注释，不改变业务表结构。
 
 连接格式为`postgresql://USER:PASSWORD@localhost:5432/pfor_qmt`。URI中真实密码若含`@`、`:`等特殊字符，应进行百分号编码；用户消息中的Markdown转义反斜杠不属于连接字符串。
 

@@ -306,7 +306,7 @@ def test_upgrade_v3_preserves_original_values_and_identity(store):
     store.save_security('CU2610.SHF','沪铜2610','future',{},subtype='contract',metadata={'product':'CU','delivery_month':'202610'},source='tushare')
     ids=store.query('SELECT instrument_id FROM securities')
     assert ids[0]['instrument_id']==ids[1]['instrument_id']
-    assert store.health()['version']==8
+    assert store.health()['version']==12
 
 
 @pytest.mark.postgres

@@ -43,7 +43,7 @@ def contract_type(code):
         return 'contract'
     if '(EFP)' in body:
         return 'efp'
-    if re.search(r'L\d+$', body) or re.search(r'(?<!\d)\d{2,3}$', body) and market != 'ZF':
+    if re.search(r'L\d{1,2}$', body) or re.search(r'(?<!\d)\d{2,3}$', body) and market != 'ZF':
         return 'continuous'
     if re.search(r'(?:00|001|L[019])$', body) or re.fullmatch(r'[A-Za-z_]+\d{2}', body):
         return 'continuous'
