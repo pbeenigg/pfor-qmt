@@ -170,4 +170,10 @@ $env:PFOR_QMT_BROWSER_TEST = '1'
 
 测试没有覆盖率百分比门槛；必须通过交易拒绝、命名隔离、重复入库、任务恢复、调度、导出和界面回归。无测试数据库或浏览器开关时，相应测试会显式跳过，不能据此宣称全部验收通过。
 
+## 发布软件包
+
+`.github/workflows/python-publish.yml` 会在 GitHub Release 发布后构建并检查 wheel 和源码包，同时发布到 PyPI，并把两个文件附加到该 Release。发布前先在 `pyproject.toml` 更新版本号，再创建同名标签，例如版本 `0.1.0` 使用标签 `v0.1.0`。
+
+首次发布到 PyPI 前，在 PyPI 配置 Trusted Publisher：仓库所有者填写 `pbeenigg`，仓库填写 `pfor-qmt`，工作流填写 `python-publish.yml`，环境填写 `pypi`。之后创建并发布 GitHub Release 即可触发；也可以手动运行工作流，但必须填写一个已存在的 Release 标签。
+
 项目结构、接口与状态见 [执行规范](AGENTS.md)、[架构](docs/ARCHITECTURE.md)、[API](docs/API.md)、[兼容矩阵](COMPATIBILITY.md)、[验证记录](docs/VERIFICATION.md)。
