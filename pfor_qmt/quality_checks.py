@@ -7,6 +7,35 @@ from .reliability import issue
 
 RULE_VERSION = 'coverage-v2'
 
+# CZCE notice 2025-939; this evidence is not stored as a QMT-provided calendar.
+CZCE_2026_CLOSURES = (
+    ('元旦','2026-01-01','2026-01-03'),
+    ('春节','2026-02-15','2026-02-23'),
+    ('清明节','2026-04-04','2026-04-06'),
+    ('劳动节','2026-05-01','2026-05-05'),
+    ('端午节','2026-06-19','2026-06-21'),
+    ('中秋节','2026-09-25','2026-09-27'),
+    ('国庆节','2026-10-01','2026-10-07'),
+)
+
+
+def exchange_holiday_issue(part, calendar):
+    """Only a fully covered, published closure can explain an empty QMT interval."""
+    from .symbols import market_of
+    if part.get('source','qmt')!='qmt' or part['period'] not in ('1d','1m','5m') or market_of(part['code'])!='ZF': return None
+    first,last=day(part['start']),day(part['end'])
+    if any(row['is_open'] and first<=row['day']<=last for row in calendar): return None
+    for name,start,end in CZCE_2026_CLOSURES:
+        if day(start)<=first<=last<=day(end):
+            return issue('EXCHANGE_HOLIDAY_CLOSED','not_applicable',
+                         f'郑商所{name}休市（{start}至{end}），请求区间无交易时段；空行情符合休市安排',
+                         '本分块无需补数，继续后续范围；此结论不代表行情连接已经验证',
+                         holiday=name,closure_start=start,closure_end=end,notice='郑商函〔2025〕939号',
+                         issuer='郑州商品交易所',published_at='2025-12-17',
+                         evidence_url='https://www.ccbfutures.com/main/a/20251217/76267.shtml',
+                         evidence_origin='建信期货转载交易所公告',rule='czce-holidays-2026-v1')
+    return None
+
 
 def qmt_daily_weekend(part):
     """Domestic daily bars have no weekend session; this does not apply to night minutes."""
@@ -69,6 +98,8 @@ def minute_issues(rows, period, metadata=None):
 
 def stored_issues(rows, part, calendar, metadata=None, now=None):
     period=part['period']
+    closure=exchange_holiday_issue(part,calendar) if not rows else None
+    if closure: return [closure]
     if period in MINUTE_PERIODS:
         return minute_issues(rows,period,metadata)
     opened=[row['day'] for row in calendar if row['is_open'] and day(part['start'])<=row['day']<=day(part['end'])]

@@ -26,7 +26,7 @@ for path in artifacts:
     required.extend(['pfor_qmt/quality_checks.py','pfor_qmt/migrations/007_verification.sql'])
     required.append('pfor_qmt/migrations/008_settlement_weekly.sql')
     required.extend(['pfor_qmt/qmt_references.py','pfor_qmt/migrations/011_qmt_references.sql'])
-    required.append('pfor_qmt/migrations/012_schema_comments.sql')
+    required.extend(['pfor_qmt/migrations/012_schema_comments.sql','pfor_qmt/migrations/013_simple_schema_comments.sql'])
     required.extend(['pfor_qmt/migrations/010_recycle.sql','pfor_qmt/migrations/009_console_versions.sql','pfor_qmt/analytics.py','pfor_qmt/workspace.py','web_dashboard/workspace.js','web_dashboard/workspace.css'])
     if path.name.endswith('.tar.gz'):
         required.append('docs/SETTLEMENT_WEEKLY.md')

@@ -1,6 +1,6 @@
 # 数据库结构、ER图与字段字典
 
-适用迁移版本：12。覆盖 22 张表、1 个视图、229 个字段。
+适用迁移版本：13。覆盖 22 张表、1 个视图、229 个字段。
 
 本文由 `tools/generate_schema_docs.py` 读取PostgreSQL系统目录生成，不读取业务行、账号Token或连接密码。SQL迁移中的COMMENT是说明来源；更改结构或口径后应更新迁移并重新生成。
 
@@ -180,12 +180,12 @@ flowchart LR
 
 #### instruments
 
-稳定证券或合约身份；满足资料证据的普通期货月份合约可跨来源关联，资料不足时按来源与原始代码隔离。
+保存可跨数据源复用的证券或合约身份。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| id | uuid | 否 | gen_random_uuid() | 稳定身份UUID，供证券目录与K线外键引用。 |
-| identity_key | text | 否 | 无 | 唯一身份键；有依据的月份合约为future:市场:品种:YYYYMM，否则为来源:代码；连续序列不推断跨源等价。 |
+| id | uuid | 否 | gen_random_uuid() | 证券或合约的稳定身份编号。 |
+| identity_key | text | 否 | 无 | 身份唯一键。 |
 
 - `instruments_identity_key_key`：`UNIQUE (identity_key)`
 - `instruments_pkey`：`PRIMARY KEY (id)`
@@ -201,20 +201,20 @@ CREATE UNIQUE INDEX instruments_pkey ON pfor_qmt.instruments USING btree (id);
 
 #### securities
 
-统一证券目录和来源代码映射；主键为来源与原始代码，不代表该证券已有行情或接口权限。
+保存证券目录和数据源代码。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| code | text | 否 | 无 | 数据源原始证券代码，含市场后缀；保留QMT代码大小写。 |
-| name | text | 否 | 无 | 来源提供的证券或合约名称；不从代码猜测名称。 |
-| kind | text | 否 | 无 | 资产类别：stock股票、index指数、future期货、option期权、fund场内基金、bond债券。 |
-| details | jsonb | 否 | '{}'::jsonb | 数据源原始证券详情JSON；保留来源字段及空值，不包含账号凭据。 |
-| source | text | 否 | 'qmt'::text | 数据提供方：qmt或tushare；账号不是独立数据来源。 |
-| updated_at | timestamp with time zone | 否 | now() | 目录记录最近保存时间，带时区；不代表行情最新时间。 |
-| subtype | text | 否 | ''::text | 细分类别，如contract月份合约、continuous连续合约、combination组合、efp期转现、etf；空串表示未细分。 |
-| market | text | 否 | ''::text | 统一市场代码：SH/SZ/BJ、SHO/SZO、IF/SF/DF/ZF/INE/GF；保留source区分来源。 |
-| metadata | jsonb | 否 | '{}'::jsonb | 提取后的业务元数据JSON，如product、listed、expiry、delivery_month、trade_time_desc及期权属性；缺资料不猜测。 |
-| instrument_id | uuid | 否 | 无 | 对应稳定身份UUID，外键指向instruments.id；一个身份可对应多个来源代码。 |
+| code | text | 否 | 无 | 数据源中的证券或合约代码。 |
+| name | text | 否 | 无 | 证券或合约名称。 |
+| kind | text | 否 | 无 | 资产类别，如股票、指数、期货、期权、基金或债券。 |
+| details | jsonb | 否 | '{}'::jsonb | 数据源返回的原始资料。 |
+| source | text | 否 | 'qmt'::text | 数据来源，如qmt或tushare。 |
+| updated_at | timestamp with time zone | 否 | now() | 目录记录更新时间。 |
+| subtype | text | 否 | ''::text | 细分类别，如月份合约、连续合约或ETF。 |
+| market | text | 否 | ''::text | 市场或交易所代码。 |
+| metadata | jsonb | 否 | '{}'::jsonb | 证券的补充资料，如品种、上市日和到期日。 |
+| instrument_id | uuid | 否 | 无 | 对应的稳定身份编号。 |
 
 - `securities_instrument_id_fkey`：`FOREIGN KEY (instrument_id) REFERENCES instruments(id)`
 - `securities_kind_check`：`CHECK ((kind = ANY (ARRAY['stock'::text, 'index'::text, 'future'::text, 'option'::text, 'fund'::text, 'bond'::text])))`
@@ -232,29 +232,29 @@ CREATE UNIQUE INDEX securities_pkey ON pfor_qmt.securities USING btree (source, 
 
 #### bars
 
-统一不复权K线历史库；按稳定身份、来源、周期和行情时间去重更新，QMT与Tushare不相互覆盖，NULL不补零。
+保存不复权历史K线。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| code | text | 否 | 无 | 采集来源的原始证券代码；查询时必须同时指定source。 |
-| period | text | 否 | 无 | 周期：1d日线、1m/5m分钟；Tushare另支持15m/30m/60m、1w周线、1mo月线。 |
-| time | timestamp with time zone | 否 | 无 | 带时区的行情时间或周期标签，按Asia/Shanghai解释；日线为交易日零点，分钟保留原始时刻。 |
-| open | numeric | 是 | 无 | 不复权开盘价，NUMERIC精确保留合约报价单位；未提供为NULL。 |
-| high | numeric | 是 | 无 | 不复权最高价，NUMERIC精确保留合约报价单位；未提供为NULL。 |
-| low | numeric | 是 | 无 | 不复权最低价，NUMERIC精确保留合约报价单位；未提供为NULL。 |
-| close | numeric | 是 | 无 | 不复权收盘价，NUMERIC精确保留合约报价单位；未提供为NULL。 |
-| volume | numeric | 是 | 无 | 成交量；Tushare期货为手，QMT保留来源原始单位，未核验前不统一换算。 |
-| amount | numeric | 是 | 无 | 成交额；Tushare日线万元精确换算为元、分钟原始为元，QMT保留原始口径；结合normalization_version解释。 |
-| source | text | 否 | 'qmt'::text | 行情提供方qmt或tushare，属于复合主键；切换采集账号不重复保存同来源数据。 |
-| updated_at | timestamp with time zone | 否 | now() | 该条行情最近写入或修订时间，带时区，不是行情时间。 |
-| open_interest | numeric | 是 | 无 | 持仓量；Tushare期货为手，QMT保留原始单位；非适用或未提供时为NULL。 |
-| settlement | numeric | 是 | 无 | 本期结算价，保留合约报价单位；未提供为NULL，不能用收盘价代填。 |
-| previous_settlement | numeric | 是 | 无 | 前结算价，保留合约报价单位；未提供为NULL。 |
-| trading_day | date | 是 | 无 | 终端或接口明确的交易日；期货分钟未提供时为NULL，不把夜盘自然日冒充交易日。 |
-| instrument_id | uuid | 否 | 无 | 稳定证券身份UUID，外键指向instruments.id，也是K线复合主键的一部分。 |
-| normalization_version | text | 否 | 'qmt-raw-v1'::text | 标准化规则版本，如qmt-raw-v1、tushare-futures-v1/v2；用于追溯数值转换和单位，不能忽略版本混用。 |
-| as_of_date | date | 是 | 无 | 周/月线计算截至日期，与time周期标签分别保存；其他周期通常为NULL。 |
-| source_fields | jsonb | 否 | '{}'::jsonb | 上游原始字段JSON及标准化追溯信息；未采集的原始字段不补造，空对象不表示无数值。 |
+| code | text | 否 | 无 | 证券或合约代码。 |
+| period | text | 否 | 无 | K线周期，如1d、1m、5m、1w或1mo。 |
+| time | timestamp with time zone | 否 | 无 | K线时间，按上海时间解释。 |
+| open | numeric | 是 | 无 | 开盘价。 |
+| high | numeric | 是 | 无 | 最高价。 |
+| low | numeric | 是 | 无 | 最低价。 |
+| close | numeric | 是 | 无 | 收盘价。 |
+| volume | numeric | 是 | 无 | 成交量；期货通常以手为单位。 |
+| amount | numeric | 是 | 无 | 成交额；统一按元保存时需结合来源说明。 |
+| source | text | 否 | 'qmt'::text | 行情来源。 |
+| updated_at | timestamp with time zone | 否 | now() | 行情记录入库或更新的时间。 |
+| open_interest | numeric | 是 | 无 | 持仓量；期货通常以手为单位。 |
+| settlement | numeric | 是 | 无 | 结算价。 |
+| previous_settlement | numeric | 是 | 无 | 前一交易日结算价。 |
+| trading_day | date | 是 | 无 | 行情所属交易日。 |
+| instrument_id | uuid | 否 | 无 | 对应的稳定身份编号。 |
+| normalization_version | text | 否 | 'qmt-raw-v1'::text | 行情标准化规则版本。 |
+| as_of_date | date | 是 | 无 | 周线或月线的统计截止日。 |
+| source_fields | jsonb | 否 | '{}'::jsonb | 来源返回的原始字段和转换信息。 |
 
 - `bars_instrument_id_fkey`：`FOREIGN KEY (instrument_id) REFERENCES instruments(id)`
 - `bars_period_check`：`CHECK (((period = ANY (ARRAY['1d'::text, '1m'::text, '5m'::text])) OR ((source = 'tushare'::text) AND (period = ANY (ARRAY['1w'::text, '1mo'::text, '15m'::text, '30m'::text, '60m'::text])))))`
@@ -271,13 +271,13 @@ CREATE INDEX bars_source_code_time_idx ON pfor_qmt.bars USING btree (source, cod
 
 #### factors
 
-QMT证券复权因子原始快照；当前仅按QMT代码保存，不修改bars中的不复权行情。
+保存QMT返回的复权因子。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| code | text | 否 | 无 | QMT原始证券代码，主键；当前未建立到证券目录的物理外键。 |
-| raw | jsonb | 否 | 无 | QMT返回的复权因子原始JSON，不推测终端未提供的因子。 |
-| observed_at | timestamp with time zone | 否 | now() | 因子快照采集时间，带时区；不等于除权除息日。 |
+| code | text | 否 | 无 | 证券代码。 |
+| raw | jsonb | 否 | 无 | 复权因子原始资料。 |
+| observed_at | timestamp with time zone | 否 | now() | 复权因子采集时间。 |
 
 - `factors_pkey`：`PRIMARY KEY (code)`
 
@@ -291,14 +291,14 @@ CREATE UNIQUE INDEX factors_pkey ON pfor_qmt.factors USING btree (code);
 
 #### catalog_sectors
 
-QMT板块目录，涵盖行业、概念及其他终端分类；板块本身不被当作可交易证券。
+保存QMT行业和概念板块目录。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| name | text | 否 | 无 | QMT板块名称，主键。 |
-| observed_at | timestamp with time zone | 否 | now() | 板块目录最近采集时间，带时区。 |
-| category | text | 否 | 'other'::text | 板块类别：industry行业、concept概念、other其他。 |
-| path | jsonb | 否 | '[]'::jsonb | 终端分类树的祖先路径JSON数组，用于展示及识别类别。 |
+| name | text | 否 | 无 | 板块名称。 |
+| observed_at | timestamp with time zone | 否 | now() | 板块目录更新时间。 |
+| category | text | 否 | 'other'::text | 板块类别，如行业或概念。 |
+| path | jsonb | 否 | '[]'::jsonb | 板块在分类树中的路径。 |
 
 - `catalog_sectors_pkey`：`PRIMARY KEY (name)`
 
@@ -312,15 +312,15 @@ CREATE UNIQUE INDEX catalog_sectors_pkey ON pfor_qmt.catalog_sectors USING btree
 
 #### board_snapshots
 
-行业或概念板块的当前成员快照；仅表示观察时点，不推导历史成员。
+保存行业或概念板块的成员快照。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| id | uuid | 否 | 无 | 板块快照UUID，供datasets.board_snapshot_id引用。 |
-| name | text | 否 | 无 | QMT板块名称，与catalog_sectors.name逻辑关联。 |
-| category | text | 否 | 无 | 采集时的板块类别，如industry或concept。 |
-| members | jsonb | 否 | 无 | 采集时成员代码JSON数组；创建数据集时固定成员，不自动跟随板块变动。 |
-| observed_at | timestamp with time zone | 否 | now() | 成员实际观察时间，带时区，不是成员调整生效日。 |
+| id | uuid | 否 | 无 | 板块快照编号。 |
+| name | text | 否 | 无 | 板块名称。 |
+| category | text | 否 | 无 | 板块类别。 |
+| members | jsonb | 否 | 无 | 板块成员证券代码列表。 |
+| observed_at | timestamp with time zone | 否 | now() | 成员采集时间。 |
 
 - `board_snapshots_pkey`：`PRIMARY KEY (id)`
 
@@ -335,14 +335,14 @@ CREATE UNIQUE INDEX board_snapshots_pkey ON pfor_qmt.board_snapshots USING btree
 
 #### index_mapping
 
-QMT指数代码与终端板块名称的配置映射，用于获取当前指数成员，不是历史成分或权重。
+保存指数代码与QMT板块的对应关系。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| code | text | 否 | 无 | QMT指数代码，主键；与securities.code为逻辑关联。 |
-| sector | text | 否 | 无 | 用于查询当前成分的QMT板块名称。 |
-| name | text | 否 | 无 | 本项目保存的指数显示名称。 |
-| updated_at | timestamp with time zone | 否 | now() | 指数与板块映射最近保存时间，带时区。 |
+| code | text | 否 | 无 | 指数代码。 |
+| sector | text | 否 | 无 | QMT板块名称。 |
+| name | text | 否 | 无 | 指数显示名称。 |
+| updated_at | timestamp with time zone | 否 | now() | 映射更新时间。 |
 
 - `index_mapping_pkey`：`PRIMARY KEY (code)`
 
@@ -356,14 +356,14 @@ CREATE UNIQUE INDEX index_mapping_pkey ON pfor_qmt.index_mapping USING btree (co
 
 #### constituent_snapshots
 
-QMT指数当前成分采集快照；每次观察单独保存，不表示历史时点的官方成分。
+保存指数当前成分快照。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| id | uuid | 否 | 无 | 成分快照UUID，供datasets.snapshot_id引用。 |
-| index_code | text | 否 | 无 | 对应QMT指数代码；逻辑关联index_mapping.code，没有物理外键。 |
-| observed_at | timestamp with time zone | 否 | now() | 当前成分实际观察时间，带时区，不是成分调整生效日。 |
-| members | jsonb | 否 | 无 | 成员QMT代码JSON数组，不含历史权重；数组成员没有逐条数据库外键。 |
+| id | uuid | 否 | 无 | 成分快照编号。 |
+| index_code | text | 否 | 无 | 指数代码。 |
+| observed_at | timestamp with time zone | 否 | now() | 成分采集时间。 |
+| members | jsonb | 否 | 无 | 成分证券代码列表。 |
 
 - `constituent_snapshots_pkey`：`PRIMARY KEY (id)`
 
@@ -377,27 +377,27 @@ CREATE UNIQUE INDEX constituent_snapshots_pkey ON pfor_qmt.constituent_snapshots
 
 #### datasets
 
-固定采集范围的数据集配置；成员和周期为快照，修改不改变已排队任务，软删除后保留历史引用。
+保存固定的证券、周期和采集设置。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| id | uuid | 否 | 无 | 数据集UUID；任务payload.dataset_id为逻辑引用，不是物理外键。 |
-| name | text | 否 | 无 | 用户定义的数据集名称。 |
-| members | jsonb | 否 | 无 | 固定成员代码JSON数组，代码属于source；不会自动跟随指数或板块最新成分。 |
-| periods | jsonb | 否 | 无 | 选择的K线周期JSON数组；来源能力和具体月份合约限制由业务层校验。 |
-| index_code | text | 是 | 无 | 指数型数据集来源的QMT指数代码；手工数据集为空。 |
-| snapshot_id | uuid | 是 | 无 | 创建或显式刷新时采用的指数成分快照UUID，可空，外键指向constituent_snapshots.id。 |
-| scheduled | boolean | 否 | false | 是否启用数据集自动更新；回收站记录必须为false。 |
-| schedule_from | date | 否 | CURRENT_DATE | 自动更新的起始日期；用于避免启用后无边界补执行。 |
-| created_at | timestamp with time zone | 否 | now() | 数据集创建时间，带时区。 |
-| board_name | text | 是 | 无 | 板块型数据集来源的行业或概念板块名称，手工数据集为空。 |
-| board_snapshot_id | uuid | 是 | 无 | 采用的板块成员快照UUID，可空，外键指向board_snapshots.id。 |
-| source | text | 否 | 'qmt'::text | 固定来源qmt或tushare；编辑时不能直接切换来源。 |
-| account_id | text | 是 | 无 | Tushare配置中的稳定账号ID引用，非Token；QMT无需账号绑定，可为NULL。 |
-| endpoint | text | 是 | 无 | 任务采集绑定的Tushare API端点，非凭据；改默认账号不会隐式重绑。 |
-| schedule_time | time without time zone | 否 | '17:00:00'::time without time zone | Asia/Shanghai自动更新时间，不带时区类型；SQL默认17:00，Tushare新配置由应用默认19:00。 |
-| revision | integer | 否 | 1 | 配置乐观锁版本；有效配置变更由触发器递增，拒绝过期编辑覆盖。 |
-| deleted_at | timestamp with time zone | 是 | 无 | 进入可恢复回收站的时间，NULL表示未删除；不会物理删除行情。 |
+| id | uuid | 否 | 无 | 数据集编号。 |
+| name | text | 否 | 无 | 数据集名称。 |
+| members | jsonb | 否 | 无 | 数据集成员代码列表。 |
+| periods | jsonb | 否 | 无 | 数据集选择的K线周期。 |
+| index_code | text | 是 | 无 | 数据集使用的指数代码。 |
+| snapshot_id | uuid | 是 | 无 | 使用的指数成分快照编号。 |
+| scheduled | boolean | 否 | false | 是否启用自动更新。 |
+| schedule_from | date | 否 | CURRENT_DATE | 自动更新的起始日期。 |
+| created_at | timestamp with time zone | 否 | now() | 数据集创建时间。 |
+| board_name | text | 是 | 无 | 数据集使用的板块名称。 |
+| board_snapshot_id | uuid | 是 | 无 | 使用的板块快照编号。 |
+| source | text | 否 | 'qmt'::text | 数据来源。 |
+| account_id | text | 是 | 无 | Tushare账号编号。 |
+| endpoint | text | 是 | 无 | 任务使用的接口地址。 |
+| schedule_time | time without time zone | 否 | '17:00:00'::time without time zone | 自动更新时间。 |
+| revision | integer | 否 | 1 | 配置版本号。 |
+| deleted_at | timestamp with time zone | 是 | 无 | 进入回收站的时间。 |
 
 - `datasets_board_snapshot_id_fkey`：`FOREIGN KEY (board_snapshot_id) REFERENCES board_snapshots(id)`
 - `datasets_pkey`：`PRIMARY KEY (id)`
@@ -417,27 +417,27 @@ CREATE UNIQUE INDEX datasets_pkey ON pfor_qmt.datasets USING btree (id);
 
 #### jobs
 
-统一目录、采集、导出及只读核验任务；执行状态与分块质量分离，重试创建关联新任务保留证据。
+保存目录同步、数据采集、导出和核验任务。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| id | uuid | 否 | 无 | 任务UUID，供分块、事件、覆盖及当前映射快照引用。 |
-| kind | text | 否 | 无 | 任务类型：catalog目录同步、download资料或行情采集、export文件导出、verify只读核验。 |
-| state | text | 否 | 'queued'::text | 执行状态：queued、running、retrying、succeeded、partial、failed、blocked、cancelled；succeeded不等于所有历史数据完整。 |
-| payload | jsonb | 否 | 无 | 固定请求JSON，含source、成员/周期或资料selections、日期、chunks和账号端点引用；dataset_id、maintenance_id、verification_of等为逻辑引用，不保存Token。 |
-| checkpoint | integer | 否 | 0 | 持久化处理游标；采集/核验通常为下一分块索引，目录为处理位置，导出为已写行数；不能直接当成功分块数。 |
-| attempts | integer | 否 | 0 | 当前网络重试计数，成功处理后可重置；不是关联任务重试总次数。 |
-| cancel_requested | boolean | 否 | false | 用户请求取消后续处理的标记；不撤销已发出的终端请求或已提交数据。 |
-| result | jsonb | 否 | '{}'::jsonb | 任务结果JSON，如rows、coverage、quality_summary、message或导出文件名；需结合state与质量解释。 |
-| error | text | 是 | 无 | 最近任务错误的脱敏说明，可空；历史错误不因关联重试自动改写。 |
-| schedule_key | text | 是 | 无 | 可空的调度去重键，唯一约束防止同维护范围同截止日期重复入队。 |
-| created_at | timestamp with time zone | 否 | now() | 任务创建时间，带时区；列表按此统计不代表行情业务日期。 |
-| updated_at | timestamp with time zone | 否 | now() | 任务最近状态或进度更新时间，带时区。 |
-| parent_id | uuid | 是 | 无 | 关联重试的直接父任务UUID，可空，自引用外键指向jobs.id。 |
-| error_code | text | 是 | 无 | 稳定错误分类码，如数据库、权限、连接、能力或数据校验错误；无错误时NULL。 |
-| action | text | 是 | 无 | 最近错误对应的可执行建议，脱敏文本，可空。 |
-| run_number | integer | 否 | 0 | 此任务实例的执行轮次，每次开始执行递增；与重试子任务ID分开。 |
-| deleted_at | timestamp with time zone | 是 | 无 | 任务进入可恢复回收站的时间，活动任务不允许回收；行情、文件和质量证据不随之删除。 |
+| id | uuid | 否 | 无 | 任务编号。 |
+| kind | text | 否 | 无 | 任务类型。 |
+| state | text | 否 | 'queued'::text | 任务执行状态。 |
+| payload | jsonb | 否 | 无 | 任务请求参数。 |
+| checkpoint | integer | 否 | 0 | 任务恢复位置。 |
+| attempts | integer | 否 | 0 | 当前重试次数。 |
+| cancel_requested | boolean | 否 | false | 是否请求取消任务。 |
+| result | jsonb | 否 | '{}'::jsonb | 任务结果和统计信息。 |
+| error | text | 是 | 无 | 最近一次错误说明。 |
+| schedule_key | text | 是 | 无 | 调度任务去重标识。 |
+| created_at | timestamp with time zone | 否 | now() | 任务创建时间。 |
+| updated_at | timestamp with time zone | 否 | now() | 任务更新时间。 |
+| parent_id | uuid | 是 | 无 | 关联的父任务编号。 |
+| error_code | text | 是 | 无 | 错误分类代码。 |
+| action | text | 是 | 无 | 建议采取的处理动作。 |
+| run_number | integer | 否 | 0 | 任务执行轮次。 |
+| deleted_at | timestamp with time zone | 是 | 无 | 进入回收站的时间。 |
 
 - `deleted_job_inactive`：`CHECK (((deleted_at IS NULL) OR (state <> ALL (ARRAY['queued'::text, 'running'::text, 'retrying'::text]))))`
 - `jobs_kind_check`：`CHECK ((kind = ANY (ARRAY['catalog'::text, 'download'::text, 'export'::text, 'verify'::text])))`
@@ -460,21 +460,21 @@ CREATE UNIQUE INDEX jobs_schedule_key_key ON pfor_qmt.jobs USING btree (schedule
 
 #### job_units
 
-任务分块最新执行与质量结果，用于恢复、定向重试和核验；任务总体状态由各分块汇总。
+保存任务每个分块的执行和质量结果。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| job_id | uuid | 否 | 无 | 所属任务UUID，外键指向jobs.id。 |
-| unit_index | integer | 否 | 无 | payload.chunks中的从0开始的序号，与job_id组成主键。 |
-| request | jsonb | 否 | 无 | 该分块固定请求JSON，包含对象、周期或资料、日期及选择范围。 |
-| state | text | 否 | 无 | 分块执行状态；可为succeeded但quality_state仍待核验，不与质量混为一类。 |
-| quality_state | text | 否 | 无 | 质量状态：verified、pending_verification、not_published、not_applicable、missing、rejected、stale。 |
-| row_count | integer | 否 | 0 | 该分块实际保存或只读核验的记录数，0不等于成功取得资料。 |
-| issues | jsonb | 否 | '[]'::jsonb | 结构化问题JSON数组，含code、quality_state、reason、action、retryable及可选日期/样本信息。 |
-| error_code | text | 是 | 无 | 分块执行失败或受阻的稳定错误码；普通质量待核验可为NULL。 |
-| retryable | boolean | 否 | false | 是否允许按既有重试规则再尝试；权限和能力不足不自动重试。 |
-| stats | jsonb | 否 | '{}'::jsonb | 读写统计JSON，如read、inserted、updated、unchanged_or_older；没有统计时为空对象。 |
-| updated_at | timestamp with time zone | 否 | now() | 该分块结果最近记录时间，带时区。 |
+| job_id | uuid | 否 | 无 | 任务编号。 |
+| unit_index | integer | 否 | 无 | 分块序号。 |
+| request | jsonb | 否 | 无 | 分块请求参数。 |
+| state | text | 否 | 无 | 分块执行状态。 |
+| quality_state | text | 否 | 无 | 分块数据质量状态。 |
+| row_count | integer | 否 | 0 | 分块记录数。 |
+| issues | jsonb | 否 | '[]'::jsonb | 分块发现的问题。 |
+| error_code | text | 是 | 无 | 分块错误分类代码。 |
+| retryable | boolean | 否 | false | 是否可以重试。 |
+| stats | jsonb | 否 | '{}'::jsonb | 分块读写统计。 |
+| updated_at | timestamp with time zone | 否 | now() | 分块结果更新时间。 |
 
 - `job_units_job_id_fkey`：`FOREIGN KEY (job_id) REFERENCES jobs(id)`
 - `job_units_pkey`：`PRIMARY KEY (job_id, unit_index)`
@@ -489,20 +489,20 @@ CREATE UNIQUE INDEX job_units_pkey ON pfor_qmt.job_units USING btree (job_id, un
 
 #### job_events
 
-脱敏任务事件与部分系统运维事件流水；事件保留期与异常样本保留期分别管理，不替代行情库。
+保存任务和服务运行事件。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| id | bigint | 否 | nextval('job_events_id_seq'::regclass) | 自增事件编号，用于稳定排序和游标分页。 |
-| job_id | uuid | 是 | 无 | 关联任务UUID，可空，外键指向jobs.id；无任务的调度/配置事件为NULL。 |
-| run_number | integer | 否 | 0 | 事件所属任务执行轮次；无任务或旧事件可为0。 |
-| unit_index | integer | 是 | 无 | 关联分块的0起始序号，可空；不是到job_units的物理外键。 |
-| level | text | 否 | 无 | 日志等级，例如info、warning、error。 |
-| code | text | 否 | 无 | 结构化事件码，如JOB_STARTED、UNIT_STARTED、NETWORK_RETRY或错误码。 |
-| message | text | 否 | 无 | 面向使用者的脱敏事件说明，不含连接密码或Token。 |
-| context | jsonb | 否 | '{}'::jsonb | 脱敏请求摘要、范围、来源、状态或统计JSON，不保存完整凭据。 |
-| sample | jsonb | 是 | 无 | 可空的脱敏异常样本JSON；保留期通常短于事件本身。 |
-| created_at | timestamp with time zone | 否 | now() | 事件记录时间，带时区，用于日志时间筛选。 |
+| id | bigint | 否 | nextval('job_events_id_seq'::regclass) | 事件编号。 |
+| job_id | uuid | 是 | 无 | 关联任务编号。 |
+| run_number | integer | 否 | 0 | 事件所属的执行轮次。 |
+| unit_index | integer | 是 | 无 | 关联的分块序号。 |
+| level | text | 否 | 无 | 日志级别。 |
+| code | text | 否 | 无 | 事件代码。 |
+| message | text | 否 | 无 | 事件说明。 |
+| context | jsonb | 否 | '{}'::jsonb | 事件上下文和统计信息。 |
+| sample | jsonb | 是 | 无 | 脱敏异常样本。 |
+| created_at | timestamp with time zone | 否 | now() | 事件发生时间。 |
 
 - `job_events_job_id_fkey`：`FOREIGN KEY (job_id) REFERENCES jobs(id)`
 - `job_events_pkey`：`PRIMARY KEY (id)`
@@ -519,19 +519,19 @@ CREATE INDEX job_events_time_idx ON pfor_qmt.job_events USING btree (created_at)
 
 #### coverage
 
-任务各对象周期请求区间与实际读写范围、行数及缺口证据；覆盖记录不自动证明连续性。
+保存任务请求范围、实际范围和缺口。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| job_id | uuid | 否 | 无 | 所属任务UUID，外键指向jobs.id。 |
-| code | text | 否 | 无 | 采集对象代码；行情为原始证券代码，资料可为交易所与品种组成的对象标识。 |
-| period | text | 否 | 无 | 行情周期或资料资源名，如1d、1m、calendar、mapping。 |
-| requested_start | date | 否 | 无 | 该分块请求的包含边界开始日期；属于复合主键。 |
-| requested_end | date | 否 | 无 | 该分块请求的包含边界结束日期。 |
-| actual_start | timestamp with time zone | 是 | 无 | 该分块实际记录的最早时间，可空；当前映射为采集时间，不是历史映射交易日。 |
-| actual_end | timestamp with time zone | 是 | 无 | 该分块实际记录的最晚时间，可空。 |
-| row_count | integer | 否 | 无 | 分块实际读取并提交或核验的记录数；重复回补可包含已存在行，不等于新增行数。 |
-| gaps | jsonb | 否 | '[]'::jsonb | 缺口及质量问题JSON数组，含原因、质量状态、建议和证据；空数组不证明未检查的范围完整。 |
+| job_id | uuid | 否 | 无 | 任务编号。 |
+| code | text | 否 | 无 | 证券、合约或资料对象代码。 |
+| period | text | 否 | 无 | K线周期或资料类型。 |
+| requested_start | date | 否 | 无 | 请求开始日期。 |
+| requested_end | date | 否 | 无 | 请求结束日期。 |
+| actual_start | timestamp with time zone | 是 | 无 | 实际数据开始时间。 |
+| actual_end | timestamp with time zone | 是 | 无 | 实际数据结束时间。 |
+| row_count | integer | 否 | 无 | 读取或保存的记录数。 |
+| gaps | jsonb | 否 | '[]'::jsonb | 未完成范围和质量问题。 |
 
 - `coverage_job_id_fkey`：`FOREIGN KEY (job_id) REFERENCES jobs(id)`
 - `coverage_pkey`：`PRIMARY KEY (job_id, code, period, requested_start)`
@@ -546,23 +546,23 @@ CREATE UNIQUE INDEX coverage_pkey ON pfor_qmt.coverage USING btree (job_id, code
 
 #### maintenance_plans
 
-用户明确保存的目录或资料自动维护范围；复用jobs队列，保存不等于执行，现有排队任务保持原范围。
+保存目录和资料的自动维护计划。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| id | uuid | 否 | 无 | 维护计划UUID；jobs.payload中的maintenance_id等为逻辑引用。 |
-| name | text | 否 | 无 | 用户定义的维护计划名称。 |
-| source | text | 否 | 无 | 固定数据源qmt或tushare，来源之间独立调度。 |
-| kind | text | 否 | 无 | 维护任务类型catalog或download，不直接维护export或verify。 |
-| payload | jsonb | 否 | 无 | 固定维护范围JSON，包含资源/成员/周期及来源账号端点引用；不含Token，执行时生成日期和分块。 |
-| enabled | boolean | 否 | true | 是否启用自动维护；数据库兼容默认true，当前控制台新建默认false，回收记录必须停用。 |
-| schedule_time | time without time zone | 否 | 无 | Asia/Shanghai语义的每日触发时间；QMT新配置默认17:00，Tushare默认19:00，由应用设置。 |
-| lookback_days | integer | 否 | 5 | 回读窗口长度，1至365；通常为交易日数，QMT日历自然日维护使用自然日窗口，当前映射仅采执行时快照。 |
-| last_date | date | 是 | 无 | 已入队维护的最近截止日期，不代表该日期数据已成功或完整入库。 |
-| last_error | text | 是 | 无 | 最近调度问题说明，可空；应结合关联任务和分块质量检查。 |
-| updated_at | timestamp with time zone | 否 | now() | 维护配置或调度记录最近更新时间，带时区。 |
-| revision | integer | 否 | 1 | 配置乐观锁版本；配置变更递增，last_date/last_error等运行游标变更不递增。 |
-| deleted_at | timestamp with time zone | 是 | 无 | 进入可恢复回收站的时间，NULL表示未回收；恢复后仍停用。 |
+| id | uuid | 否 | 无 | 维护计划编号。 |
+| name | text | 否 | 无 | 维护计划名称。 |
+| source | text | 否 | 无 | 数据来源。 |
+| kind | text | 否 | 无 | 维护内容类型。 |
+| payload | jsonb | 否 | 无 | 维护范围和参数。 |
+| enabled | boolean | 否 | true | 是否启用计划。 |
+| schedule_time | time without time zone | 否 | 无 | 每日执行时间。 |
+| lookback_days | integer | 否 | 5 | 每次回看的天数。 |
+| last_date | date | 是 | 无 | 最近一次入队的截止日期。 |
+| last_error | text | 是 | 无 | 最近一次调度错误。 |
+| updated_at | timestamp with time zone | 否 | now() | 计划更新时间。 |
+| revision | integer | 否 | 1 | 配置版本号。 |
+| deleted_at | timestamp with time zone | 是 | 无 | 进入回收站的时间。 |
 
 - `deleted_plan_disabled`：`CHECK (((deleted_at IS NULL) OR (NOT enabled)))`
 - `maintenance_plans_kind_check`：`CHECK ((kind = ANY (ARRAY['catalog'::text, 'download'::text])))`
@@ -579,18 +579,18 @@ CREATE UNIQUE INDEX maintenance_plans_pkey ON pfor_qmt.maintenance_plans USING b
 
 #### contract_mapping_snapshots
 
-当前主力或连续映射的观察快照，与历史逐日映射分开；按任务、分块和连续代码幂等保存。
+保存当前主力或连续合约映射快照。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| source | text | 否 | 无 | 当前映射提供方，目前采集链路为qmt；预留来源维度，不与Tushare历史映射混用。 |
-| code | text | 否 | 无 | 请求的原始主力或连续代码；和job_id、unit_index组成幂等主键。 |
-| member_code | text | 否 | 无 | 终端明确返回的月份代码；无后缀时按请求市场补齐，原始值保存在source_fields。 |
-| observed_at | timestamp with time zone | 否 | 无 | 实际采集时间，带时区；不用于冒充历史映射交易日。 |
-| trading_day | date | 是 | 无 | 终端明确给出的交易日，可晚于采集自然日；未提供时为NULL。 |
-| job_id | uuid | 否 | 无 | 生成快照的采集任务UUID，外键指向jobs.id，核验原任务时读取原快照。 |
-| unit_index | integer | 否 | 无 | 采集任务内从0开始的分块序号；与job_units为逻辑关联，无复合外键。 |
-| source_fields | jsonb | 否 | 无 | 原始返回、方法、TradingDay及需要时双方ProductID证据JSON。 |
+| source | text | 否 | 无 | 映射来源。 |
+| code | text | 否 | 无 | 主力或连续合约代码。 |
+| member_code | text | 否 | 无 | 当前对应的月份合约代码。 |
+| observed_at | timestamp with time zone | 否 | 无 | 快照采集时间。 |
+| trading_day | date | 是 | 无 | 终端返回的交易日。 |
+| job_id | uuid | 否 | 无 | 生成快照的任务编号。 |
+| unit_index | integer | 否 | 无 | 任务内的分块序号。 |
+| source_fields | jsonb | 否 | 无 | 来源返回的原始映射字段。 |
 
 - `contract_mapping_snapshots_job_id_fkey`：`FOREIGN KEY (job_id) REFERENCES jobs(id)`
 - `contract_mapping_snapshots_pkey`：`PRIMARY KEY (job_id, unit_index, code)`
@@ -606,19 +606,19 @@ CREATE INDEX mapping_snapshots_latest_idx ON pfor_qmt.contract_mapping_snapshots
 
 #### current_contract_mappings（视图）
 
-每个来源和连续代码的最新已保存映射视图；按observed_at、job_id倒序选一条，不是终端实时查询。
+展示每个主力或连续代码最近保存的映射。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| source | text | 视图派生 | 无 | 最新快照的数据提供方，与code共同构成视图的逻辑唯一维度。 |
-| code | text | 视图派生 | 无 | 原始主力或连续合约代码；视图本身没有主键或外键约束。 |
-| member_code | text | 视图派生 | 无 | 最新快照对应的具体月份合约代码。 |
-| observed_at | timestamp with time zone | 视图派生 | 无 | 最新快照实际采集时间，带时区。 |
-| trading_day | date | 视图派生 | 无 | 最新快照中终端明确给出的交易日，缺失为NULL。 |
-| job_id | uuid | 视图派生 | 无 | 原始采集任务UUID，来自快照表；视图不另建任务。 |
-| unit_index | integer | 视图派生 | 无 | 原始采集任务内从0开始的分块序号。 |
-| source_fields | jsonb | 视图派生 | 无 | 最新快照的原始返回与品种校验证据JSON。 |
-| row_version | xid | 视图派生 | 无 | 源快照行的PostgreSQL xmin事务标识，用于查询快照一致性校验；不是业务时间或永久递增版本。 |
+| source | text | 视图派生 | 无 | 映射来源。 |
+| code | text | 视图派生 | 无 | 主力或连续合约代码。 |
+| member_code | text | 视图派生 | 无 | 当前对应的月份合约代码。 |
+| observed_at | timestamp with time zone | 视图派生 | 无 | 最近快照采集时间。 |
+| trading_day | date | 视图派生 | 无 | 快照中的交易日。 |
+| job_id | uuid | 视图派生 | 无 | 生成快照的任务编号。 |
+| unit_index | integer | 视图派生 | 无 | 任务内的分块序号。 |
+| source_fields | jsonb | 视图派生 | 无 | 来源返回的原始映射字段。 |
+| row_version | xid | 视图派生 | 无 | 数据库行版本标识。 |
 
 ```sql
  SELECT DISTINCT ON (source, code) source,
@@ -636,12 +636,12 @@ CREATE INDEX mapping_snapshots_latest_idx ON pfor_qmt.contract_mapping_snapshots
 
 #### schema_version
 
-数据库迁移版本记录；由迁移器在同一事务中登记，非应用发布版本。
+记录数据库已执行的迁移版本。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| version | integer | 否 | 无 | 已完成的版本化SQL迁移编号，主键。 |
-| applied_at | timestamp with time zone | 否 | now() | 该迁移首次登记时间，带时区。 |
+| version | integer | 否 | 无 | 迁移版本号。 |
+| applied_at | timestamp with time zone | 否 | now() | 迁移完成时间。 |
 
 - `schema_version_pkey`：`PRIMARY KEY (version)`
 
@@ -657,18 +657,18 @@ CREATE UNIQUE INDEX schema_version_pkey ON pfor_qmt.schema_version USING btree (
 
 #### trading_dates
 
-按来源和市场保存日历证据；完整交易所日历与K线观察日期分别标记，缺记录为未知，不默认休市。
+保存数据源提供的交易日历记录。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| market | text | 否 | 无 | 统一市场代码；与source、day共同组成主键，不借用其他市场日历。 |
-| day | date | 否 | 无 | Asia/Shanghai语义下的日历日期。 |
-| source | text | 否 | 'qmt'::text | 日期证据提供方qmt或tushare；不同来源不自动合并。 |
-| is_open | boolean | 否 | true | true为开市、false为休市；是否能作完整日历证据须同时检查evidence，缺记录不是false。 |
-| pretrade_date | date | 是 | 无 | 上游明确给出的上一交易日；未提供时为NULL，不自行按自然日回退。 |
-| evidence | text | 否 | 'legacy'::text | 证据类别：calendar独立日历、calendar_open未来已返回开市日、bar_observation日K线观察、legacy旧记录依据未核验。 |
-| observed_at | timestamp with time zone | 是 | 无 | 该日期证据采集时间，带时区；旧数据未记录时为NULL。 |
-| source_fields | jsonb | 是 | 无 | 原始日历依据JSON，含方法、请求范围或样本合约和日期；旧记录可为NULL。 |
+| market | text | 否 | 无 | 市场或交易所代码。 |
+| day | date | 否 | 无 | 日历日期。 |
+| source | text | 否 | 'qmt'::text | 日历来源。 |
+| is_open | boolean | 否 | true | 当天是否开市。 |
+| pretrade_date | date | 是 | 无 | 上一个交易日。 |
+| evidence | text | 否 | 'legacy'::text | 日历记录的依据类型。 |
+| observed_at | timestamp with time zone | 是 | 无 | 日历记录采集时间。 |
+| source_fields | jsonb | 是 | 无 | 来源返回的原始日历字段。 |
 
 - `trading_dates_pkey`：`PRIMARY KEY (source, market, day)`
 
@@ -682,16 +682,16 @@ CREATE UNIQUE INDEX trading_dates_pkey ON pfor_qmt.trading_dates USING btree (so
 
 #### contract_mappings
 
-来源提供的历史逐日主力或连续序列到月份合约映射；不由当前快照倒填，不拼接连续分钟。
+保存历史主力或连续合约到月份合约的映射。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| source | text | 否 | 无 | 映射提供方qmt或tushare；不同来源连续序列的编制规则不假定相同。 |
-| code | text | 否 | 无 | 来源原始主力或连续序列代码，保留市场后缀及大小写。 |
-| trading_day | date | 否 | 无 | 上游明确给出的映射交易日；与source、code组成主键。 |
-| member_code | text | 否 | 无 | 该交易日对应的具体月份合约原始代码，不是证券名称。 |
-| updated_at | timestamp with time zone | 否 | now() | 历史映射最近写入时间，带时区，不表示关系生效时间。 |
-| source_fields | jsonb | 是 | 无 | 历史映射原始记录及必要品种校验证据JSON；未记录时为NULL。 |
+| source | text | 否 | 无 | 映射来源。 |
+| code | text | 否 | 无 | 主力或连续合约代码。 |
+| trading_day | date | 否 | 无 | 映射所属交易日。 |
+| member_code | text | 否 | 无 | 当天对应的月份合约代码。 |
+| updated_at | timestamp with time zone | 否 | now() | 映射记录更新时间。 |
+| source_fields | jsonb | 是 | 无 | 来源返回的原始映射字段。 |
 
 - `contract_mappings_pkey`：`PRIMARY KEY (source, code, trading_day)`
 
@@ -705,30 +705,30 @@ CREATE UNIQUE INDEX contract_mappings_pkey ON pfor_qmt.contract_mappings USING b
 
 #### futures_warehouse_receipts
 
-Tushare仓单日报明细；按仓库、等级、年度等维度保留原始单位，汇总行与明细不重复合计。
+保存期货仓单日报明细。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| source | text | 否 | 无 | 资料提供方，当前为tushare。 |
-| exchange | text | 否 | 无 | 上游期货交易所代码，如SHFE、DCE、CZCE。 |
-| symbol | text | 否 | 无 | 上游期货品种代码；与exchange共同限定品种。 |
-| trade_date | date | 否 | 无 | 仓单日报交易日期。 |
-| row_key | text | 否 | 无 | 仓库/产品/地区/年度/等级/品牌/产地/折算/单位等维度生成的SHA-256键，防止不同明细覆盖。 |
-| fut_name | text | 是 | 无 | 上游期货产品名称，未提供为NULL。 |
-| warehouse | text | 是 | 无 | 仓库或厂库名称，保留上游原值，不据名称推断汇总层级。 |
-| wh_id | text | 是 | 无 | 上游仓库编号，未提供为NULL。 |
-| pre_vol | numeric | 是 | 无 | 前日仓单数量，按本行unit解释，未提供为NULL。 |
-| vol | numeric | 是 | 无 | 当日仓单数量，按本行unit解释，不跨单位合计。 |
-| vol_chg | numeric | 是 | 无 | 仓单数量变化，按本行unit解释，可为负或NULL。 |
-| area | text | 是 | 无 | 上游地区信息，未提供为NULL。 |
-| year | text | 是 | 无 | 上游年度标记，按原始文本保存，不强制推断生产年或交割年。 |
-| grade | text | 是 | 无 | 上游等级信息，未提供为NULL。 |
-| brand | text | 是 | 无 | 上游品牌信息，未提供为NULL。 |
-| place | text | 是 | 无 | 上游产地信息，未提供为NULL。 |
-| pd | numeric | 是 | 无 | 上游升贴水数值，原口径保留；未提供为NULL，不猜测单位。 |
-| is_ct | text | 是 | 无 | 上游折算仓单标记，保留原始文本；不是自动识别汇总行的依据。 |
-| unit | text | 是 | 无 | 本行仓单数量原始单位；不同单位不可直接相加。 |
-| updated_at | timestamp with time zone | 否 | now() | 该仓单记录最近入库时间，带时区。 |
+| source | text | 否 | 无 | 资料来源。 |
+| exchange | text | 否 | 无 | 交易所代码。 |
+| symbol | text | 否 | 无 | 期货品种代码。 |
+| trade_date | date | 否 | 无 | 仓单日期。 |
+| row_key | text | 否 | 无 | 仓单明细唯一标识。 |
+| fut_name | text | 是 | 无 | 期货品种名称。 |
+| warehouse | text | 是 | 无 | 仓库或厂库名称。 |
+| wh_id | text | 是 | 无 | 仓库编号。 |
+| pre_vol | numeric | 是 | 无 | 前日仓单数量。 |
+| vol | numeric | 是 | 无 | 当日仓单数量。 |
+| vol_chg | numeric | 是 | 无 | 仓单数量变化。 |
+| area | text | 是 | 无 | 地区。 |
+| year | text | 是 | 无 | 年度标记。 |
+| grade | text | 是 | 无 | 等级。 |
+| brand | text | 是 | 无 | 品牌。 |
+| place | text | 是 | 无 | 产地。 |
+| pd | numeric | 是 | 无 | 升贴水。 |
+| is_ct | text | 是 | 无 | 是否为折算仓单。 |
+| unit | text | 是 | 无 | 数量单位。 |
+| updated_at | timestamp with time zone | 否 | now() | 记录更新时间。 |
 
 - `futures_warehouse_receipts_pkey`：`PRIMARY KEY (source, exchange, symbol, trade_date, row_key)`
 
@@ -742,22 +742,22 @@ CREATE UNIQUE INDEX futures_warehouse_receipts_pkey ON pfor_qmt.futures_warehous
 
 #### futures_holdings
 
-Tushare每日成交持仓会员记录；仅为返回范围，NULL表示该项未提供或未上榜，不代表0或完整市场排名。
+保存期货每日成交和持仓排名。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| source | text | 否 | 无 | 资料提供方，当前为tushare。 |
-| exchange | text | 否 | 无 | 上游交易所代码；INE持仓按官方SHFE入口读取并保留返回交易所。 |
-| symbol | text | 否 | 无 | 上游品种或月份合约标识，不一定带交易所后缀。 |
-| trade_date | date | 否 | 无 | 资料交易日期，按Asia/Shanghai解释。 |
-| broker | text | 否 | 无 | 期货公司或会员名称，是逐日记录维度，不是用户交易账号。 |
-| vol | numeric | 是 | 无 | 该会员成交量，单位手；未提供为NULL。 |
-| vol_chg | numeric | 是 | 无 | 成交量较前日变化，单位手，可为负或NULL。 |
-| long_hld | numeric | 是 | 无 | 持买仓量，单位手；未上榜或未提供为NULL。 |
-| long_chg | numeric | 是 | 无 | 持买仓量变化，单位手，可为负或NULL。 |
-| short_hld | numeric | 是 | 无 | 持卖仓量，单位手；未上榜或未提供为NULL。 |
-| short_chg | numeric | 是 | 无 | 持卖仓量变化，单位手，可为负或NULL。 |
-| updated_at | timestamp with time zone | 否 | now() | 该资料最近入库时间，带时区。 |
+| source | text | 否 | 无 | 资料来源。 |
+| exchange | text | 否 | 无 | 交易所代码。 |
+| symbol | text | 否 | 无 | 品种或合约代码。 |
+| trade_date | date | 否 | 无 | 资料交易日期。 |
+| broker | text | 否 | 无 | 期货公司或会员名称。 |
+| vol | numeric | 是 | 无 | 成交量，单位手。 |
+| vol_chg | numeric | 是 | 无 | 成交量变化，单位手。 |
+| long_hld | numeric | 是 | 无 | 多头持仓量，单位手。 |
+| long_chg | numeric | 是 | 无 | 多头持仓变化，单位手。 |
+| short_hld | numeric | 是 | 无 | 空头持仓量，单位手。 |
+| short_chg | numeric | 是 | 无 | 空头持仓变化，单位手。 |
+| updated_at | timestamp with time zone | 否 | now() | 记录更新时间。 |
 
 - `futures_holdings_pkey`：`PRIMARY KEY (source, exchange, symbol, trade_date, broker)`
 
@@ -771,24 +771,24 @@ CREATE UNIQUE INDEX futures_holdings_pkey ON pfor_qmt.futures_holdings USING btr
 
 #### futures_settlements
 
-Tushare每日结算参数；费率/费用保留上游原值，不等于用户券商账户实际收费或保证金。
+保存期货每日结算参数。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| source | text | 否 | 无 | 资料提供方，当前为tushare。 |
-| ts_code | text | 否 | 无 | Tushare具体月份合约代码，含原始交易所后缀。 |
-| exchange | text | 否 | 无 | Tushare交易所代码，需与ts_code市场一致。 |
-| trade_date | date | 否 | 无 | 结算参数适用交易日期，不是采集时间。 |
-| settle | numeric | 是 | 无 | 结算价，保留合约报价单位，未提供为NULL。 |
-| trading_fee_rate | numeric | 是 | 无 | 交易手续费率原值；比例基准按上游说明，未自动乘100。 |
-| trading_fee | numeric | 是 | 无 | 交易手续费原值；按上游费用口径，不自动解释为账户费率。 |
-| delivery_fee | numeric | 是 | 无 | 交割费用原值；单位与计费基准按上游资料。 |
-| b_hedging_margin_rate | numeric | 是 | 无 | 买套保保证金率原值，不自动换算百分比。 |
-| s_hedging_margin_rate | numeric | 是 | 无 | 卖套保保证金率原值，不自动换算百分比。 |
-| long_margin_rate | numeric | 是 | 无 | 买投机保证金率原值，不代表账户实际保证金。 |
-| short_margin_rate | numeric | 是 | 无 | 卖投机保证金率原值，不代表账户实际保证金。 |
-| offset_today_fee | numeric | 是 | 无 | 平今仓手续费或费率原值，保留上游口径，未提供为NULL。 |
-| updated_at | timestamp with time zone | 否 | now() | 该结算资料最近入库时间，带时区。 |
+| source | text | 否 | 无 | 资料来源。 |
+| ts_code | text | 否 | 无 | 期货合约代码。 |
+| exchange | text | 否 | 无 | 交易所代码。 |
+| trade_date | date | 否 | 无 | 结算参数日期。 |
+| settle | numeric | 是 | 无 | 结算价。 |
+| trading_fee_rate | numeric | 是 | 无 | 交易手续费率。 |
+| trading_fee | numeric | 是 | 无 | 交易手续费。 |
+| delivery_fee | numeric | 是 | 无 | 交割手续费。 |
+| b_hedging_margin_rate | numeric | 是 | 无 | 买套保保证金率。 |
+| s_hedging_margin_rate | numeric | 是 | 无 | 卖套保保证金率。 |
+| long_margin_rate | numeric | 是 | 无 | 买投机保证金率。 |
+| short_margin_rate | numeric | 是 | 无 | 卖投机保证金率。 |
+| offset_today_fee | numeric | 是 | 无 | 平今仓手续费或费率。 |
+| updated_at | timestamp with time zone | 否 | now() | 记录更新时间。 |
 
 - `futures_settlements_pkey`：`PRIMARY KEY (source, ts_code, trade_date)`
 
@@ -802,32 +802,32 @@ CREATE UNIQUE INDEX futures_settlements_pkey ON pfor_qmt.futures_settlements USI
 
 #### futures_weekly_details
 
-Tushare提供的主要品种交易周报，来源中国证监会；按上游周日期保存，不按日线规则推断缺口。
+保存期货主要品种交易周报。
 
 | 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
 | --- | --- | --- | --- | --- |
-| source | text | 否 | 无 | 采集提供方，当前为tushare；统计资料原始来源为中国证监会。 |
-| exchange | text | 否 | 无 | 上游期货交易所代码。 |
-| prd | text | 否 | 无 | 上游主要品种代码，不是具体月份合约代码。 |
-| week_date | date | 否 | 无 | 上游提供的周日期，参与主键；不从week强制按ISO周换算。 |
-| week | text | 否 | 无 | 上游原始周编号文本，保留20199等未补零形式，不假定ISO周。 |
-| name | text | 是 | 无 | 上游品种名称，未提供为NULL。 |
-| vol | numeric | 是 | 无 | 本周成交量，单位手；不是累计量。 |
-| vol_yoy | numeric | 是 | 无 | 本周成交量同比，上游原始百分数，可负或NULL。 |
-| amount | numeric | 是 | 无 | 本周成交金额，原始亿元精确换算为元；原值见original_amount。 |
-| amout_yoy | numeric | 是 | 无 | 本周成交金额同比，上游原始百分数；保留上游amout拼写以兼容接口。 |
-| cumvol | numeric | 是 | 无 | 年累计成交量，单位手；不能跨周相加形成总量。 |
-| cumvol_yoy | numeric | 是 | 无 | 年累计成交量同比，上游原始百分数。 |
-| cumamt | numeric | 是 | 无 | 年累计成交金额，由亿元精确换算为元；不能跨周累计求和。 |
-| cumamt_yoy | numeric | 是 | 无 | 年累计成交金额同比，上游原始百分数。 |
-| open_interest | numeric | 是 | 无 | 本周持仓量，单位手，属于时点量，不跨周累计。 |
-| interest_wow | numeric | 是 | 无 | 持仓量环比，上游原始百分数。 |
-| mc_close | numeric | 是 | 无 | 主力合约收盘价，保留品种报价单位；不是自行拼接价格。 |
-| close_wow | numeric | 是 | 无 | 主力收盘价环比，上游原始百分数。 |
-| original_amount | numeric | 是 | 无 | 上游本周成交金额原值，单位亿元，精确保留用于校验换算。 |
-| original_cumamt | numeric | 是 | 无 | 上游年累计成交金额原值，单位亿元。 |
-| normalization_version | text | 否 | 无 | 周报换算规则版本，目前为tushare-weekly-detail-v1。 |
-| updated_at | timestamp with time zone | 否 | now() | 该周报记录最近入库时间，带时区，不等于周日期。 |
+| source | text | 否 | 无 | 资料来源。 |
+| exchange | text | 否 | 无 | 交易所代码。 |
+| prd | text | 否 | 无 | 期货品种代码。 |
+| week_date | date | 否 | 无 | 周报日期。 |
+| week | text | 否 | 无 | 来源提供的周编号。 |
+| name | text | 是 | 无 | 期货品种名称。 |
+| vol | numeric | 是 | 无 | 本周成交量，单位手。 |
+| vol_yoy | numeric | 是 | 无 | 成交量同比。 |
+| amount | numeric | 是 | 无 | 本周成交金额，单位元。 |
+| amout_yoy | numeric | 是 | 无 | 成交金额同比。 |
+| cumvol | numeric | 是 | 无 | 年累计成交量，单位手。 |
+| cumvol_yoy | numeric | 是 | 无 | 年累计成交量同比。 |
+| cumamt | numeric | 是 | 无 | 年累计成交金额，单位元。 |
+| cumamt_yoy | numeric | 是 | 无 | 年累计成交金额同比。 |
+| open_interest | numeric | 是 | 无 | 周末持仓量，单位手。 |
+| interest_wow | numeric | 是 | 无 | 持仓量环比。 |
+| mc_close | numeric | 是 | 无 | 主力合约收盘价。 |
+| close_wow | numeric | 是 | 无 | 主力收盘价环比。 |
+| original_amount | numeric | 是 | 无 | 来源成交金额原值，单位亿元。 |
+| original_cumamt | numeric | 是 | 无 | 来源累计成交金额原值，单位亿元。 |
+| normalization_version | text | 否 | 无 | 周报标准化规则版本。 |
+| updated_at | timestamp with time zone | 否 | now() | 记录更新时间。 |
 
 - `futures_weekly_details_pkey`：`PRIMARY KEY (source, exchange, prd, week_date)`
 

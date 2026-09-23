@@ -152,7 +152,7 @@ def test_empty_history_and_calendar_stop_without_advancing_checkpoint(store,tmp_
     worker.execute(job)
     result = store.job(job['id'])
     assert result['state'] == 'blocked' and result['checkpoint'] == 0
-    assert '行情服务器' in result['error']
+    assert '原因尚未确认' in result['error'] and '不能仅据空结果判定连接故障' in result['error']
     assert len(source.downloads) == 1
     assert not store.query('SELECT * FROM bars')
     assert not store.query('SELECT * FROM coverage')

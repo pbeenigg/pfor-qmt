@@ -13,7 +13,7 @@ from .symbols import market_of, derivative_kind
 from .identifiers import source_market, TS_EXCHANGES
 from .tushare import TushareSource, SourceError
 from .reliability import SourceUnavailable, failure, issue, fallback_log, redact
-from .quality_checks import RULE_VERSION, aggregate_issues, minute_issues, stored_issues, qmt_daily_weekend, daily_weekend_issue
+from .quality_checks import RULE_VERSION, aggregate_issues, minute_issues, stored_issues, qmt_daily_weekend, daily_weekend_issue, exchange_holiday_issue
 
 
 class Cancelled(Exception):
@@ -341,7 +341,15 @@ class Worker:
                     raise
                 calendar, calendar_error = [], str(error)
             if not rows and not calendar and not adapter:
-                confirmed=self.store.query("SELECT day,is_open FROM trading_dates WHERE source='qmt' AND market=%s AND day BETWEEN %s AND %s AND evidence='calendar'",(source_market(code,self.provider),start,end))
+                saved_calendar=self.store.query("SELECT day,is_open,evidence FROM trading_dates WHERE source='qmt' AND market=%s AND day BETWEEN %s AND %s",(source_market(code,self.provider),start,end))
+                closure=exchange_holiday_issue(dict(part,start=start.isoformat(),end=end.isoformat()),saved_calendar)
+                if closure and self.store.history(code,period,start.isoformat(),end.isoformat(),limit=1,source='qmt')['rows']:
+                    closure=None
+                if closure:
+                    self.check(identifier)
+                    self.store.write_chunk(identifier,part,[],[closure],index+1)
+                    return
+                confirmed=[row for row in saved_calendar if row['evidence']=='calendar']
                 if period=='1d' and len(confirmed)==(end-start).days+1 and not any(row['is_open'] for row in confirmed):
                     self.check(identifier)
                     self.store.write_chunk(identifier,part,[],[issue('NO_OPEN_DAY','not_applicable','QMT完整交易所日历确认区间休市','无需下载日线；本结论不证明行情连接')],index+1)
@@ -350,8 +358,7 @@ class Worker:
                     self.check(identifier)
                     self.store.write_chunk(identifier,part,[],[daily_weekend_issue()],index+1)
                     return
-                guidance = '终端行情服务器登录与连接' if self.provider == 'qmt' else 'Tushare连接与接口权限'
-                raise SourceUnavailable(f'{code} / {period} / {start} 至 {end}：{self.provider.upper()} 历史行情和交易日历均为空，已停止后续下载；请检查{guidance}，恢复后重试。当前分块未推进检查点')
+                raise SourceUnavailable(f'{code} / {period} / {start} 至 {end}：QMT本区间历史行情与合约K线日期均为空，原因尚未确认，不能仅据空结果判定连接故障。请核对休市安排、合约历史范围及终端缓存；已停止后续下载，当前分块未推进检查点')
             trading_days = sorted({timestamp(value).date() for value in calendar})
             with self.store.connect() as conn:
                 with conn.cursor() as cursor:

@@ -128,7 +128,7 @@ def failure(error):
         diagnostic=state if re.fullmatch(r'[0-9A-Z]{5}',state) else type(error).__name__
         return dict(code='DATABASE_ERROR',message=message+'（'+diagnostic+'）',action=action,scope='source',retryable=retry,state='failed')
     if isinstance(error, SourceUnavailable):
-        return dict(code='SOURCE_NOT_READY', message=redact(str(error)), action='检查行情服务器连接与日历，恢复后重试', scope='source', retryable=True, state='blocked')
+        return dict(code='SOURCE_NOT_READY', message=redact(str(error)), action='核对休市日期、合约历史范围及QMT缓存；连接是否故障需另行诊断', scope='source', retryable=True, state='blocked')
     if isinstance(error,QmtCapabilityUnavailable):
         return dict(code=error.code,message=str(error),action=error.action,scope='interface',retryable=False,state='blocked')
     if isinstance(error, DataRejected):
