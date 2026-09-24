@@ -15,7 +15,7 @@ from .protocol import decode_value, dumps_message, loads_message, new_id, pack_r
 
 class PipeRpcClient(object):
     """
-    External Python RPC client over the cfquant named-pipe hub.
+    External Python RPC client over the market named-pipe hub.
     """
 
     def __init__(self, pipe_name=None, request_channel=None, timeout=None, client_id=None, connect_timeout_ms=None):
@@ -63,7 +63,7 @@ class PipeRpcClient(object):
         with self._lock:
             self._started = False
             self._close_conns_locked()
-        self._fail_pending("cfquant pipe client closed")
+        self._fail_pending("market pipe client closed")
 
     def request(self, action, params=None, timeout=None, request_channel=None):
         effective_timeout = float(timeout or self.timeout)
@@ -91,7 +91,7 @@ class PipeRpcClient(object):
             except queue.Empty:
                 from .client import CfquantTimeout
 
-                raise CfquantTimeout("cfquant pipe request timeout: %s" % action)
+                raise CfquantTimeout("market pipe request timeout: %s" % action)
             if not msg.get("ok"):
                 err = msg.get("error") or {}
                 from .client import CfquantError
@@ -122,7 +122,7 @@ class PipeRpcClient(object):
         if conn is None:
             from .client import CfquantError
 
-            raise CfquantError("cfquant pipe client not started")
+            raise CfquantError("market pipe client not started")
         conn.write_frame(dumps_pipe_message({
             "type": "request",
             "role": "api_tx",
@@ -132,7 +132,7 @@ class PipeRpcClient(object):
         }))
 
     def _recv_loop(self, expected_conn):
-        disconnect_message = "cfquant pipe connection closed"
+        disconnect_message = "market pipe connection closed"
         while True:
             try:
                 with self._lock:
@@ -140,11 +140,11 @@ class PipeRpcClient(object):
                         return
                     conn = expected_conn
                 if conn is None:
-                    disconnect_message = "cfquant pipe receive connection missing"
+                    disconnect_message = "market pipe receive connection missing"
                     break
                 raw = conn.read_frame()
                 if raw is None:
-                    disconnect_message = "cfquant pipe receive connection closed"
+                    disconnect_message = "market pipe receive connection closed"
                     break
                 envelope = loads_pipe_message(raw)
                 payload = envelope.get("payload") if envelope else raw
@@ -160,7 +160,7 @@ class PipeRpcClient(object):
                 elif msg_type == "event":
                     self._dispatch_event(msg)
             except Exception as e:
-                disconnect_message = "cfquant pipe receive failed: %s" % e
+                disconnect_message = "market pipe receive failed: %s" % e
                 break
         self._mark_disconnected(disconnect_message, expected_conn=expected_conn)
 

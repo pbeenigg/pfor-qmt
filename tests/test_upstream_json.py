@@ -1,4 +1,4 @@
-"""Selected regressions from pinned cfquant, MIT Copyright (c) 2026 tao."""
+"""协议序列化回归测试。"""
 import numpy as np
 import pandas as pd
 import pytest

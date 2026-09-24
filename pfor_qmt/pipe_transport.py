@@ -560,7 +560,7 @@ class PipeTxClient(object):
 
     def _log(self, msg):
         if self.show and get_log_enabled():
-            print("cfquant pipe tx %s" % translate_log(msg))
+            print("market pipe tx %s" % translate_log(msg))
 
     def _normalize_channels(self, channels):
         result = []

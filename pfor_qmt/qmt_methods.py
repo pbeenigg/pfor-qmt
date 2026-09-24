@@ -1,4 +1,4 @@
-"""Selected market-only methods from pinned cfquant; see UPSTREAM.md."""
+"""QMT market-only method adapters."""
 import inspect
 
 L2_PERIODS = frozenset()

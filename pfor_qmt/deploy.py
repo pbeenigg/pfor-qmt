@@ -1,4 +1,4 @@
-"""Isolated deployment, inspired by the pinned cfquant package/model workflow."""
+"""Isolated deployment for the managed QMT market model."""
 import hashlib
 import json
 import os

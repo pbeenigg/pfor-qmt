@@ -26,7 +26,7 @@ class CfquantPipeHub(object):
     External named-pipe hub.
 
     QMT-side pipe bridges register as role=qmt with a request_channel.
-    External API clients register as role=api and send cfquant request payloads.
+    External API clients register as role=api and send market request payloads.
     The hub forwards requests to the matching QMT bridge and routes responses or
     events back to the originating API client.
     """
