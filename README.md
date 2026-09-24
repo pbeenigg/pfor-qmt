@@ -1,32 +1,42 @@
 # pfor-qmt
 
-数据库结构、ER图、字段口径和主外键说明见[数据库字典](docs/DATABASE_SCHEMA.md)。表及字段注释由版本化SQL迁移维护，执行 `python -m pfor_qmt.cli migrate` 后可在数据库客户端直接查看；`python tools/generate_schema_docs.py --check` 检查文档与数据库元数据一致性。
+pfor-qmt 是面向 QMT 与 Tushare 的本地行情数据工作台。它把行情目录、历史 K 线、期货资料、下载任务、数据质量、PostgreSQL 存储和 CSV/Parquet 导出放在同一条数据链路中，提供 Web 控制台和 Python SDK。
 
-## Web 控制台
+项目只处理行情与资料，不提供下单、资金、持仓交易操作。QMT 和 Tushare 的数据按来源隔离保存，不自动切源、不混合计算；数据源离线时，已入库数据仍可查询和导出。
 
-工作台按数据查询、期货资料、采集管理、质量运维、系统设置分组，每页聚焦一个流程。新增数据集编辑/复制、维护计划独立保存与执行预览、完整范围统计、独立K线时间窗及资料图表。操作路线见[控制台指南](docs/CONSOLE_GUIDE.md)，视觉约定见[设计规范](docs/CONSOLE_DESIGN.md)。
+## 能力范围
 
-## Tushare 期货历史
+| 模块 | 能力 |
+| --- | --- |
+| QMT 行情 | 证券目录、实时订阅、日线、1/5 分钟线、指数成分、行业概念和本地行情桥 |
+| Tushare 期货 | 合约目录、交易日历、日/周/月线、1/5/15/30/60 分钟线、主力映射、仓单、成交持仓排名、结算参数和交易周报 |
+| 数据管理 | PostgreSQL 独立 schema、断点续传、失败重试、质量核验、自动维护和任务事件 |
+| 工作台 | 全局数据源、搜索与多选、分页查询、图表统计、任务详情、日志和文件导出 |
+| SDK | `DataClient` 访问目录、历史、资料、任务和导出；`xtdata` 提供 QMT 行情桥接口 |
 
-期货资料新增「结算参数」和「主要品种交易周报」，与现有「成交持仓排名」共用多选同步、资料查询、维护任务及CSV/Parquet导出。结算按月份合约选择，周报按品种选择；费率保留原值，周报金额转元并保留原始亿元。详见[接入说明](docs/SETTLEMENT_WEEKLY.md)。
+Tushare 分钟数据需要独立接口权限；Tick 数据没有公开 API，本项目不提供虚构的 Tick 下载入口。QMT 的历史数据能力取决于终端登录状态、行情服务器和本地缓存。
 
-QMT离线时可在「系统设置 → Tushare 账号」新增账号，填写本地Token并检测权限。到「采集执行 → 目录同步」选择Tushare和采集账号，同步期货目录；随后在「证券目录」选择合约并新建数据集，在「采集执行 → 历史回补」下载，到「历史行情」查询图表或导出CSV/Parquet。
+## 架构
 
-多账号共用根目录config.toml。日/周/月线与具体月份合约1/5/15/30/60分钟历史复用现有PostgreSQL表和任务，保留来源不覆盖QMT数据。分钟需要独立权限；主力/连续分钟拼接、实时行情不在本次接入范围。配置与SDK示例见docs/CONFIGURATION.md、docs/API.md。
+```text
+QMT / Tushare
+      │
+      ▼
+来源适配器 → 统一标准化、校验、检查点 → PostgreSQL（pfor_qmt）
+      │                                      │
+      ├── Web 控制台 / HTTP API / Python SDK ─┤
+      └── 任务、质量、日志、CSV/Parquet 导出
+```
 
-分钟接口无权限时，在「采集执行 → 历史回补」选择原数据集，将「本次回补周期」仅勾选日线。此选择只作用于新任务，不修改数据集或原任务；已入库日线仍可查询和导出。原任务保留分块与检查点，分钟授权后可定向创建关联重试任务。任务显示的已入库行数不代表所有请求周期均完成。
+行情数据使用 `Decimal/NUMERIC` 保留精度，空值不补零，时间按 `Asia/Shanghai` 解释。任务执行状态和数据质量状态分开记录；“部分完成”“待核验”“未发布”“缺失”和“阻塞”含义不同，详情见[质量核验](docs/QUALITY_VERIFICATION.md)。
 
-Tushare历史库现支持日/周/月及1/5/15/30/60分钟。周/月线使用上游结果，保留计算截至日期；未结束周期以not_published标记等待周期结束。顶部切换Tushare后，进入「期货资料」选择交易日历、主力映射、仓单或成交持仓排名，再选交易所与产品/合约，同步任务完成后查询或导出。该页读取本地数据库，无需数据源在线；可从原始任务保存自动维护范围，历史K线数据集也可开启自动更新，同一范围不要重复启用两种方式。
+## 环境要求
 
-2000积分不包含分钟的独立授权，也不包含Tick文件服务。Tick官方没有API，本项目不提供假下载入口；收到实际CSV样本后再确认导入规则。详细口径见[扩展说明](docs/TUSHARE_EXTENSIONS.md)。
-
-面向股票、行业概念、指数、期货、期权、场内基金、债券的本地行情工作台，覆盖大QMT实际提供的国内品种。项目独立提供行情接入、历史数据管理与分析能力。
-
-提供大 QMT 命名管道行情桥、Python SDK、PostgreSQL 历史库、下载任务、CSV/Parquet 导出和原生 Web 工作台。支持不复权日线、1/5 分钟线、当前指数及板块成员，不包含任何交易接口。七类扩展及实机验收状态见 [接入计划](docs/MULTI_ASSET_PLAN.md)，接口支持不代表终端权限或历史数据已经可用。
+- Windows，Python 3.12；QMT 内嵌脚本保持 Python 3.6 兼容。
+- PostgreSQL 14 或更高版本，用于历史库和任务记录。
+- QMT 实时/历史采集需要已安装并登录大 QMT；Tushare 历史资料不依赖 QMT 在线。
 
 ## 快速启动
-
-主程序需要 Windows、Python 3.12；历史库需要 PostgreSQL 14+。QMT 内嵌组件保持 Python 3.6 语法兼容，独立部署，不向 QMT 安装主程序依赖。
 
 ```powershell
 cd D:\国金\pfor-qmt
@@ -37,104 +47,36 @@ py -3.12 -m venv .venv
 .venv\Scripts\pfor-qmt serve
 ```
 
-打开 http://127.0.0.1:8766 ，使用 `key` 输出的 API Key 登录。WebSocket 使用本机 8767。端口占用时使用 `serve --port 8876 --ws-port 8877`。同一台机器同一 Windows 会话只运行一个服务。
-
-在「数据源设置」保存 PostgreSQL DSN 并初始化历史库，或使用以下命令。密码仅通过隐藏输入写入本地文件，不放入命令行历史。
+打开 <http://127.0.0.1:8766>，使用 `key` 命令输出的 API Key 登录。首次使用先在“数据源设置”保存 PostgreSQL DSN，再初始化数据库：
 
 ```powershell
 .venv\Scripts\pfor-qmt configure --database --qmt-root D:\QMT
 .venv\Scripts\pfor-qmt migrate
 ```
 
-统一配置入口是项目根目录 `config.toml`，模板见 [config.example.toml](config.example.toml)。数据库、端口、运行目录、QMT行情连接、API Key及登录密码哈希均由这个文件管理；网页保存也写回此文件，保留注释。
+所有本地配置统一保存于根目录 `config.toml`，模板见 [config.example.toml](config.example.toml)。配置优先级为：命令行参数 > `PFOR_QMT_*` 环境变量 > TOML > 默认值。真实配置、Token、密码和运行数据不会提交到 Git。
 
-优先级：**显式命令行参数 > `PFOR_QMT_*` 环境变量 > TOML > 默认值**。文件路径通过 `--config` 或 `PFOR_QMT_CONFIG` 指定，默认当前目录的`config.toml`；相对运行目录和QMT路径基于配置文件所在目录解析。环境变量和命令行覆盖只在当前进程生效，不会写回文件，也不会修改系统环境变量。
+## 第一次采集
 
-首次找不到TOML时，会迁移原`runtime/settings.local.json`中的连接、API Key和密码哈希，原JSON保留为备份，后续不再读取。真实`config.toml`已被Git和构建包排除，不要分享或放在公共目录。手工修改后重启服务；修改行情管道配置后需重新准备自有QMT模型并重启终端。
+1. 在“数据源设置”选择 QMT 或 Tushare。使用 Tushare 时先新增账号并录入 Token，Token 只写入本地配置，不回显到 API。
+2. 在“采集执行”同步证券或期货目录；使用 QMT 前确认终端已登录，使用 Tushare 时选择具体账号。
+3. 在“证券目录”搜索代码或名称，创建数据集并选择周期、成员和日期范围。
+4. 在“采集执行”创建历史回补任务，确认来源、账号、周期和范围后提交。
+5. 在“历史行情”或“期货资料”查询已入库数据，在任务详情查看分块质量；需要文件时从导出入口生成 CSV 或 Parquet。
 
-```powershell
-.venv\Scripts\pfor-qmt --config D:\国金\pfor-qmt\config.toml serve
-```
-
-完整配置项和环境变量对应关系见 [配置说明](docs/CONFIGURATION.md)。
+QMT 首次部署需要退出 QMT，在设置页依次执行“检查”“准备”“启用”，再启动并登录终端。部署器只管理项目自己的 `PFOR_MARKET` 模型和文件，不会操作其他模型。完整步骤见[实机验收](docs/LIVE_ACCEPTANCE.md)。
 
 ## 服务管理
 
-在项目根目录使用 `pfor.ps1`（Windows PowerShell 5.1 / PowerShell 7）：
-
 ```powershell
-.\pfor.ps1 start                  # 后台启动，重复执行不会启动第二份
-.\pfor.ps1 status                 # 进程、网页地址及 HTTP/WebSocket 就绪状态
-.\pfor.ps1 stop                   # 停止本项目服务
-.\pfor.ps1 restart                # 停止后重新加载配置并启动
-.\pfor.ps1 logs -Tail 100          # 最近一次启动的标准输出
-.\pfor.ps1 logs -ErrorLog         # 最近一次启动的错误日志
-.\pfor.ps1 logs -Follow           # 持续查看；Ctrl+C 仅结束日志查看
-.\pfor.ps1 help
+.\pfor.ps1 start
+.\pfor.ps1 status
+.\pfor.ps1 restart
+.\pfor.ps1 stop
+.\pfor.ps1 logs -Tail 100
 ```
 
-可从其他目录通过脚本完整路径调用。配置路径按 `-Config`、`PFOR_QMT_CONFIG`、脚本目录的 `config.toml` 选择；相对配置路径基于脚本目录。端口和运行目录复用统一配置及环境覆盖，不另外保存一份配置。每次启动的日志分别保存在运行目录，保留旧日志。就绪状态仅表示Web服务可访问，不代表数据库或QMT数据已经可用。
-
-脚本只管理命令行中配置文件绝对路径匹配的pfor-qmt进程，不停止QMT、PostgreSQL或占用端口的其他应用。此前在前台用相对配置路径或省略`--config`启动的服务，请先在原终端按Ctrl+C，再改用本脚本启动。
-
-`stop`直接结束服务进程，保留已提交数据库事务及任务检查点；重新启动后恢复未完成任务，已发出的QMT请求不能撤销。手工修改配置后执行`restart`。若系统阻止执行脚本，可仅对此次调用使用 `powershell -NoProfile -ExecutionPolicy Bypass -File .\pfor.ps1 status`，将最后的`status`换成所需操作；无需修改系统执行策略。
-
-## 接入 QMT
-
-1. 在设置页检查大 QMT 根目录，退出 QMT 后点击「准备」。
-2. 启动并登录 QMT，等待 `PFOR_MARKET` 模型导入，然后退出。
-3. 点击「启用」，再次启动并登录 QMT，点击「测试行情连接」。
-4. 如果终端没有可唯一识别的模型账户绑定，先在 QMT 为 `PFOR_MARKET` 手工选择账户并保存，再退出并启用。该绑定仅满足终端模型运行要求，不开放交易。
-
-部署只管理 `pfor_qmt_managed/`、`PFOR_MARKET.py`、同名导入包及同名模型节点，修改 XML 前保存备份。不会清理、停用或替换其他 QMT 模型，也不会自动退出或登录 QMT。
-
-已导入并启用的模型更新时，只需退出QMT后执行「准备」，再启动登录，无需重复「启用」。期货、期权和分类树需要新版桥；`/source/test`返回`catalog_version: 2`可确认版本。
-
-“行情桥已连接”不代表行情服务器已登录。在设置页点击「检查历史数据」，分别查看快照时间、近30天本地日线和交易日历。历史和日历均为空时，先在QMT手动检查行情连接和日K线；不要直接扩大回补。只读命令为 `.venv\Scripts\python.exe -X utf8 tools/live_acceptance.py`。
-
-## 初次使用
-
-先在行情页顶部「证券与合约目录」勾选需要的类别并点击「同步证券目录」，默认优先期货和期权。支持六家期货交易所、沪深期权、A/B股、国内指数、场内基金、债券及行业概念。后台读取终端当前目录与真实名称，显示进度，支持停止、任务页重试和服务重启恢复。相同或更小范围的重复请求返回当前活动任务；增加类别时需等待原任务完成。只同步资料，不下载全市场历史行情，也不自动删除旧证券。
-
-行情证券、历史查询和数据集成员均可按代码或名称搜索并复选；诊断和单指数映射保留单选。类别、交易所及合约类型可多选，支持本页全选、全选筛选结果、仅看已选和跨页保留；取消选择窗口会还原。全选超过10000项时需缩小范围，QMT行情最多100项。详情按钮查看来源及已获得的原生字段。代码保留大小写与空格，如`cu2610.SF`、`SP a2611&a2701.DF`。已同步目录可在QMT离线时查询。
-
-历史库可同时选择多个合约和周期，图表按单个合约/周期切换；多周期导出分别生成文件。期货资料可多选日历、仓单、排名和映射，选择交易所及产品后批量同步或导出，查询结果按资料页签分别展示。仓单和排名完整字段位于记录详情，可复制原始记录或翻看本页相邻记录。
-
-历史、资料、下载和任务筛选均有「日期范围」快捷菜单：今天、近三天、一周、一/三/六个月、一/二/三年；也可手动修改起止日期。按上海日期计算且含结束日，月/年按日历回退；今天尚未发布的数据可能为空。任务可按状态、类型、来源多选筛选，详情显示固定范围、进度、已入库行数与未确认缺口。
-
-「行业概念」独立展示QMT分类路径及当前成员，可以刷新快照并以成员建立数据集。板块不作为证券，不生成板块K线；成员变更不会自动改写既有数据集或任务。场内基金包括终端基金目录中的ETF和其他基金，ETF保留子类筛选。
-
-指数页选择指数后自动带出名称，优先选用已有板块映射或名称完全匹配的QMT板块；没有精确匹配时需从可搜索的板块下拉框选择，不猜测成分关系。刷新当前成分后可以查看代码与名称，或以该快照创建数据集。分钟线需显式勾选。
-
-行情页订阅后显示证券数量。重新选择证券并再次订阅可切换行情；方形停止按钮退订行情并保留最后显示值，任务推送保持连接。断线时显示等待恢复，连接恢复后重订阅；退出登录会关闭连接，重新登录后需再次订阅。
-
-下载任务页可多选同一来源的数据集和周期后回补，每个数据集执行其已有周期与所选周期的交集；无交集时整批拒绝。批量提交前展示范围，取消不会创建任务；账号及端点始终取自各数据集。留空日期时日线默认一年、分钟线90天。已创建任务保存成员与日期分块，不受之后成员变化影响。QMT默认交易日17:00、Tushare19:00更新；进程必须运行，关机期间到期任务在恢复后补建。
-
-文件导出独立于行情下载队列，QMT请求等待或失败不会阻塞已有数据导出。任务页分别显示行情调度和文件导出的后台错误；下载仍限制为单源单任务。
-
-数据库保存 QMT 原始、不复权 OHLC、量额、可获得的持仓量、结算价及交易日，不换算终端单位。夜盘时间不移动；查询优先按终端交易日，未提供时按上海自然日查询并保留待核验提示，不猜测夜盘归属。期货和期权不请求股票复权因子，调度按数据集实际市场读取日历。当前成分快照只表示观察时点；历史库查询和导出可在QMT离线时使用。
-
-先验证所选资产的短区间日线，当前优先期货和期权，再扩大到分钟线及更多证券。[实机验收步骤](docs/LIVE_ACCEPTANCE.md)提供小样本工具，支持`--codes`自选最多10个证券/合约、`--period 1d/1m/5m`，核对重复回补、SDK分页、数据库及两种文件格式；显式使用`--download`才会创建任务和写入真实数据。分钟验收限制一个交易日，覆盖待核验时仍保留partial。
-
-## 任务质量与运行日志
-
-维护计划支持编辑名称、时间和回读交易日数；数据集自动更新与维护计划不能重复启用。多交易所分别记录调度进度，日历故障不阻塞其他已选市场，恢复后不重复排队。操作、阻塞与恢复均可查日志，详见[维护说明](docs/MAINTENANCE.md)。
-
-任务详情同时显示执行状态和分块质量。「部分完成」表示仍有未解决范围；「待核验」表示已有结果的完整性或交易日归属未确认；「阻塞」表示权限、配置或前置条件不足。不能把已有行数视为整批完成。查看分块的错误码、原因和建议动作后，可仅勾选需要补数的分块重试；新任务保留与原任务的关联，不改写旧记录。未知夜盘归属和交易时段不能靠重复下载解决。
-
-「运行与日志」集中显示队列、待处理任务、最近行情及写入时间、维护范围与任务事件。日志可按来源、级别、日期筛选，详情包含请求范围、校验问题和脱敏异常样本；升级前的任务不补造事件。事件默认保留90天、异常样本30天，数据库不可写时另写运行目录的轮转日志。
-
-在原始目录或采集任务详情中保存维护范围，设置名称、执行时间和回读交易日数。维护仅处理保存的对象，不自动扩大范围；默认QMT 17:00、Tushare 19:00、回读五交易日。可补异常最多自动补数三轮，权限与参数错误不自动重试。停用维护只阻止新调度，已经排队的任务需单独取消。
-
-资料发布时间、分钟逐时段连续性及真实跨交易日维护仍有未完成或未验证项，详见[整改记录](docs/RELIABILITY_PLAN.md)与[验证记录](docs/VERIFICATION.md)。
-
-## 数据新鲜度
-
-只读核验确认有缺口后，可在任务详情点击「预览缺口补数」，确认来源、账号和日期再提交。补数保留原任务证据，完成后重新核验；「关联任务」可在采集、核验、补数之间跳转。未知分钟时段和夜盘问题不会被直接当作缺数下载。
-
-下载任务详情可执行「只读重新核验」，以新任务复查数据库中的覆盖、周期与字段，数据源离线也能运行。分块详情包含规则版本和可疑分钟间隔；原任务与行情保持不变。数据库断开时，「运行与日志」仍可读取本地运行故障。完整规则和外部验收边界见[质量核验](docs/QUALITY_VERIFICATION.md)。
-
-「运行与日志」按已启用的数据集和维护计划逐对象检查，支持来源筛选、代码搜索、分页和详情。日线、映射及日历依据维护时间、对应来源日历和合约存续期给出更新滞后、尚无数据等结论；未纳入维护的归档不报警。分钟时段、夜盘及其他资料发布规则不足时显示具体待核验原因。查询不触发采集，完整口径见[数据新鲜度](docs/FRESHNESS.md)。
+脚本只管理配置路径匹配的 pfor-qmt 服务，不停止 QMT、PostgreSQL 或其他应用。服务重启后会恢复未完成任务；已经发出的终端请求无法撤销。
 
 ## Python SDK
 
@@ -142,38 +84,25 @@ py -3.12 -m venv .venv
 from pfor_qmt import DataClient, xtdata
 
 client = DataClient.from_config("config.toml")
-xtdata.configure_from_file("config.toml")
-catalog_job = client.sync_catalog(["future", "option"])  # 优先同步期货、期权；省略参数则七类全部同步
-contracts = client.catalog(kind="future", market="SF")
-matches = client.catalog(search="沪深300", kind="index")
-dataset = client.create_dataset("核心指数", ["000300.SH", "000905.SH"], ["1d"])
+catalog_job = client.sync_catalog(["future", "option"], source="qmt")
+contracts = client.catalog(kind="future", search="沪铜")
+dataset = client.create_dataset("核心合约", ["cu2610.SF"], ["1d"])
 job = client.download(dataset["id"], "2026-09-01", "2026-09-14")
 print(client.job(job["id"]))
-page = client.history("000300.SH", limit=500)
-tick = xtdata.get_full_tick(["000300.SH"])
 ```
 
-`DataClient` 通过认证 HTTP 接口访问历史库，数值以精确十进制字符串返回。`xtdata` 是本机管道直连接口，需要行情桥在线。订阅回调不得同步调用管道 RPC，应把数据转交队列；自行使用 `xtdata` 的客户端在重连后需要重新订阅。Web 工作台自动恢复订阅。
+`DataClient` 访问认证 HTTP API；`xtdata` 需要本机行情桥在线。SDK、HTTP API、数据库和导出文件共用同一来源、单位和质量口径，接口示例见 [API 文档](docs/API.md)。
 
 ## 开发与验证
 
 ```powershell
-.venv\Scripts\python -m pip install -e '.[dev]'
-.venv\Scripts\python -m pytest -q
-# 仅设置为隔离测试数据库，测试会创建并删除 pfor_qmt_test_* schema
-$env:PFOR_QMT_TEST_DSN = 'postgresql://user:password@127.0.0.1:55436/pfor_test'
-.venv\Scripts\python -m playwright install chromium
-$env:PFOR_QMT_BROWSER_TEST = '1'
+.venv\Scripts\python -m pip install -e ".[dev]"
 .venv\Scripts\python -m pytest -q
 .venv\Scripts\python -m build
 ```
 
-测试没有覆盖率百分比门槛；必须通过交易拒绝、命名隔离、重复入库、任务恢复、调度、导出和界面回归。无测试数据库或浏览器开关时，相应测试会显式跳过，不能据此宣称全部验收通过。
+浏览器测试需要额外安装 Playwright 和 Chromium。数据库测试使用隔离 schema，设置 `PFOR_QMT_TEST_DSN` 后运行；不要让测试连接业务数据库。项目结构见[架构说明](docs/ARCHITECTURE.md)，数据库表、字段和 ER 图见[数据库字典](docs/DATABASE_SCHEMA.md)，配置项见[配置说明](docs/CONFIGURATION.md)。
 
-## 发布软件包
+## 发布
 
-`.github/workflows/python-publish.yml` 会在 GitHub Release 发布后构建并检查 wheel 和源码包，同时发布到 PyPI，并把两个文件附加到该 Release。发布前先在 `pyproject.toml` 更新版本号，再创建同名标签，例如版本 `0.1.0` 使用标签 `v0.1.0`。
-
-首次发布到 PyPI 前，在 PyPI 配置 Trusted Publisher：仓库所有者填写 `pbeenigg`，仓库填写 `pfor-qmt`，工作流填写 `python-publish.yml`，环境填写 `pypi`。之后创建并发布 GitHub Release 即可触发；也可以手动运行工作流，但必须填写一个已存在的 Release 标签。
-
-项目结构、接口与状态见 [执行规范](AGENTS.md)、[架构](docs/ARCHITECTURE.md)、[API](docs/API.md)、[兼容矩阵](COMPATIBILITY.md)、[验证记录](docs/VERIFICATION.md)。
+`.github/workflows/python-publish.yml` 在 GitHub Release 发布后构建 wheel 和源码包，同时上传 PyPI 与 Release 附件。发布前同步更新 `pyproject.toml` 的版本号、Git 标签和 Release；首次发布需在 PyPI 配置 GitHub Trusted Publisher。详细发布参数以工作流文件为准。
