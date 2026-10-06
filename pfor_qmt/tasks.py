@@ -12,7 +12,7 @@ from .storage import job_summary
 from .symbols import market_of, derivative_kind
 from .identifiers import source_market, TS_EXCHANGES
 from .tushare import TushareSource, SourceError
-from .reliability import SourceUnavailable, failure, issue, fallback_log, redact
+from .reliability import QmtHistoryEmpty, failure, issue, fallback_log, redact
 from .quality_checks import RULE_VERSION, aggregate_issues, minute_issues, stored_issues, qmt_daily_weekend, daily_weekend_issue, exchange_holiday_issue
 
 
@@ -76,7 +76,10 @@ class Worker:
                 raise LeaseLost('工作队列租约连接丢失；停止当前执行，等待新租约恢复') from None
         if self.stop.is_set():
             raise InterruptedError('服务停止，任务等待下次恢复')
-        if self.store.job(identifier)['cancel_requested']:
+        control = self.store.query('SELECT cancel_requested FROM jobs WHERE id=%s', (identifier,), one=True)
+        if not control:
+            raise ValueError('任务不存在')
+        if control['cancel_requested']:
             raise Cancelled('已停止后续处理；已提交的数据源请求不会撤销')
 
     def run(self):
@@ -341,8 +344,10 @@ class Worker:
                     raise
                 calendar, calendar_error = [], str(error)
             if not rows and not calendar and not adapter:
-                saved_calendar=self.store.query("SELECT day,is_open,evidence FROM trading_dates WHERE source='qmt' AND market=%s AND day BETWEEN %s AND %s",(source_market(code,self.provider),start,end))
-                closure=exchange_holiday_issue(dict(part,start=start.isoformat(),end=end.isoformat()),saved_calendar)
+                saved_calendar=self.store.query("SELECT day,is_open,evidence FROM trading_dates WHERE source='qmt' AND market=%s AND day BETWEEN %s AND %s",(source_market(code,self.provider),start-timedelta(days=1) if period in MINUTE_PERIODS else start,end))
+                from .exchange_holidays import evidence
+                closure=exchange_holiday_issue(dict(part,start=start.isoformat(),end=end.isoformat()),saved_calendar,
+                                               evidence(self.store,source_market(code,self.provider),start,end))
                 if closure and self.store.history(code,period,start.isoformat(),end.isoformat(),limit=1,source='qmt')['rows']:
                     closure=None
                 if closure:
@@ -358,7 +363,7 @@ class Worker:
                     self.check(identifier)
                     self.store.write_chunk(identifier,part,[],[daily_weekend_issue()],index+1)
                     return
-                raise SourceUnavailable(f'{code} / {period} / {start} 至 {end}：QMT本区间历史行情与合约K线日期均为空，原因尚未确认，不能仅据空结果判定连接故障。请核对休市安排、合约历史范围及终端缓存；已停止后续下载，当前分块未推进检查点')
+                raise QmtHistoryEmpty(f'{code} / {period} / {start} 至 {end}：QMT本区间历史行情与合约K线日期均为空，原因尚未确认，不能仅据空结果判定连接故障。请核对休市安排、合约历史范围及终端缓存；本分块保留待核验并可定向重试，继续处理后续分块')
             trading_days = sorted({timestamp(value).date() for value in calendar})
             with self.store.connect() as conn:
                 with conn.cursor() as cursor:
@@ -458,7 +463,7 @@ class Worker:
         coverage = self.store.query('SELECT * FROM coverage WHERE job_id=%s ORDER BY code,period,requested_start', (identifier,))
         job = self.store.job(identifier)
         total = sum(item['row_count'] for item in coverage)
-        if job['kind'] == 'catalog':
+        if job['kind'] == 'catalog' or job['payload'].get('source')=='exchange':
             total = self.store.query('SELECT coalesce(sum(row_count),0) AS n FROM job_units WHERE job_id=%s',(identifier,),one=True)['n']
         units = self.store.query('SELECT state,quality_state,count(*) AS count FROM job_units WHERE job_id=%s GROUP BY state,quality_state', (identifier,))
         uncertain = any(item['quality_state'] not in ('verified','not_applicable') or item['state']!='succeeded' for item in units)
@@ -471,6 +476,9 @@ class Worker:
                 'message': ('全部分块不适用，未写入记录' if units and not uncertain else '未读到资料，未写入记录' if report else '未读到行情，未写入 K 线') if not total else '已入库，仍有未完成或待核验分块' if uncertain else '实际读回并完成入库'}
 
     def verify(self, job):
+        if job['payload'].get('source')=='exchange':
+            from .exchange_holidays import verify
+            return verify(self, job)
         from .futures import page, REPORTS, normalize_report
         identifier,payload=job['id'],job['payload']
         provider=payload.get('source','qmt')
@@ -537,7 +545,9 @@ class Worker:
                     if security and security['subtype']=='contract':
                         if metadata.get('listed'): checked['start']=max(day(part['start']),timestamp(metadata['listed']).date()).isoformat()
                         if metadata.get('expiry'): checked['end']=min(day(part['end']),timestamp(metadata['expiry']).date()).isoformat()
-                    gaps=[issue('OUTSIDE_LIFECYCLE','not_applicable','区间在合约存续期之外','无需补数')] if day(checked['start'])>day(checked['end']) else stored_issues(rows,checked,calendar,metadata)
+                    from .exchange_holidays import evidence
+                    holiday_records=evidence(self.store,market,checked['start'],checked['end'],conn) if provider=='qmt' and not rows else None
+                    gaps=[issue('OUTSIDE_LIFECYCLE','not_applicable','区间在合约存续期之外','无需补数')] if day(checked['start'])>day(checked['end']) else stored_issues(rows,checked,calendar,metadata,holiday_records=holiday_records)
                     if any(any(row[field] is None for field in ('open','high','low','close')) for row in rows):
                         gaps.append(issue('OHLC_INCOMPLETE','pending_verification','本地行情部分OHLC字段为空，未补零','核对上游无成交时的字段口径'))
                     times=[row['time'] for row in rows]

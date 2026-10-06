@@ -43,8 +43,9 @@ def test_weekend_daily_rule_never_masks_weekday_or_minute_empty(store,tmp_path,p
     worker=Worker(store,tmp_path,source=source);worker.stop.wait=lambda seconds:False
     job=make_range(store,'a2611.DF',period,start,end);worker.execute(job)
     saved=store.job(job['id'])
-    assert saved['state']=='blocked' and saved['checkpoint']==0
-    assert saved['error_code']=='SOURCE_NOT_READY' and not store.query('SELECT * FROM coverage')
+    assert saved['state']=='blocked' and saved['checkpoint']==1
+    assert saved['error_code']=='QMT_HISTORY_EMPTY' and not store.query('SELECT * FROM coverage')
+    assert store.units_page(job['id'])['rows'][0]['quality_state']=='pending_verification'
 
 
 def test_daily_records_without_calendar_are_kept_as_unverified(store,tmp_path):

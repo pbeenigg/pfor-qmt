@@ -7,6 +7,7 @@ const names = { market: '行情', indices: '指数', boards:'行业概念', hist
 const periodNames = {'1d':'日线','1w':'周线','1mo':'月线','1m':'1 分钟','5m':'5 分钟','15m':'15 分钟','30m':'30 分钟','60m':'60 分钟'};
 const minutePeriods = ['1m','5m','15m','30m','60m'];
 const reportNames = {calendar:'交易日历',mapping:'主力映射',warehouse:'仓单日报',holding:'成交持仓排名',settle:'结算参数',weekly_detail:'主要品种交易周报'};
+const sourceNames = {qmt:'QMT',tushare:'Tushare',exchange:'交易所公告'};
 let boardRows = [], boardOffset = 0, boardNext = null, boardsRequest=0;
 const statuses = { queued:'排队中', running:'运行中', retrying:'重试等待', succeeded:'已完成', completed:'已完成', partial:'部分完成', failed:'失败', blocked:'需处理', cancelled:'已取消' };
 const originNames={manual:'手动创建',scheduled:'自动更新',maintenance:'维护执行一次',retry:'失败重试',repair:'缺口补数',verify:'只读核验'};
@@ -378,11 +379,11 @@ function renderWorkerStatus(health) {
   const panel=$('#worker-status');panel.hidden=!issues.length;
   if(!issues.length) { panel.open=false;$('#worker-alert-rows').replaceChildren();return; }
   const laneNames={schedule:'自动更新',catalog:'目录同步',export:'文件导出'};
-  const sources=[...new Set(issues.map(row=>row.source==='tushare'?'Tushare':row.lane==='export'?'文件导出':'QMT'))];
+  const sources=[...new Set(issues.map(row=>sourceNames[row.source] || (row.lane==='export'?'文件导出':'QMT')))];
   const scopes=new Set(issues.filter(row=>row.scope_id).map(row=>row.source+':'+row.scope_kind+':'+row.scope_id));
   $('#worker-alert-title').textContent=issues.every(row=>row.lane==='schedule')?'自动更新受阻':'后台任务需关注';
   $('#worker-alert-count').textContent=sources.join('、')+' · '+(scopes.size?`${scopes.size} 个范围 · `:'')+`${issues.length} 项异常`;
-  $('#worker-alert-rows').innerHTML=[...issues].sort((a,b)=>(a.source+a.lane).localeCompare(b.source+b.lane)).map(row=>`<tr><td data-label="数据源 / 队列">${row.source==='tushare'?'Tushare':'QMT'}<span class="muted">${laneNames[row.lane] || escape(row.lane)}</span></td><td data-label="影响范围">${escape(row.name)}</td><td data-label="市场">${escape(marketNames[row.market] || (row.market==='account'?'账号配置':row.market) || '—')}</td><td data-label="原因">${escape(row.reason)}</td><td data-label="建议动作">${escape(row.action || '查看运行日志')}</td></tr>`).join('');
+  $('#worker-alert-rows').innerHTML=[...issues].sort((a,b)=>(a.source+a.lane).localeCompare(b.source+b.lane)).map(row=>`<tr><td data-label="数据源 / 队列">${sourceNames[row.source] || escape(row.source)}<span class="muted">${laneNames[row.lane] || escape(row.lane)}</span></td><td data-label="影响范围">${escape(row.name)}</td><td data-label="市场">${escape(marketNames[row.market] || (row.market==='account'?'账号配置':row.market) || '—')}</td><td data-label="原因">${escape(row.reason)}</td><td data-label="建议动作">${escape(row.action || '查看运行日志')}</td></tr>`).join('');
   icons();
 }
 

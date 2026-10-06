@@ -15,6 +15,7 @@ from .protocol import encode_value
 from .settings import Settings
 from .storage import Store, job_summary
 from .tasks import Worker
+from .exchange_holidays import ExchangeWorker
 from .symbols import KINDS, MARKETS
 from .identifiers import provider_name, source_market, TS_EXCHANGES
 from .accounts import profile
@@ -32,6 +33,7 @@ class Application:
         self.sessions, self.tickets = {}, {}
         self.worker = Worker(self.store, self.settings.runtime, self.publish, self.source, options=self.operation_options)
         self.tushare_worker = Worker(self.store,self.settings.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier), options=self.operation_options)
+        self.exchange_worker = ExchangeWorker(self.store, self.settings.runtime, self.publish, self.operation_options)
         self.capabilities = {}
         self.qmt_reference_capabilities = {}
         self.ws_port = self.settings.value('ws_port')
@@ -59,6 +61,9 @@ class Application:
 
     def _dispatch(self, method, path, p):
         store = self.store
+        if path.startswith('/exchange-holidays/'):
+            from .exchange_holidays import dispatch
+            return dispatch(self, method, path, p)
         if method=='POST' and path in ('/datasets/query','/maintenance/query'):
             from .analytics import configuration_page
             return configuration_page(store,path.split('/')[1],p)
@@ -149,7 +154,7 @@ class Application:
             return {'settings': self.settings.public(), 'database': store.health(), 'source': 'qmt',
                     'worker': self.worker.last_error, 'export_worker': self.worker.export_error, 'catalog_worker': self.worker.catalog_error,
                     'tushare_worker':self.tushare_worker.last_error,'tushare_catalog_worker':self.tushare_worker.catalog_error,
-                    'worker_issues':self.worker.status_issues()+self.tushare_worker.status_issues(),
+                    'worker_issues':self.worker.status_issues()+self.tushare_worker.status_issues()+self.exchange_worker.status_issues(),
                     'version': '0.1.0', 'ws_port': self.ws_port}
         if method == 'POST' and path == '/source/test':
             return get_client().request('pfor.ping', timeout=4)
@@ -192,6 +197,11 @@ class Application:
                 Store(candidate.dsn).connect().close()
                 self.worker.stop.set()
                 self.tushare_worker.stop.set()
+                self.exchange_worker.stop.set()
+                if self.exchange_worker.thread:
+                    self.exchange_worker.thread.join(timeout=12)
+                    if self.exchange_worker.thread.is_alive():
+                        raise ValueError('公告同步正在保存检查点，请稍后重试')
                 if self.tushare_worker.thread:
                     self.tushare_worker.thread.join(timeout=6)
                     if self.tushare_worker.thread.is_alive():
@@ -208,6 +218,8 @@ class Application:
                     self.worker.start()
                     self.tushare_worker = Worker(store,self.settings.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier), options=self.operation_options)
                     self.tushare_worker.start()
+                    self.exchange_worker = ExchangeWorker(store, self.settings.runtime, self.publish, self.operation_options)
+                    self.exchange_worker.start()
                 raise
             self.settings = candidate
             if changing_database:
@@ -216,6 +228,8 @@ class Application:
                 self.worker.start()
                 self.tushare_worker = Worker(store,candidate.runtime,self.publish,provider='tushare',account_resolver=lambda identifier: self.settings.account(identifier), options=self.operation_options)
                 self.tushare_worker.start()
+                self.exchange_worker = ExchangeWorker(store, candidate.runtime, self.publish, self.operation_options)
+                self.exchange_worker.start()
             return dict(self.settings.public(),restart_required=restart_required)
         if method == 'POST' and path == '/database/migrate':
             store.migrate()

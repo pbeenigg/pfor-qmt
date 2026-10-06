@@ -19,10 +19,14 @@ CZCE_2026_CLOSURES = (
 )
 
 
-def exchange_holiday_issue(part, calendar):
+def exchange_holiday_issue(part, calendar, records=None):
     """Only a fully covered, published closure can explain an empty QMT interval."""
     from .symbols import market_of
-    if part.get('source','qmt')!='qmt' or part['period'] not in ('1d','1m','5m') or market_of(part['code'])!='ZF': return None
+    if part.get('source','qmt')!='qmt' or part['period'] not in ('1d','1m','5m'): return None
+    if records:
+        from .exchange_holidays import closure_issue
+        return closure_issue(part, calendar, records)
+    if market_of(part['code'])!='ZF': return None
     first,last=day(part['start']),day(part['end'])
     if any(row['is_open'] and first<=row['day']<=last for row in calendar): return None
     for name,start,end in CZCE_2026_CLOSURES:
@@ -96,9 +100,9 @@ def minute_issues(rows, period, metadata=None):
     return result
 
 
-def stored_issues(rows, part, calendar, metadata=None, now=None):
+def stored_issues(rows, part, calendar, metadata=None, now=None, holiday_records=None):
     period=part['period']
-    closure=exchange_holiday_issue(part,calendar) if not rows else None
+    closure=exchange_holiday_issue(part,calendar,holiday_records) if not rows else None
     if closure: return [closure]
     if period in MINUTE_PERIODS:
         return minute_issues(rows,period,metadata)

@@ -92,6 +92,12 @@ def scope(app, params):
         if not isinstance(params.get('payload'),dict): raise ValueError('维护范围必须是对象')
         kind,payload=params.get('kind','download'),copy.deepcopy(params['payload'])
     if payload.get('dimensions'): raise ValueError('明细筛选仅用于查询与导出，维护范围需按资料对象选择')
+    if payload.get('source')=='exchange':
+        from .exchange_holidays import scope as holiday_scope
+        if kind!='download' or payload.get('resource')!='exchange_holidays': raise ValueError('公告维护仅支持休市资料同步')
+        checked=holiday_scope(payload)
+        checked.pop('chunks')
+        return kind,checked
     source=provider_name(payload.get('source','qmt'))
     binding={key:payload[key] for key in ('account_id','endpoint') if payload.get(key)}
     new_binding=not binding.get('endpoint')
@@ -206,7 +212,10 @@ def preview(app, identifier, params):
     payload=dict(old['payload'])
     validate_binding(app,payload)
     prepared=[]
-    if old['kind']=='catalog': prepared=[payload]
+    if payload.get('source')=='exchange':
+        from .exchange_holidays import scope as holiday_scope
+        prepared=[holiday_scope(payload)]
+    elif old['kind']=='catalog': prepared=[payload]
     else:
         from .futures import request_chunks
         for market,part in market_scopes(payload,payload['source']).items():

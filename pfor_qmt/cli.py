@@ -69,6 +69,7 @@ def main():
     threading.Thread(target=hub.start, daemon=True, name='pfor-pipe-hub').start()
     app.worker.start()
     app.tushare_worker.start()
+    app.exchange_worker.start()
     print('pfor-qmt: http://%s:%s (WebSocket %s)' % (host, port, ws_port), flush=True)
     try:
         server.serve_forever()
@@ -77,6 +78,7 @@ def main():
     finally:
         app.worker.stop.set()
         app.tushare_worker.stop.set()
+        app.exchange_worker.stop.set()
         websocket.shutdown()
         server.server_close()
         hub.close()

@@ -112,7 +112,7 @@ def jobs_filter(params):
     states = filter_values(params.get('states',[]),(*STATES,'completed'),'任务状态')
     states = ['succeeded' if state=='completed' else state for state in states]
     kinds = filter_values(params.get('kinds',[]),('download','export','catalog','verify'),'任务类型')
-    sources = filter_values(params.get('sources',[]),('qmt','tushare'),'任务来源')
+    sources = filter_values(params.get('sources',[]),('qmt','tushare','exchange'),'任务来源')
     start,end = day(params.get('start') or '1990-01-01'),day(params.get('end') or '2100-01-01')
     if start>end: raise ValueError('开始日期不得晚于结束日期')
     search = '%'+str(params.get('search',''))+'%'
@@ -155,7 +155,7 @@ def futures_summary(store, params):
 def configuration_page(store, resource, params):
     table='datasets' if resource=='datasets' else 'maintenance_plans'
     enabled='scheduled' if resource=='datasets' else 'enabled'
-    sources=filter_values(params.get('sources',[]),('qmt','tushare'),'来源')
+    sources=filter_values(params.get('sources',[]),('qmt','tushare','exchange') if resource=='maintenance' else ('qmt','tushare'),'来源')
     state=params.get('enabled','')
     if state not in ('','true','false'): raise ValueError('无效启用状态筛选')
     where=trash_filter(params)+' AND (%s OR source=ANY(%s)) AND name ILIKE %s AND (%s OR '+enabled+'=%s)'

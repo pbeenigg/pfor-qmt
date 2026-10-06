@@ -142,7 +142,7 @@ def test_network_failure_retried_three_times(store,tmp_path):
 
 
 @pytest.mark.postgres
-def test_empty_history_and_calendar_stop_without_advancing_checkpoint(store,tmp_path):
+def test_empty_history_and_calendar_continue_with_retryable_units(store,tmp_path):
     source = Source()
     source.empty = True
     source.get_trading_dates = lambda *args: []
@@ -151,16 +151,22 @@ def test_empty_history_and_calendar_stop_without_advancing_checkpoint(store,tmp_
     job = make_job(store,['000300.SH','000001.SZ'])
     worker.execute(job)
     result = store.job(job['id'])
-    assert result['state'] == 'blocked' and result['checkpoint'] == 0
+    assert result['state'] == 'blocked' and result['checkpoint'] == 2
+    assert result['error_code'] == 'QMT_HISTORY_EMPTY'
     assert '原因尚未确认' in result['error'] and '不能仅据空结果判定连接故障' in result['error']
-    assert len(source.downloads) == 1
+    assert len(source.downloads) == 2
     assert not store.query('SELECT * FROM bars')
     assert not store.query('SELECT * FROM coverage')
-    # Retrying after recovery includes the failed chunk, not just later symbols.
+    units = store.units_page(job['id'])['rows']
+    assert len(units) == 2 and all(unit['retryable'] and unit['quality_state'] == 'pending_verification' for unit in units)
+    # Processed empty chunks remain eligible for a linked retry.
+    retry = store.retry_job(job['id'])
+    assert retry['payload']['chunks'] == job['payload']['chunks']
     source.empty = False
     source.get_trading_dates = Source().get_trading_dates
-    worker.execute(result)
-    assert store.job(job['id'])['state'] == 'succeeded'
+    worker.execute(retry)
+    assert store.job(retry['id'])['state'] == 'succeeded'
+    assert store.job(job['id'])['state'] == 'blocked' and store.units_page(job['id'])['rows'] == units
     assert len(store.query('SELECT * FROM bars')) == 2
 
 

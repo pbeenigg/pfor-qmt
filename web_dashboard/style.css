@@ -175,6 +175,11 @@ button.icon { width: 40px; flex-basis: 40px; }
 .select-all-control { color: var(--green); border-left: 1px solid var(--line); padding-left: 10px; }
 .table-wrap { max-height: 560px; scrollbar-color: #acb9b1 #f4f7f5; scrollbar-width: thin; }
 .table-wrap:focus-visible { outline: 2px solid #38957d; outline-offset: 2px; }
+#holidays .table-wrap table { min-width: 900px; }
+#holidays td { white-space: normal; overflow-wrap: anywhere; }
+#holidays td:first-child { min-width: 145px; }
+#holidays td:nth-child(2) { min-width: 130px; }
+#holidays .table-wrap td:last-child { min-width: 100px; }
 th { position: sticky; top: 0; z-index: 1; font-weight: 600; }
 td { padding-top: 10px; padding-bottom: 10px; }
 .numeric { text-align: right; font-variant-numeric: tabular-nums; }

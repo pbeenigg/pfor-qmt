@@ -1,6 +1,6 @@
 # 数据库结构、ER图与字段字典
 
-适用迁移版本：13。覆盖 22 张表、1 个视图、229 个字段。
+适用迁移版本：14。覆盖 25 张表、1 个视图、255 个字段。
 
 本文由 `tools/generate_schema_docs.py` 读取PostgreSQL系统目录生成，不读取业务行、账号Token或连接密码。SQL迁移中的COMMENT是说明来源；更改结构或口径后应更新迁移并重新生成。
 
@@ -149,6 +149,21 @@ erDiagram
         text prd PK
         date week_date PK
     }
+    exchange_notices {
+        bigint id PK
+        text exchange UK
+        text url UK
+        text content_hash UK
+    }
+    exchange_holiday_events {
+        bigint notice_id FK,PK
+        integer ordinal PK
+    }
+    exchange_holiday_sync {
+        text exchange PK
+        integer year PK
+    }
+    exchange_notices ||--o{ exchange_holiday_events : "notice_id"
 ```
 
 ## 逻辑关系（非外键）
@@ -835,6 +850,90 @@ CREATE UNIQUE INDEX futures_settlements_pkey ON pfor_qmt.futures_settlements USI
 
 ```sql
 CREATE UNIQUE INDEX futures_weekly_details_pkey ON pfor_qmt.futures_weekly_details USING btree (source, exchange, prd, week_date);
+```
+
+</details>
+
+#### exchange_notices
+
+交易所休市公告原文与版本，独立于行情源日历
+
+| 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
+| --- | --- | --- | --- | --- |
+| id | bigint | 否 | nextval('exchange_notices_id_seq'::regclass) | 公告版本编号 |
+| exchange | text | 否 | 无 | 公告所属交易所 |
+| url | text | 否 | 无 | 官方公告原文地址 |
+| content_hash | text | 否 | 无 | 标题、发布时间及正文的内容摘要 |
+| title | text | 否 | 无 | 公告原始标题 |
+| body | text | 否 | 无 | 公告正文，不保存脚本与样式 |
+| published_at | date | 是 | 无 | 明确的公告发布日期，未提供时为空 |
+| fetched_at | timestamp with time zone | 否 | now() | 首次保存此版本的时间 |
+| checked_at | timestamp with time zone | 否 | now() | 最近确认此版本的时间 |
+| is_current | boolean | 否 | true | 是否为此地址最近读到的版本 |
+| parse_state | text | 否 | 无 | 日期安排是否完整识别，未确认版本不用于自动判定 |
+| parse_detail | text | 否 | 无 | 解析结果或待核验原因 |
+| parser_version | text | 否 | 无 | 生成日期安排的解析规则版本 |
+
+- `exchange_notices_exchange_url_content_hash_key`：`UNIQUE (exchange, url, content_hash)`
+- `exchange_notices_parse_state_check`：`CHECK ((parse_state = ANY (ARRAY['parsed'::text, 'pending_verification'::text])))`
+- `exchange_notices_pkey`：`PRIMARY KEY (id)`
+
+<details><summary>索引定义</summary>
+
+```sql
+CREATE UNIQUE INDEX exchange_notices_current_idx ON pfor_qmt.exchange_notices USING btree (exchange, url) WHERE is_current;
+CREATE UNIQUE INDEX exchange_notices_exchange_url_content_hash_key ON pfor_qmt.exchange_notices USING btree (exchange, url, content_hash);
+CREATE UNIQUE INDEX exchange_notices_pkey ON pfor_qmt.exchange_notices USING btree (id);
+```
+
+</details>
+
+#### exchange_holiday_events
+
+从公告明确语句提取的开休市与夜盘安排
+
+| 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
+| --- | --- | --- | --- | --- |
+| notice_id | bigint | 否 | 无 | 所属公告版本编号 |
+| ordinal | integer | 否 | 无 | 公告内安排顺序 |
+| start_day | date | 否 | 无 | 安排开始自然日 |
+| end_day | date | 否 | 无 | 安排结束自然日 |
+| kind | text | 否 | 无 | 全天开休市或当晚夜盘开停，不能据此猜测行情交易日 |
+| evidence | text | 否 | 无 | 日期安排对应的原文语句 |
+
+- `exchange_holiday_events_check`：`CHECK ((end_day >= start_day))`
+- `exchange_holiday_events_kind_check`：`CHECK ((kind = ANY (ARRAY['closed'::text, 'open'::text, 'night_closed'::text, 'night_open'::text])))`
+- `exchange_holiday_events_notice_id_fkey`：`FOREIGN KEY (notice_id) REFERENCES exchange_notices(id)`
+- `exchange_holiday_events_pkey`：`PRIMARY KEY (notice_id, ordinal)`
+
+<details><summary>索引定义</summary>
+
+```sql
+CREATE UNIQUE INDEX exchange_holiday_events_pkey ON pfor_qmt.exchange_holiday_events USING btree (notice_id, ordinal);
+```
+
+</details>
+
+#### exchange_holiday_sync
+
+交易所及年度范围最近同步结果，失败保留成功缓存
+
+| 字段 | PostgreSQL类型 | 可空 | 默认值 | 注释 |
+| --- | --- | --- | --- | --- |
+| exchange | text | 否 | 无 | 请求同步的交易所 |
+| year | integer | 否 | 无 | 用户选择的公告安排年度 |
+| attempted_at | timestamp with time zone | 否 | now() | 最近同步尝试时间 |
+| succeeded_at | timestamp with time zone | 是 | 无 | 最近读到且解析成功的同步时间 |
+| state | text | 否 | 无 | 最近同步结果，不表示完整交易日历 |
+| detail | text | 否 | 无 | 访问、解析或发现范围的结果说明 |
+| notice_count | integer | 否 | 0 | 此次确认的公告数 |
+
+- `exchange_holiday_sync_pkey`：`PRIMARY KEY (exchange, year)`
+
+<details><summary>索引定义</summary>
+
+```sql
+CREATE UNIQUE INDEX exchange_holiday_sync_pkey ON pfor_qmt.exchange_holiday_sync USING btree (exchange, year);
 ```
 
 </details>

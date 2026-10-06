@@ -18,7 +18,7 @@ class DataRejected(ValueError):
         self.code, self.sample = code, sample
 
 
-class SourceUnavailable(ValueError):
+class QmtHistoryEmpty(ValueError):
     pass
 
 
@@ -127,8 +127,8 @@ def failure(error):
             message,action,retry='数据库操作失败，未判定为磁盘不足','按错误类型与SQLSTATE检查数据库和任务日志，不要清空数据',False
         diagnostic=state if re.fullmatch(r'[0-9A-Z]{5}',state) else type(error).__name__
         return dict(code='DATABASE_ERROR',message=message+'（'+diagnostic+'）',action=action,scope='source',retryable=retry,state='failed')
-    if isinstance(error, SourceUnavailable):
-        return dict(code='SOURCE_NOT_READY', message=redact(str(error)), action='核对休市日期、合约历史范围及QMT缓存；连接是否故障需另行诊断', scope='source', retryable=True, state='blocked')
+    if isinstance(error, QmtHistoryEmpty):
+        return dict(code='QMT_HISTORY_EMPTY', message=redact(str(error)), action='核对休市日期、合约历史范围及QMT缓存后定向重试该分块；连接是否故障需另行诊断', scope='unit', retryable=True, state='blocked')
     if isinstance(error,QmtCapabilityUnavailable):
         return dict(code=error.code,message=str(error),action=error.action,scope='interface',retryable=False,state='blocked')
     if isinstance(error, DataRejected):

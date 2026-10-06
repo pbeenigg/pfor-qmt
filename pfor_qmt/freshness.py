@@ -14,7 +14,11 @@ def targets(conn):
         payload = scope['payload']
         base = {key:scope[key] for key in ('name','source','schedule_time','schedule_from','scope_kind')}
         base['scope_id'] = str(scope['id'])
-        if scope['kind'] == 'catalog':
+        if scope['source']=='exchange':
+            for exchange in payload['exchanges']:
+                for year in payload['years']:
+                    yield dict(base,resource='exchange_holidays',code=exchange+':'+str(year),period='exchange_holidays',exchange=exchange,year=year)
+        elif scope['kind'] == 'catalog':
             yield dict(base, resource='catalog', code='', period='catalog')
         elif payload.get('resource'):
             for target in payload.get('selections') or [payload]:
@@ -35,6 +39,14 @@ def assess(conn, target, now, calendars):
     source, resource, code, period = (target[key] for key in ('source','resource','code','period'))
     cutoff = now.date() if now.time() >= target['schedule_time'] else now.date()-timedelta(days=1)
     result['cutoff'] = cutoff
+    if source=='exchange':
+        record=conn.execute('SELECT * FROM exchange_holiday_sync WHERE exchange=%s AND year=%s',(target['exchange'],target['year'])).fetchone()
+        result['last_write']=record['succeeded_at'] if record else None
+        result['actual_day']=record['succeeded_at'].astimezone(SHANGHAI).date() if record and record['succeeded_at'] else None
+        result['expected_day']=cutoff
+        if not record or record['state']!='succeeded':
+            return finish('pending_verification','EXCHANGE_NOTICE_SYNC',record['detail'] if record else '公告范围尚未同步','检查公告同步任务与官方站点；缓存日期不扩展为完整日历')
+        return finish('current' if result['actual_day']>=cutoff else 'stale','EXCHANGE_NOTICE_CHECKED','仅评估公告同步时间，不代表全年日历完整','按保存的交易所与年度同步公告')
     if source=='qmt' and resource=='mapping' and target.get('mapping_mode')=='current':
         record=conn.execute('SELECT observed_at,trading_day FROM current_contract_mappings WHERE source=%s AND code=%s',(source,code)).fetchone()
         result['expected_day']=cutoff
@@ -135,7 +147,7 @@ def assess(conn, target, now, calendars):
 def freshness_page(store, params, now=None):
     now = timestamp(now) if now else datetime.now(SHANGHAI)
     limit, offset = int(params.get('limit',50)), int(params.get('offset',0))
-    sources = filter_values(params.get('sources',[]),('qmt','tushare'),'新鲜度来源')
+    sources = filter_values(params.get('sources',[]),('qmt','tushare','exchange'),'新鲜度来源')
     search = str(params.get('search','')).strip().casefold()
     states=filter_values(params.get('states',[]),('current','stale','missing','pending_verification','not_applicable','not_due','not_published','rejected'),'新鲜度状态')
     if not 1<=limit<=200 or offset<0:

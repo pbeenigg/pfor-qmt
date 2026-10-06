@@ -34,8 +34,9 @@ def test_holiday_rule_does_not_infer_other_markets_years_or_open_boundaries(stor
     worker=Worker(store,tmp_path,source=source);worker.stop.wait=lambda _:False
     job=make_range(store,code,'1m',start,end);worker.execute(job)
     saved=store.job(job['id'])
-    assert saved['state']=='blocked' and saved['checkpoint']==0
+    assert saved['state']=='blocked' and saved['checkpoint']==1
     assert '原因尚未确认' in saved['error']
+    assert store.units_page(job['id'])['rows'][0]['quality_state']=='pending_verification'
 
 
 def test_czce_holiday_does_not_hide_saved_open_evidence_or_returned_bars(store,tmp_path):
@@ -69,7 +70,8 @@ def test_preexisting_holiday_bar_is_not_hidden_by_empty_terminal_response(store,
     source=Source();source.empty=True;source.get_trading_dates=lambda *args:[]
     worker=Worker(store,tmp_path,source=source);worker.stop.wait=lambda _:False
     job=make_range(store,p['code'],p['period'],p['start'],p['end']);worker.execute(job)
-    assert store.job(job['id'])['state']=='blocked' and store.job(job['id'])['checkpoint']==0
+    assert store.job(job['id'])['state']=='blocked' and store.job(job['id'])['checkpoint']==1
+    assert store.units_page(job['id'])['rows'][0]['quality_state']=='pending_verification'
     assert store.history(p['code'],p['period'],p['start'],p['end'])['rows']
 
 

@@ -27,9 +27,11 @@ for path in artifacts:
     required.append('pfor_qmt/migrations/008_settlement_weekly.sql')
     required.extend(['pfor_qmt/qmt_references.py','pfor_qmt/migrations/011_qmt_references.sql'])
     required.extend(['pfor_qmt/migrations/012_schema_comments.sql','pfor_qmt/migrations/013_simple_schema_comments.sql'])
+    required.extend(['pfor_qmt/exchange_holidays.py','pfor_qmt/migrations/014_exchange_holidays.sql','web_dashboard/holidays.js'])
     required.extend(['pfor_qmt/migrations/010_recycle.sql','pfor_qmt/migrations/009_console_versions.sql','pfor_qmt/analytics.py','pfor_qmt/workspace.py','web_dashboard/workspace.js','web_dashboard/workspace.css'])
     if path.name.endswith('.tar.gz'):
         required.append('docs/SETTLEMENT_WEEKLY.md')
+        required.append('docs/EXCHANGE_HOLIDAYS.md')
         required.extend(['docs/CONSOLE_DESIGN.md','docs/CONSOLE_GUIDE.md'])
         required.extend(['docs/DATABASE_SCHEMA.md','tools/generate_schema_docs.py'])
     if path.name.endswith('.tar.gz'):

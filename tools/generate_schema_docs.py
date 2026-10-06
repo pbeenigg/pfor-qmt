@@ -9,7 +9,7 @@ from pfor_qmt.storage import Store
 GROUPS = {
     '目录、身份与行情': ('instruments','securities','bars','factors','catalog_sectors','board_snapshots','index_mapping','constituent_snapshots','datasets'),
     '任务、维护与当前映射': ('jobs','job_units','job_events','coverage','maintenance_plans','contract_mapping_snapshots','current_contract_mappings','schema_version'),
-    '交易日历与期货资料': ('trading_dates','contract_mappings','futures_warehouse_receipts','futures_holdings','futures_settlements','futures_weekly_details'),
+    '交易日历与期货资料': ('trading_dates','contract_mappings','futures_warehouse_receipts','futures_holdings','futures_settlements','futures_weekly_details','exchange_notices','exchange_holiday_events','exchange_holiday_sync'),
 }
 
 

@@ -50,6 +50,12 @@ class DataClient:
     def calendar(self, market, start, end, source='qmt'):
         return self.request('/calendar',market=market,start=start,end=end,source=source)
 
+    def exchange_holidays(self, exchanges, years, **options):
+        return self.request('/exchange-holidays/query',dict(exchanges=exchanges,years=years,**options))
+
+    def sync_exchange_holidays(self, exchanges, years):
+        return self.request('/exchange-holidays/sync',dict(exchanges=exchanges,years=years))
+
     def futures_options(self, exchange='DCE', source='tushare'):
         return self.request('/futures/options',source=source,exchange=exchange)
 

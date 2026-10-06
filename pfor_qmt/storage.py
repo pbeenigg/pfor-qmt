@@ -354,7 +354,7 @@ class Store:
         if not 1 <= limit <= 200 or before < 1:
             raise ValueError('无效日志分页参数')
         levels = filter_values(payload.get('levels',[]), ('info','warning','error'), '日志级别')
-        sources = filter_values(payload.get('sources',[]), ('qmt','tushare'), '日志来源')
+        sources = filter_values(payload.get('sources',[]), ('qmt','tushare','exchange'), '日志来源')
         job_id = str(payload.get('job_id') or '').strip().lower()
         if job_id and not re.fullmatch(r'[0-9a-f-]{8,36}',job_id):
             raise ValueError('请输入完整任务ID或至少8位ID前缀')
