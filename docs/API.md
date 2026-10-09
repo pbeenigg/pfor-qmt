@@ -1,5 +1,11 @@
 # API 与数据口径
 
+## 采集诊断补充（2026-10-09）
+
+`GET /jobs/{id}?summary=1` 返回任务摘要与 `total_chunks`，省略 `payload.chunks` 和 `result.coverage`。省略参数保留原完整任务响应；SDK 为 `client.job(id, summary=True)`，默认 `False`。`POST /jobs/{id}/cancel?summary=1` 同样支持摘要，默认仍返回完整任务。任务分块、事件、关联列表继续使用既有分页接口，网页详情、取消及后台进度通知使用摘要。
+
+数据库 HTTP 503 保留 `error` 字段，新增 `code=DATABASE_ERROR`、可行动的 `action` 和白名单 `diagnostic`。网络重试事件及失败分块保存 `error_type`、可用的 `remote_type`/`sqlstate`/`errno`/`winerror`、`connection_reason` 和 `rpc_action`。原始驱动消息和凭据不会回传。
+
 ## 名称与历史汇总
 
 POST /history/summary在groups之外返回instrument_names，按请求source从证券目录映射代码到名称；没有目录记录时不返回猜测名称。POST /futures/summary和分页资料查询对mapping/settle返回同源instrument_names，映射代码、对应月份代码和结算合约代码均可用于名称展示。原始rows和导出字段不变。
@@ -239,7 +245,7 @@ current查询和导出返回所选合约最新保存快照，不按业务日期�
 
 任务状态partial表示已处理但仍有未确认空段、缺口或不可取得的因子。分钟内覆盖需要对终端时段进一步验证，不能把已有行数等同于完整数据。业务完成以读回校验与入库为准，不使用订阅号或下载请求返回值作为成功依据。
 
-QMT目标区间历史与合约K线日期同时为空，原因未确认时报告SOURCE_NOT_READY并保留当前检查点，不能仅据空表断言连接失败；无可用结果时blocked，已有结果时partial。已明确的国内日线周末、完整同源休市日历及郑商函〔2025〕939号的2026年郑商所节假日范围按各自规则标为not_applicable，返回0行并说明依据，不当作实际下载了行情。郑商所公告规则仅覆盖整个分块落在同一公告休市段、无返回或已存行情及无开市证据冲突的情况，不推广到其他来源/市场/年份；夜盘跨日和含开市日期的请求仍需核验。
+QMT目标区间历史与合约K线日期同时为空，原因未确认时记录QMT_HISTORY_EMPTY、blocked/pending_verification并推进处理检查点，继续后续分块；不能仅据空表断言连接失败。旧SOURCE_NOT_READY证据保留。已明确的生命周期外区间、国内日线周末、完整同源休市日历及公告休市范围按各自规则标为not_applicable，返回0行并说明依据，不当作实际下载了行情。公告规则仅覆盖整个分块落在同一休市段、无返回或已存行情及无开市证据冲突的情况，不推广到其他来源/市场/年份；夜盘跨日和含开市日期的请求仍需核验。
 
 仅行情为空但合约日期可读时记录缺口，并按所有分块结果汇总状态。手动重试创建关联任务，只处理未完成或明确可补范围，保留原任务证据。调度不能取得日历或最近五个交易日时，在 `/status` 的worker字段说明原因，不猜测交易日或自动登录。
 

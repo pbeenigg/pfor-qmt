@@ -1,5 +1,6 @@
 import os
 import threading
+from datetime import datetime
 
 import pytest
 from playwright.sync_api import sync_playwright, expect
@@ -8,6 +9,15 @@ from pfor_qmt.server import HTTPServer, handler_for
 from test_qmt_references import qmt_app, choice, run
 from test_qmt_reference_native_responses import NativeSource
 from browser_helpers import choose_many, navigate, sync_report
+
+
+@pytest.fixture(autouse=True)
+def reference_clock(monkeypatch):
+    class ReferenceDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 21, 12, tzinfo=tz)
+    monkeypatch.setattr('pfor_qmt.qmt_references.datetime', ReferenceDatetime)
 
 
 @pytest.mark.browser

@@ -185,8 +185,8 @@ class DataClient:
             payload['periods'] = list(periods)
         return self.request('/downloads', payload)
 
-    def job(self, identifier):
-        return self.request('/jobs/' + identifier)
+    def job(self, identifier, summary=False):
+        return self.request('/jobs/' + identifier + ('?summary=1' if summary else ''))
 
     def cancel(self, identifier):
         return self.request('/jobs/' + identifier + '/cancel', {})

@@ -13,7 +13,7 @@ from psycopg.types.json import Jsonb
 from .data import codes, day, periods, json_default, FIELDS, MINUTE_PERIODS, AGGREGATE_PERIODS, period_label, filter_values
 from .symbols import KINDS, MARKETS, market_of
 from .identifiers import provider_name, source_market, identity_key, TS_EXCHANGES
-from .reliability import STATES, QUALITY_STATES, classify_gaps, quality, redact, issue
+from .reliability import STATES, QUALITY_STATES, classify_gaps, quality, redact, issue, database_connection_error
 
 
 def document(value):
@@ -23,7 +23,7 @@ def document(value):
 def job_summary(job):
     result = dict(job)
     result['payload'] = dict(job['payload'])
-    result['total_chunks'] = len(result['payload'].pop('chunks', []))
+    result['total_chunks'] = len(result['payload'].pop('chunks')) if 'chunks' in result['payload'] else job.get('total_chunks', 0)
     result['result'] = {key:value for key,value in job['result'].items() if key != 'coverage'}
     return result
 
@@ -47,9 +47,7 @@ class Store:
                 return conn
             except psycopg.Error as error:
                 if conn is not None: conn.close()
-                state=error.sqlstate or ''
-                transient=isinstance(error,psycopg.OperationalError) and (not state or state.startswith('08') or state in ('57P01','57P02','57P03','53300'))
-                if not transient or attempt==2: raise
+                if not database_connection_error(error) or attempt==2: raise
                 time.sleep(0.25*(attempt+1))
 
     def migrate(self):
@@ -253,6 +251,15 @@ class Store:
             row['result']['rows'] = self.query('SELECT coalesce(sum(row_count),0) AS n FROM coverage WHERE job_id=%s', (identifier,), one=True)['n']
         return row
 
+    def job_summary(self, identifier):
+        fields = "id,kind,state,deleted_at,parent_id,error_code,action,run_number,payload-'chunks' AS payload,jsonb_array_length(coalesce(payload->'chunks','[]'::jsonb)) AS total_chunks,checkpoint,attempts,cancel_requested,result-'coverage' AS result,error,created_at,updated_at,schedule_key"
+        row = self.query('SELECT ' + fields + ' FROM jobs WHERE id=%s', (identifier,), one=True)
+        if not row:
+            raise ValueError('任务不存在')
+        if row['kind'] in ('download','verify') and 'rows' not in row['result']:
+            row['result']['rows'] = self.query('SELECT coalesce(sum(row_count),0) AS n FROM coverage WHERE job_id=%s', (identifier,), one=True)['n']
+        return row
+
     def jobs_page(self, payload):
         from .analytics import jobs_filter, ordering, snapshot, JOB_ORIGIN_SQL
         limit, offset = int(payload.get('limit', 50)), int(payload.get('offset', 0))
@@ -427,7 +434,7 @@ class Store:
             return result
 
     def job_links(self, identifier, limit=50, offset=0):
-        job=self.job(identifier)
+        job=self.job_summary(identifier)
         limit,offset=int(limit),int(offset)
         if not 1<=limit<=200 or offset<0: raise ValueError('无效关联任务分页参数')
         references=[str(value) for value in (job.get('parent_id'),job['payload'].get('verification_of'),job['payload'].get('repair_of')) if value]

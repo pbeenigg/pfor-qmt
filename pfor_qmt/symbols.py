@@ -29,7 +29,7 @@ def derivative_kind(code):
         return 'option'
     if market in FUTURE_MARKETS:
         # Exchange contract grammar, including option legs inside a combination.
-        return 'option' if re.search(r'\d-?[CP]-?\d', body) else 'future'
+        return 'option' if re.search(r'\d(?:-?MS)?-?[CP]-?\d', body) else 'future'
     return None
 
 

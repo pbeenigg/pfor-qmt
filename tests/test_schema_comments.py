@@ -21,7 +21,7 @@ def test_comments_cover_every_field_and_do_not_change_structure_or_rows(store):
         conn.execute('DELETE FROM schema_version WHERE version=13')
     store.migrate()
     after=read_schema(store)
-    assert after['version']==14
+    assert after['version']==15
     assert after==before
     assert all(row['comment'] and all(c['comment'] for c in row['columns']) for row in after['relations'])
     assert store.query('SELECT * FROM datasets WHERE id=%s',(table['id'],),one=True)==table

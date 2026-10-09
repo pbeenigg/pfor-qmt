@@ -92,6 +92,48 @@ def quality(issues):
     return next((state for state in ('rejected', 'missing', 'stale', 'pending_verification', 'not_published', 'not_applicable') if state in states), 'verified')
 
 
+def database_connection_error(error):
+    import psycopg
+    state = getattr(error, 'sqlstate', None) or ''
+    if not isinstance(error, psycopg.OperationalError):
+        return False
+    if state:
+        return state.startswith('08') or state in ('57P01','57P02','57P03','53300')
+    return error_diagnostic(error)['connection_reason'] not in ('authentication','permission','database_missing')
+
+
+def error_diagnostic(error):
+    from .policy import ACTIONS
+    result = {'error_type': type(error).__name__}
+    for field, pattern in [('remote_type', r'[A-Za-z][A-Za-z0-9_]{0,79}'), ('sqlstate', r'[0-9A-Z]{5}')]:
+        value = getattr(error, field, None)
+        if isinstance(value, str) and re.fullmatch(pattern, value):
+            result[field] = value
+    for field in ('errno', 'winerror'):
+        value = getattr(error, field, None)
+        if isinstance(value, int):
+            result[field] = value
+    message = str(error).lower()
+    result['connection_reason'] = next((name for name, phrases in (
+        ('authentication', ('password authentication failed', 'no password supplied')),
+        ('permission', ('no pg_hba.conf entry', 'permission denied')),
+        ('timeout', ('timeout', 'timed out')),
+        ('refused', ('connection refused', 'actively refused')),
+        ('reset', ('connection reset', 'forcibly closed')),
+        ('disconnected', ('not connected', 'disconnected', 'connection closed', 'client closed', 'server closed the connection')),
+        ('name_resolution', ('could not translate host name', 'name or service not known')),
+    ) if any(phrase in message for phrase in phrases)), 'unclassified')
+    if re.search(r'database "[^"]+" does not exist', message):
+        result['connection_reason'] = 'database_missing'
+    action = getattr(error, 'rpc_action', None)
+    if action not in ACTIONS:
+        match = re.search(r'(?:action=|request timeout: )([a-z_]+\.[a-z_]+)', str(error))
+        action = match[1] if match else None
+    if action in ACTIONS:
+        result['rpc_action'] = action
+    return result
+
+
 def failure(error):
     from .client import CfquantError
     from .tushare import SourceError
@@ -116,8 +158,14 @@ def failure(error):
             '40P01':('数据库检测到死锁，当前事务已回滚','排查并发写入后重试',True),
             '40001':('数据库并发事务冲突，当前事务已回滚','稍后重试该范围',True),
             '57014':('数据库查询被取消或超过时间限制','检查查询超时设置及取消来源后重试',True),
+            '57P01':('PostgreSQL连接被服务端终止','检查数据库重启、维护或管理员终止记录；恢复后从检查点继续',True),
+            '57P02':('PostgreSQL异常退出导致连接终止','检查数据库及宿主机异常退出日志；恢复后从检查点继续',True),
+            '57P03':('PostgreSQL正在启动或恢复，暂不接受连接','等待数据库完成恢复后重试未完成范围',True),
         }
-        if isinstance(error,psycopg.errors.ConnectionTimeout):
+        connection_reason=error_diagnostic(error)['connection_reason']
+        if not state and connection_reason in ('authentication','permission','database_missing'):
+            message,action,retry=messages[{'authentication':'28P01','permission':'42501','database_missing':'3D000'}[connection_reason]]
+        elif isinstance(error,psycopg.errors.ConnectionTimeout):
             message,action,retry='连接PostgreSQL超时','检查远程数据库网络、端口和响应延迟；恢复后重试未完成范围',True
         elif state in messages:
             message,action,retry=messages[state]
@@ -126,7 +174,7 @@ def failure(error):
         else:
             message,action,retry='数据库操作失败，未判定为磁盘不足','按错误类型与SQLSTATE检查数据库和任务日志，不要清空数据',False
         diagnostic=state if re.fullmatch(r'[0-9A-Z]{5}',state) else type(error).__name__
-        return dict(code='DATABASE_ERROR',message=message+'（'+diagnostic+'）',action=action,scope='source',retryable=retry,state='failed')
+        return dict(code='DATABASE_ERROR',message=message+'（'+diagnostic+'）',action=action,scope='source',retryable=retry,state='failed',diagnostic=error_diagnostic(error))
     if isinstance(error, QmtHistoryEmpty):
         return dict(code='QMT_HISTORY_EMPTY', message=redact(str(error)), action='核对休市日期、合约历史范围及QMT缓存后定向重试该分块；连接是否故障需另行诊断', scope='unit', retryable=True, state='blocked')
     if isinstance(error,QmtCapabilityUnavailable):
@@ -146,7 +194,9 @@ def failure(error):
                     state='blocked' if scope != 'unit' else 'failed')
     from .tasks import network_error
     if network_error(error):
-        return dict(code='NETWORK_ERROR', message='数据源连接失败，已用尽本次网络重试', action='恢复连接后重试未完成范围', scope='source', retryable=True, state='failed')
+        diagnostic = error_diagnostic(error)
+        reason = {'timeout':'数据源请求超时', 'disconnected':'数据源连接断开', 'refused':'数据源拒绝连接', 'reset':'数据源连接被重置'}.get(diagnostic['connection_reason'], '数据源连接失败')
+        return dict(code='NETWORK_ERROR', message=reason+'，已用尽本次网络重试', action='恢复连接后重试未完成范围', scope='source', retryable=True, state='failed',diagnostic=diagnostic)
     return dict(code='INVALID_DATA' if isinstance(error, ValueError) else 'INTERNAL_ERROR',
                 message=redact(str(error)) if isinstance(error, ValueError) else '内部处理失败：' + type(error).__name__,
                 action='检查任务事件与请求范围后重试', scope='unit' if isinstance(error, ValueError) else 'source', retryable=False, state='failed')

@@ -456,7 +456,7 @@ $('#catalog-form').addEventListener('submit', action(async () => {
   await loadCatalog();
   notice('目录同步任务已创建');
 }));
-$('#catalog-cancel').addEventListener('click', action(async () => { if (catalogJob) await api('/jobs/' + catalogJob.id + '/cancel', {}); await loadCatalog(); }));
+$('#catalog-cancel').addEventListener('click', action(async () => { if (catalogJob) await api('/jobs/' + catalogJob.id + '/cancel?summary=1', {}); await loadCatalog(); }));
 $('#quote-refresh').addEventListener('click', action(async () => { const result = await api('/quotes?codes=' + encodeURIComponent(values($('#quote-form')).codes)); state.quotes = {}; renderQuotes(result); }));
 $('#quote-form').addEventListener('submit', action(async () => {
   const selected = [...new Set(splitCodes(values($('#quote-form')).codes))];
@@ -562,11 +562,11 @@ document.addEventListener('click', async (event) => {
     showRecord('dataset');
   }
   if (d.refreshDataset) { await api('/datasets/' + d.refreshDataset + '/refresh', {}); await loadDatasets(); notice('成员已按最新快照刷新，已创建任务仍使用原成员'); }
-  if (d.job) { await api('/jobs/' + d.id + '/' + d.job, {}); await loadJobs(); }
+  if (d.job) { await api('/jobs/' + d.id + '/' + d.job + (d.job==='cancel'?'?summary=1':''), {}); await loadJobs(); }
   if (d.jobDetail) {
     const request=++jobDetailRequest;
     $('#record-extra').replaceChildren();$('#record-fields').replaceChildren();$('#record-title').textContent='正在读取任务';
-    const job=await api('/jobs/'+d.jobDetail);
+    const job=await api('/jobs/'+d.jobDetail+'?summary=1');
     job.links=await api(`/jobs/${d.jobDetail}/links?limit=50&offset=${Number(d.linksOffset||0)}`);
     if(request!==jobDetailRequest)return;
     recordSets.job={title:'任务详情',rows:[job],labels:{id:'任务ID',kind:'任务类型',state:'任务状态',checkpoint:'已处理检查点',attempts:'重试次数',cancel_requested:'取消请求',error:'错误信息',created_at:'创建时间',updated_at:'更新时间'},note:`${statuses[job.state]} · ${job.payload.source || 'qmt'} · ${job.result.rows ?? 0} 行`,extra:row=>renderJobDetails(row)};

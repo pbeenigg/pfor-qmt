@@ -57,6 +57,21 @@ def test_http_auth_no_secret_disclosure_and_sdk_roundtrip(app_server):
 
 
 @pytest.mark.postgres
+def test_http_database_failure_is_specific_without_driver_secrets(app_server, monkeypatch):
+    import psycopg
+    app, server, client = app_server
+    def unavailable(*args):
+        raise psycopg.errors.AdminShutdown('password=private-driver-secret')
+    monkeypatch.setattr(app, 'dispatch', unavailable)
+    with pytest.raises(HTTPError) as caught:
+        client.request('/jobs')
+    response = json.loads(caught.value.read())
+    assert caught.value.code == 503 and response['code'] == 'DATABASE_ERROR'
+    assert '服务端终止' in response['error'] and response['diagnostic']['sqlstate'] == '57P01'
+    assert 'private-driver-secret' not in json.dumps(response)
+
+
+@pytest.mark.postgres
 def test_readonly_diagnostics_distinguish_bridge_and_history(app_server,monkeypatch):
     from pfor_qmt import service
     app, server, client = app_server

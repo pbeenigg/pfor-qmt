@@ -126,7 +126,7 @@ def test_sync_repeat_query_offline_verify_and_both_exports(report_app,tmp_path,r
                 assert data[0][key]==(None if fmt=='parquet' else '')
             else:
                 assert str(data[0][key])==str(value)
-    assert store.health()['version']==14
+    assert store.health()['version']==15
     store.migrate()
     assert len(store.query('SELECT * FROM '+REPORTS[resource]['table']))==1
 

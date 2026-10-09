@@ -463,7 +463,8 @@ class Application:
             return {'jobs':[job_summary(job) for job in store.create_jobs('export',payloads)]}
         if path.startswith('/jobs/'):
             parts = path.strip('/').split('/')
-            job = store.job(parts[1])
+            summary = p.get('summary') in (True, 1, '1', 'true')
+            job = store.job(parts[1]) if method == 'GET' and len(parts) == 2 and not summary else store.job_summary(parts[1])
             if method == 'GET' and len(parts) == 2:
                 return job
             if method == 'GET' and len(parts) == 3 and parts[2] == 'units':
@@ -494,7 +495,7 @@ class Application:
                     return store.verification_repair(job['id'],p.get('unit_indices'),p.get('preview_key'),create=True)
                 else:
                     raise ValueError('任务状态不允许此操作')
-                return store.job(job['id'])
+                return store.job_summary(job['id']) if summary else store.job(job['id'])
         if method == 'POST' and path == '/ws-ticket':
             ticket = secrets.token_urlsafe(32)
             with self.lock:

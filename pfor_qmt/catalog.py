@@ -2,7 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
 from .protocol import encode_value
-from .storage import document, job_summary
+from .storage import document
 from .symbols import KINDS as ASSET_KINDS, normalize_code, derivative_kind, contract_type, market_of
 from .client import CfquantError
 
@@ -117,7 +117,7 @@ def synchronize(worker, job):
             conn.execute('UPDATE jobs SET payload=%s WHERE id=%s', (document(dict(job['payload'], chunks=parts)), identifier))
             with conn.cursor() as cursor:
                 cursor.executemany('INSERT INTO catalog_sectors(name) VALUES(%s) ON CONFLICT(name) DO UPDATE SET observed_at=now()', [(name,) for name in sectors])
-        worker.publish({'event': 'job', 'data': job_summary(store.job(identifier))})
+        worker.publish({'event': 'job', 'data': store.job_summary(identifier)})
     result = dict(job['result']) if job['checkpoint'] else {}
     failures = list(result.get('missing', []))
     saved = result.get('rows', 0)
@@ -147,7 +147,7 @@ def synchronize(worker, job):
                                          1 if members else 0,conn=conn)
                         result = dict(rows=saved, missing=failures, total=len(parts), message='证券与板块目录已同步')
                         conn.execute('UPDATE jobs SET checkpoint=%s,result=%s,attempts=0,updated_at=now() WHERE id=%s', (offset + 1, document(result), identifier))
-                    worker.publish({'event': 'job', 'data': job_summary(store.job(identifier))})
+                    worker.publish({'event': 'job', 'data': store.job_summary(identifier)})
                     offset += 1
                 continue
             bulk = getattr(worker.source, 'get_instrument_details', None)
@@ -171,13 +171,15 @@ def synchronize(worker, job):
                         failures.append(item['code'])
                         store.write_unit(identifier,offset+position,item,'failed',[issue('CATALOG_EMPTY','pending_verification','证券名称不可用，保留旧资料','确认终端目录后重试',True)],conn=conn)
                         continue
-                    store.save_security(item['code'], name.strip(), item['kind'], encode_value(detail),
-                                        subtype=item.get('subtype', ''), metadata=instrument_metadata(detail), conn=conn)
+                    kind = derivative_kind(item['code']) if item['kind'] in ('future','option') else item['kind']
+                    subtype = contract_type(item['code']) if kind in ('future','option') else item.get('subtype', '')
+                    store.save_security(item['code'], name.strip(), kind, encode_value(detail),
+                                        subtype=subtype, metadata=instrument_metadata(detail), conn=conn)
                     saved += 1
                     store.write_unit(identifier,offset+position,item,'succeeded',[],1,conn=conn)
                 result = dict(rows=saved, missing=failures, total=len(parts), message='证券目录已同步' if not failures else '部分证券名称不可用，保留旧资料')
                 conn.execute('UPDATE jobs SET checkpoint=%s,result=%s,attempts=0,updated_at=now() WHERE id=%s',
                              (offset + len(batch), document(result), identifier))
-            worker.publish({'event': 'job', 'data': job_summary(store.job(identifier))})
+            worker.publish({'event': 'job', 'data': store.job_summary(identifier)})
             offset += len(batch)
     return dict(result, state='partial' if failures else 'completed')

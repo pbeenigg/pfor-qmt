@@ -17,6 +17,7 @@ import web_dashboard
 from .client import CfquantError
 from .data import codes, json_default
 from .protocol import encode_value
+from .reliability import failure
 
 
 class HTTPServer(ThreadingHTTPServer):
@@ -45,8 +46,12 @@ def handler_for(app):
             self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'")
             for key, value in (headers or {}).items():
                 self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                # A closed browser connection cannot receive a second error response.
+                self.close_connection = True
 
         def authenticated(self):
             auth = self.headers.get('Authorization', '')
@@ -143,8 +148,10 @@ def handler_for(app):
                 return self.send(404, {'error': '接口或记录不存在'})
             except (ValueError, KeyError, TypeError) as error:
                 return self.send(400, {'error': str(error)[:500]})
-            except psycopg.Error:
-                return self.send(503, {'error': '数据库操作失败，请检查连接、迁移状态和数据约束'})
+            except psycopg.Error as error:
+                detail = failure(error)
+                return self.send(503, {'error': detail['message'], 'code': detail['code'],
+                                       'action': detail['action'], 'diagnostic': detail['diagnostic']})
             except (CfquantError, ConnectionError, TimeoutError, OSError):
                 return self.send(503, {'error': '行情源未连接或操作失败，请检查 QMT 与本地服务'})
             except Exception:

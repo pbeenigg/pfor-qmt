@@ -76,14 +76,19 @@ class PipeRpcClient(object):
             request_id=request_id,
             timeout=effective_timeout,
         )
-        self.start()
+        try:
+            self.start()
+        except Exception as error:
+            error.rpc_action = action
+            raise
         q = queue.Queue(maxsize=1)
         with self._pending_lock:
             self._pending[request_id] = q
         try:
             try:
                 self._send_request(raw, request_channel or self.request_channel)
-            except Exception:
+            except Exception as error:
+                error.rpc_action = action
                 self.close()
                 raise
             try:
@@ -91,12 +96,16 @@ class PipeRpcClient(object):
             except queue.Empty:
                 from .client import CfquantTimeout
 
-                raise CfquantTimeout("market pipe request timeout: %s" % action)
+                error = CfquantTimeout("market pipe request timeout: %s" % action)
+                error.rpc_action = action
+                raise error
             if not msg.get("ok"):
                 err = msg.get("error") or {}
                 from .client import CfquantError
 
-                raise CfquantError(err.get("message") or str(err), remote_type=err.get("type"))
+                error = CfquantError(err.get("message") or str(err), remote_type=err.get("type"))
+                error.rpc_action = action
+                raise error
             return decode_value(msg.get("result"))
         finally:
             with self._pending_lock:

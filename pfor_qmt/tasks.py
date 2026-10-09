@@ -9,10 +9,10 @@ from .client import CfquantError, CfquantTimeout
 from .data import SHANGHAI, FIELDS, chunks, day, timestamp, normalize_bars, json_default, MINUTE_PERIODS, AGGREGATE_PERIODS, period_label
 from .protocol import encode_value
 from .storage import job_summary
-from .symbols import market_of, derivative_kind
+from .symbols import market_of, derivative_kind, contract_type
 from .identifiers import source_market, TS_EXCHANGES
 from .tushare import TushareSource, SourceError
-from .reliability import QmtHistoryEmpty, failure, issue, fallback_log, redact
+from .reliability import QmtHistoryEmpty, failure, issue, fallback_log, redact, error_diagnostic, database_connection_error
 from .quality_checks import RULE_VERSION, aggregate_issues, minute_issues, stored_issues, qmt_daily_weekend, daily_weekend_issue, exchange_holiday_issue
 
 
@@ -71,9 +71,9 @@ class Worker:
             try:
                 lease.execute('SELECT 1')
                 lease.commit()
-            except Exception:
+            except Exception as error:
                 self.leases.lost = True
-                raise LeaseLost('工作队列租约连接丢失；停止当前执行，等待新租约恢复') from None
+                raise LeaseLost('工作队列租约连接丢失；停止当前执行，等待新租约恢复') from error
         if self.stop.is_set():
             raise InterruptedError('服务停止，任务等待下次恢复')
         control = self.store.query('SELECT cancel_requested FROM jobs WHERE id=%s', (identifier,), one=True)
@@ -126,7 +126,7 @@ class Worker:
             except Exception as error:
                 if isinstance(error,InterruptedError) and self.stop.is_set():
                     break
-                detail = failure(error)
+                detail = failure(error.__cause__ if isinstance(error, LeaseLost) and error.__cause__ else error)
                 message = detail['code'] + '：' + detail['message']
                 if getattr(self,error_field) != message:
                     try:
@@ -140,6 +140,7 @@ class Worker:
 
     def execute(self, job):
         identifier = job['id']
+        database_failed = False
         self.store.update_job(identifier, state='running', error=None, error_code=None, action=None, run_number=job.get('run_number',0)+1)
         self.store.event(identifier,'JOB_STARTED','开始执行任务',context={'kind':job['kind'],'checkpoint':job['checkpoint']})
         try:
@@ -165,13 +166,16 @@ class Worker:
         except LeaseLost:
             raise
         except Exception as error:
+            if database_connection_error(error):
+                database_failed = True
+                raise
             detail = failure(error)
-            existing_rows = self.store.job(identifier)['result'].get('rows',0)
+            existing_rows = self.store.job_summary(identifier)['result'].get('rows',0)
             self.store.update_job(identifier, state='partial' if existing_rows and job['kind']!='export' else detail['state'], error=detail['message'], error_code=detail['code'], action=detail['action'])
-            self.store.event(identifier,detail['code'],detail['message'],'error',context={'action':detail['action']})
+            self.store.event(identifier,detail['code'],detail['message'],'error',context={'action':detail['action'],**detail.get('diagnostic',{})})
         finally:
-            if not getattr(self.leases,'lost',False):
-                current = self.store.job(identifier)
+            if not database_failed and not getattr(self.leases,'lost',False):
+                current = self.store.job_summary(identifier)
                 self.store.event(identifier,'JOB_' + current['state'].upper(),'任务执行状态：' + current['state'],
                                  'error' if current['state'] in ('failed','blocked') else 'warning' if current['state']=='partial' else 'info',
                                  context={'checkpoint':current['checkpoint'],'rows':current['result'].get('rows',0)})
@@ -241,6 +245,7 @@ class Worker:
         return [date.strftime('%Y%m%d') for date in (dates[-count:] if count > 0 else dates)]
 
     def retry_network(self, identifier, operation):
+        delays = (10, 20, 30) if self.provider == 'qmt' else (1, 2, 4)
         for attempt in range(4):
             self.check(identifier)
             try:
@@ -252,9 +257,12 @@ class Worker:
                 if not network_error(error) or attempt == 3:
                     raise
                 self.store.update_job(identifier, state='retrying', attempts=attempt + 1)
-                self.store.event(identifier,'NETWORK_RETRY','网络请求等待重试','warning',context={'attempt':attempt+1,'delay_seconds':min(2**attempt,4)})
-                if self.stop.wait(min(2 ** attempt, 4)):
-                    raise InterruptedError()
+                delay = delays[attempt]
+                self.store.event(identifier,'NETWORK_RETRY','网络请求等待重试','warning',context={'attempt':attempt+1,'delay_seconds':delay,**error_diagnostic(error)})
+                for offset in range(0, delay, 2):
+                    if self.stop.wait(min(2, delay-offset)):
+                        raise InterruptedError()
+                    self.check(identifier)
 
     def process_parts(self, job, operation):
         identifier = job['id']
@@ -273,8 +281,10 @@ class Worker:
             except (Cancelled, InterruptedError, LeaseLost):
                 raise
             except Exception as error:
+                if database_connection_error(error):
+                    raise
                 detail = failure(error)
-                gaps = [issue(detail['code'],'rejected' if detail['state']=='failed' and detail['scope']=='unit' else 'pending_verification',detail['message'],detail['action'],detail['retryable'])]
+                gaps = [issue(detail['code'],'rejected' if detail['state']=='failed' and detail['scope']=='unit' else 'pending_verification',detail['message'],detail['action'],detail['retryable'],**detail.get('diagnostic',{}))]
                 self.store.write_unit(identifier,index,part,detail['state'],gaps,error_code=detail['code'],retryable=detail['retryable'],
                                       advance=detail['scope']!='source',sample=getattr(error,'sample',None))
                 self.store.update_job(identifier,state='running',error=detail['message'],error_code=detail['code'],action=detail['action'])
@@ -282,7 +292,7 @@ class Worker:
                     break
                 if detail['scope'] == 'interface':
                     blocked[key] = error
-            self.publish({'event':'job','data':job_summary(self.store.job(identifier))})
+            self.publish({'event':'job','data':self.store.job_summary(identifier)})
 
     def download(self, job):
         if job['payload'].get('resource'):
@@ -296,7 +306,7 @@ class Worker:
             part = dict(part, source=self.provider)
             derivative = 'future' if self.provider == 'tushare' else derivative_kind(code)
             security = self.store.query('SELECT kind,subtype,metadata FROM securities WHERE source=%s AND code=%s', (self.provider,code), one=True)
-            if security and security['subtype'] == 'contract':
+            if security and (security['subtype'] == 'contract' or self.provider == 'qmt' and derivative == 'option' and contract_type(code) == 'contract'):
                 metadata = security.get('metadata') or {}
                 for field, is_start in [('listed',True),('expiry',False)]:
                     raw = str(metadata.get(field) or '')
@@ -461,7 +471,7 @@ class Worker:
 
     def download_result(self, identifier, report=False):
         coverage = self.store.query('SELECT * FROM coverage WHERE job_id=%s ORDER BY code,period,requested_start', (identifier,))
-        job = self.store.job(identifier)
+        job = self.store.job_summary(identifier)
         total = sum(item['row_count'] for item in coverage)
         if job['kind'] == 'catalog' or job['payload'].get('source')=='exchange':
             total = self.store.query('SELECT coalesce(sum(row_count),0) AS n FROM job_units WHERE job_id=%s',(identifier,),one=True)['n']
@@ -542,9 +552,12 @@ class Worker:
                     security=conn.execute('SELECT metadata,subtype FROM securities WHERE source=%s AND code=%s',(provider,part['code'])).fetchone()
                     metadata=security['metadata'] if security else {}
                     checked=dict(part,source=provider)
-                    if security and security['subtype']=='contract':
-                        if metadata.get('listed'): checked['start']=max(day(part['start']),timestamp(metadata['listed']).date()).isoformat()
-                        if metadata.get('expiry'): checked['end']=min(day(part['end']),timestamp(metadata['expiry']).date()).isoformat()
+                    if security and (security['subtype']=='contract' or provider=='qmt' and derivative_kind(part['code'])=='option' and contract_type(part['code'])=='contract'):
+                        for field,is_start in [('listed',True),('expiry',False)]:
+                            raw=str(metadata.get(field) or '')
+                            if len(raw)==8 and raw.isdigit():
+                                bound=timestamp(raw).date()
+                                checked['start' if is_start else 'end']=(max(day(part['start']),bound) if is_start else min(day(part['end']),bound)).isoformat()
                     from .exchange_holidays import evidence
                     holiday_records=evidence(self.store,market,checked['start'],checked['end'],conn) if provider=='qmt' and not rows else None
                     gaps=[issue('OUTSIDE_LIFECYCLE','not_applicable','区间在合约存续期之外','无需补数')] if day(checked['start'])>day(checked['end']) else stored_issues(rows,checked,calendar,metadata,holiday_records=holiday_records)
